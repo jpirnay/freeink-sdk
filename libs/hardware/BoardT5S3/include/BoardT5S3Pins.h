@@ -30,6 +30,7 @@
 
 #define T5S3_TOUCH_INT 3
 #define T5S3_TOUCH_RST 9
+#define T5S3_RTC_INT 2
 
 #define T5S3_SD_CS 12
 

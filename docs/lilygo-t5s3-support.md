@@ -70,6 +70,9 @@ reference port at **`lib/Board_T5S3/FreeInkLgfxConfig.cpp`**.
   reads it, and `PowerManager::armPowerButtonWakeup()` arms deep-sleep wake on it
   with the per-SoC source (`ext1` on the S3). This matches the reference port,
   which wakes on the same BOOT button.
+- **RTC interrupt** — GPIO2 is `RTC_INT` in LilyGO's pin map. The board profile
+  intentionally leaves `PowerConfig` empty so `holdPowerRails()` does not drive
+  that pin as a latch.
 - **PCA9535 user button** — a second button behind the I²C expander.
   `InputManager::setButtonHook()` takes a board callback that reads the PCA9535 and
   returns a `BTN_*` bitmask, so `InputManager` carries no expander code. This

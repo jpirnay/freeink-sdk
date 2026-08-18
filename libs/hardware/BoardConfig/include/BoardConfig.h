@@ -1150,9 +1150,9 @@ constexpr BoardProfile LILYGO_T5S3 = {
     // it whenever power was actually cut rather than merely deep-slept.
     {39, 40, 400000, 0x51, 0, 0, 0, RtcType::Pcf8563, ImuType::None},
     1.2f,  // uiScale: 4.7" 960x540 touch (~234 PPI) — finger-sized chrome, like Sticky
-    // Power latch: main-power MOSFET on GPIO2, driven HIGH first thing in boot
-    // via holdPowerRails() or the board powers off when USB is unplugged.
-    {2},
+    // No firmware-held power latch. LilyGO's public pin map assigns GPIO2 to
+    // RTC_INT, and power-off is handled through the BQ25896 shutdown path.
+    {},
     0,  // displayControllerVariant: not probed on this panel
     // Bezel: this case sits closer over the glass at the sides than the X4's, so
     // the default 3px leaves the first and last characters of a line hard to
