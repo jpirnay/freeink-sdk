@@ -5,9 +5,11 @@
 
 namespace {
 
+using freeink::input_detail::classifyPinch;
 using freeink::input_detail::classifyRotation;
 using freeink::input_detail::GesturePoint;
 using freeink::input_detail::hasRotationScale;
+using freeink::input_detail::PinchResult;
 using freeink::input_detail::RotationResult;
 
 int checksRun = 0;
@@ -79,6 +81,26 @@ void testRotationWinsWithTranslation() {
   CHECK(result.centerY == 50);
 }
 
+void testPinchInAndOut() {
+  PinchResult result;
+  CHECK(classifyPinch({0, 0}, {100, 0}, {10, 0}, {70, 0}, result));
+  CHECK(near(result.scale, 0.6f, 0.01f));
+  CHECK(result.centerX == 45);
+  CHECK(result.centerY == 0);
+
+  CHECK(classifyPinch({0, 0}, {100, 0}, {-20, 0}, {140, 0}, result));
+  CHECK(near(result.scale, 1.6f, 0.01f));
+  CHECK(result.centerX == 55);
+}
+
+void testPinchRejectionThresholds() {
+  PinchResult result;
+  CHECK(!classifyPinch({0, 0}, {100, 0}, {5, 0}, {95, 0}, result));      // Small scale change.
+  CHECK(!classifyPinch({0, 0}, {50, 0}, {0, 0}, {90, 0}, result));       // Start span below 60 px.
+  CHECK(!classifyPinch({0, 0}, {100, 0}, {50, -50}, {50, 90}, result));  // Rotation too large.
+  CHECK(!classifyPinch({0, 0}, {100, 0}, {60, 80}, {160, 80}, result));  // Translation only.
+}
+
 }  // namespace
 
 int main() {
@@ -88,6 +110,8 @@ int main() {
   testRejectionThresholds();
   testScaleEligibilityCanLatchIntermediatePinch();
   testRotationWinsWithTranslation();
+  testPinchInAndOut();
+  testPinchRejectionThresholds();
 
   std::printf("%d checks, %d failures\n", checksRun, checksFailed);
   return checksFailed == 0 ? 0 : 1;
