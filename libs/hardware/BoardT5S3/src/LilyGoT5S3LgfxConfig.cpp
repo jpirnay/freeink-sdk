@@ -238,7 +238,21 @@ freeink::LgfxEpdConfig buildConfig() {
       1,
       grayDark,
       grayLight,
-      true,  // grey columns live in the fast bank above
+      // grayNudgeInFastBank: OFF until the consumer runs the single-push path.
+      //
+      // The fast bank's grey columns ARE here, and they self-normalize: each
+      // grey drive saturates at the white rail before walking down to its
+      // level. That is only correct when the base push has not already driven
+      // those pixels somewhere — i.e. under displayGrayFrame(). A consumer
+      // still doing the two-push flow (B/W base, then a grey overlay) drives
+      // the anti-aliased fringes BLACK first; the overlay then saturates them
+      // to white, which shows as a flash, and they settle too light — the
+      // anti-aliasing reads as having vanished.
+      //
+      // With this false the overlay takes the plain epd_fast push and the greys
+      // dither as they did before, which is what every other board on stock
+      // LUTs does. Flip it back on together with the single-push adoption.
+      false,
   };
 }
 
