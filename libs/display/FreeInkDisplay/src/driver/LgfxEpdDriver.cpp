@@ -268,11 +268,19 @@ void pushCanvasGraded(lgfx::epd_mode::epd_mode_t refreshMode) {
   settleDisplay();
 #if defined(LGFX_EPD_PUSH_TRACE) && LGFX_EPD_PUSH_TRACE
   // Splits the graded push into its three parts so a slow one can be attributed.
-  // `mode` is what the REFRESH went out under: 2 = epd_fast (differential bank,
-  // no eraser), 1 = epd_text and 0 = epd_quality (clean bank, eraser pass — the
-  // flash). A push that is slow with mode=2 is the fast bank's own frame count;
-  // one that reports anything else is not taking the bank it was meant to.
-  Serial.printf("[epd] graded push: mode=%d sprite=%lums display=%lums settle=%lums\n", (int)refreshMode,
+  // The mode is NAMED rather than numbered because the numbering invites exactly
+  // the wrong reading: LovyanGFX's enum starts at 1 (quality=1, text=2, fast=3,
+  // fastest=4), so the fast bank is 3 and a "2" is the CLEAN bank's eraser pass —
+  // the flash — not a faster one.
+  //
+  // display= is near zero by design: Panel_EPD queues the refresh and returns.
+  // The waveform is settle=, so that is the number to read.
+  const char* modeName = refreshMode == lgfx::epd_mode::epd_quality   ? "quality"
+                         : refreshMode == lgfx::epd_mode::epd_text    ? "text(clean bank, eraser)"
+                         : refreshMode == lgfx::epd_mode::epd_fast    ? "fast(diff bank)"
+                         : refreshMode == lgfx::epd_mode::epd_fastest ? "fastest"
+                                                                      : "?";
+  Serial.printf("[epd] graded push: mode=%s sprite=%lums display=%lums settle=%lums\n", modeName,
                 (unsigned long)(tSprite - tWait), (unsigned long)(tDisplay - tSprite),
                 (unsigned long)(millis() - tDisplay));
 #endif
