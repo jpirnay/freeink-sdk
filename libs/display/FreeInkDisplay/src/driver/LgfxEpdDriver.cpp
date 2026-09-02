@@ -227,9 +227,18 @@ void settleDisplay() {
 void pushCanvas(lgfx::epd_mode::epd_mode_t epdMode) {
   if (!g_canvas) return;
   g_dev.waitDisplay();
+#if defined(LGFX_EPD_PUSH_TRACE) && LGFX_EPD_PUSH_TRACE
+  const uint32_t tStart = millis();
+#endif
   g_dev.setEpdMode(epdMode);
   g_canvas->pushSprite(0, 0);  // commits to the panel; Panel_EPD runs the refresh
   settleDisplay();
+#if defined(LGFX_EPD_PUSH_TRACE) && LGFX_EPD_PUSH_TRACE
+  // The PLAIN push, traced alongside the graded one so the log shows EVERY
+  // refresh this panel is asked for. A second push nobody accounts for is
+  // indistinguishable from a slow waveform when only one of the two is traced.
+  Serial.printf("[epd] plain push: mode=%d took=%lums\n", (int)epdMode, (unsigned long)(millis() - tStart));
+#endif
 }
 
 // Push the canvas keeping its grey levels, then refresh through the differential
@@ -354,6 +363,25 @@ void LgfxEpdDriver::displayGrayFrame(EpdBus& bus, const uint8_t* fb, RefreshMode
   // differential bank. Either way the write itself must be graded -- a fast-mode
   // write Bayer-dithers the greys to the rails before any LUT is consulted.
   g_lastBaseEpdMode = epdModeFor(mode);
+#if defined(LGFX_EPD_PUSH_TRACE) && LGFX_EPD_PUSH_TRACE
+  // How much of the page the planes actually mark. A page of text should light a
+  // few percent of pixels; 0 means the planes never arrived (the push is B/W
+  // whatever the mode says), and a very large number means they are inverted or
+  // stale — which is what "the anti-aliasing degrades as the waveform lands"
+  // would look like.
+  {
+    uint32_t lsbBits = 0, msbBits = 0;
+    const size_t planeBytes = static_cast<size_t>(g_wb) * g_h;
+    for (size_t i = 0; i < planeBytes; ++i) {
+      lsbBits += static_cast<uint32_t>(__builtin_popcount(g_lsb[i]));
+      msbBits += static_cast<uint32_t>(__builtin_popcount(g_msb[i]));
+    }
+    const uint32_t total = static_cast<uint32_t>(g_w) * g_h;
+    Serial.printf("[epd] gray planes: lsb=%lu msb=%lu of %lu px (%lu%%/%lu%%)\n", (unsigned long)lsbBits,
+                  (unsigned long)msbBits, (unsigned long)total, (unsigned long)(lsbBits * 100 / (total ? total : 1)),
+                  (unsigned long)(msbBits * 100 / (total ? total : 1)));
+  }
+#endif
   pushCanvasGraded(g_lastBaseEpdMode);
   if (turnOff) g_dev.sleep();
 #else

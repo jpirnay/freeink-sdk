@@ -785,14 +785,16 @@ void FreeInkDisplay::displayGrayscaleFrame(RefreshMode mode, bool turnOffScreen)
   syncPendingAsync();
   _shadowValid = false;
   _driver->displayGrayFrame(_bus, frameBuffer, toInternal(mode), turnOffScreen);
-  // Leave the same post-conditions displayBuffer() does: this IS a display of
-  // the frame, so the buffer just shown becomes the previous one. Without the
-  // swap a host that tracks "what is on the panel" — for a differential
-  // baseline, a pre-render, or a grayscale restore — keeps pointing at the page
-  // before this one, and every such consumer silently works from a stale frame.
-#ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
-  swapBuffers();
-#endif
+  // Deliberately NO swapBuffers(), unlike displayBuffer().
+  //
+  // It was added here once, reasoning that a display should leave the buffer it
+  // showed as the previous one. On this path that reasoning does not apply: the
+  // only driver advertising supportsGrayFrame() ignores `prev` entirely and
+  // diffs against its own panel buffer, so the swap bought nothing — and it left
+  // frameBuffer pointing at an OLDER page the moment a push finished, so any
+  // path that pushes without a full re-render would flash stale content.
+  // jetaudio's crosspoint-aurora, which is the reference consumer of this
+  // waveform and is verified flicker-free on the hardware, does not swap either.
   _inversionDirty = false;
 }
 
