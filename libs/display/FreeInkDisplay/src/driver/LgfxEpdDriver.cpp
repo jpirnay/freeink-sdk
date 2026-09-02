@@ -250,13 +250,32 @@ void pushCanvas(lgfx::epd_mode::epd_mode_t epdMode) {
 void pushCanvasGraded(lgfx::epd_mode::epd_mode_t refreshMode) {
   if (!g_canvas) return;
   g_dev.waitDisplay();
+#if defined(LGFX_EPD_PUSH_TRACE) && LGFX_EPD_PUSH_TRACE
+  const uint32_t tWait = millis();
+#endif
   g_dev.setEpdMode(lgfx::epd_mode::epd_quality);
   g_dev.setAutoDisplay(false);
   g_canvas->pushSprite(0, 0);  // writes the panel buffer, queues no refresh
   g_dev.setAutoDisplay(true);
   g_dev.setEpdMode(refreshMode);
+#if defined(LGFX_EPD_PUSH_TRACE) && LGFX_EPD_PUSH_TRACE
+  const uint32_t tSprite = millis();
+#endif
   g_dev.display();  // covers the rect pushSprite accumulated
+#if defined(LGFX_EPD_PUSH_TRACE) && LGFX_EPD_PUSH_TRACE
+  const uint32_t tDisplay = millis();
+#endif
   settleDisplay();
+#if defined(LGFX_EPD_PUSH_TRACE) && LGFX_EPD_PUSH_TRACE
+  // Splits the graded push into its three parts so a slow one can be attributed.
+  // `mode` is what the REFRESH went out under: 2 = epd_fast (differential bank,
+  // no eraser), 1 = epd_text and 0 = epd_quality (clean bank, eraser pass — the
+  // flash). A push that is slow with mode=2 is the fast bank's own frame count;
+  // one that reports anything else is not taking the bank it was meant to.
+  Serial.printf("[epd] graded push: mode=%d sprite=%lums display=%lums settle=%lums\n", (int)refreshMode,
+                (unsigned long)(tSprite - tWait), (unsigned long)(tDisplay - tSprite),
+                (unsigned long)(millis() - tDisplay));
+#endif
 }
 
 }  // namespace
