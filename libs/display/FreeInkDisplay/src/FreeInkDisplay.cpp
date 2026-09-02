@@ -785,6 +785,15 @@ void FreeInkDisplay::displayGrayscaleFrame(RefreshMode mode, bool turnOffScreen)
   syncPendingAsync();
   _shadowValid = false;
   _driver->displayGrayFrame(_bus, frameBuffer, toInternal(mode), turnOffScreen);
+  // Leave the same post-conditions displayBuffer() does: this IS a display of
+  // the frame, so the buffer just shown becomes the previous one. Without the
+  // swap a host that tracks "what is on the panel" — for a differential
+  // baseline, a pre-render, or a grayscale restore — keeps pointing at the page
+  // before this one, and every such consumer silently works from a stale frame.
+#ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
+  swapBuffers();
+#endif
+  _inversionDirty = false;
 }
 
 void FreeInkDisplay::displayGrayBuffer(bool turnOffScreen, const unsigned char* lut, bool factoryMode) {
