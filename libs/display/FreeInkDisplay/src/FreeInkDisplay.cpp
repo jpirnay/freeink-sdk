@@ -795,7 +795,6 @@ void FreeInkDisplay::displayGrayscaleFrame(RefreshMode mode, bool turnOffScreen)
   // path that pushes without a full re-render would flash stale content.
   // jetaudio's crosspoint-aurora, which is the reference consumer of this
   // waveform and is verified flicker-free on the hardware, does not swap either.
-  _inversionDirty = false;
 }
 
 void FreeInkDisplay::displayGrayBuffer(bool turnOffScreen, const unsigned char* lut, bool factoryMode) {
