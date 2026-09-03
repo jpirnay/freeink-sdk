@@ -148,6 +148,46 @@ class PanelDriver {
     (void)turnOff;
   }
 
+  // --- native grayscale (host-painted 8-bit canvas) ---
+  //
+  // The dual-plane API above carries two selector bits per pixel, so whatever a
+  // panel's waveform can do, that path tops out at FOUR levels. It is not a
+  // tuning limit: on a KW controller the LUT is chosen by the (old, new) bit
+  // pair, so four is the whole state space (see Uc8279X4Driver::displayGray,
+  // "4-level is absolute (defined by the planes)").
+  //
+  // A panel that keeps its own multi-bit frame buffer has no such ceiling, and
+  // for those the host can skip the plane encoding entirely: borrow the driver's
+  // composition buffer, paint 8-bit grey into it, and let the driver quantise.
+
+  // Distinct grey levels the panel can land from an arbitrary source state in
+  // ONE refresh, rails included. Four is the dual-plane floor every controller
+  // meets; report more only when borrowGray8Canvas() is backed.
+  virtual uint8_t grayLevels() const { return 4; }
+
+  // Lend the driver's own composition buffer so the host can paint into it with
+  // no allocation and no copy. Layout is panel-oriented, one byte per pixel
+  // (0x00 = black, 0xFF = white), `stride` bytes per row, panel height rows.
+  //
+  // The loan lasts until displayGray8Canvas() or the next ordinary display():
+  // every driver rebuilds this buffer from the 1-bpp framebuffer on a normal
+  // push, so a host that borrows and then abandons the frame corrupts nothing.
+  // Returns nullptr on a driver with no such buffer -- which is every driver
+  // reporting grayLevels() == 4.
+  virtual uint8_t* borrowGray8Canvas(uint16_t* stride) {
+    (void)stride;
+    return nullptr;
+  }
+
+  // Quantise the borrowed canvas to the panel's native depth and display it as
+  // one waveform. `mode` must select a bank whose columns can land every level;
+  // a driver that only greys in its clean bank is free to substitute one.
+  virtual void displayGray8Canvas(EpdBus& bus, RefreshMode mode, bool turnOff) {
+    (void)bus;
+    (void)mode;
+    (void)turnOff;
+  }
+
   virtual void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) {
     (void)lut;
     (void)factoryMode;
