@@ -212,9 +212,28 @@
 #endif
 // USB Mass Storage ("USB Transfer" mode): exposes the SD card to a host over
 // USB-MSC. OPT-IN (default off), NOT board-derived, so a board enables it in
-// its OWN env (e.g. -DFREEINK_CAP_USB_MSC=1). Native-USB (ESP32-S3/C3 OTG)
-// targets only. When 0, UsbMassStorage links stub bodies and pulls in no
-// TinyUSB/MSC code.
+// its OWN env (e.g. -DFREEINK_CAP_USB_MSC=1). When 0, UsbMassStorage links stub
+// bodies and pulls in no TinyUSB/MSC code.
+//
+// A board qualifies only if BOTH are true, and the second is the one that
+// catches people out:
+//
+//   1. The MCU has a USB-OTG peripheral. The ESP32-C3 does NOT — it has only
+//      USB Serial/JTAG, so SOC_USB_OTG_SUPPORTED is 0 and USBMSC will not even
+//      compile. S3 only, among the parts this SDK targets.
+//
+//   2. The MCU's native USB D+/D- pins actually reach the physical connector.
+//      A board whose USB-C goes to a USB-to-UART bridge cannot do this at any
+//      price: the host enumerates the BRIDGE, a fixed-function serial
+//      converter, and the MCU is never a USB device at all. Seeed's reTerminal
+//      Sticky is the worked example — its Type-C D+/D- land on a CH343P
+//      (schematic sheet USB&POGONPIN&MicroSD), and GPIO19/20, which would have
+//      been the native pair, are spent on the PDM microphone (PDM_CLK /
+//      PDM_DATA). Nothing in firmware can reach around that. Compare the LilyGo
+//      T5 S3, whose D+/D- go straight to GPIO19/20 with no bridge in between.
+//
+// Rule of thumb: if the board needs a driver on the host to show up as a COM
+// port, it cannot be a USB drive.
 //
 // ARDUINO_USB_MODE=0 is one way to reach the OTG PHY, not a requirement of this
 // library. A firmware can equally keep ARDUINO_USB_MODE=1 — so USB Serial/JTAG
