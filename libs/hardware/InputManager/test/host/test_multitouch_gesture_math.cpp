@@ -101,6 +101,34 @@ void testPinchRejectionThresholds() {
   CHECK(!classifyPinch({0, 0}, {100, 0}, {60, 80}, {160, 80}, result));  // Translation only.
 }
 
+// The two classifiers are gated on the same separation band from opposite
+// sides, so no gesture can be accepted by both. Each of these is accepted by
+// one and must be rejected by the other.
+void testPinchAndRotationAreMutuallyExclusive() {
+  RotationResult rotation;
+  PinchResult pinch;
+
+  // A pure 90-degree turn holds the separation, so the pinch gate rejects it.
+  CHECK(classifyRotation({0, 0}, {100, 0}, {50, -50}, {50, 50}, rotation));
+  CHECK(!classifyPinch({0, 0}, {100, 0}, {50, -50}, {50, 50}, pinch));
+
+  // A pure 40% close leaves the band, so the rotation gate rejects it.
+  CHECK(classifyPinch({0, 0}, {100, 0}, {10, 0}, {70, 0}, pinch));
+  CHECK(!classifyRotation({0, 0}, {100, 0}, {10, 0}, {70, 0}, rotation));
+}
+
+// Contacts that converge by exactly the 20% threshold while both also travel
+// 80 px. The translation path tolerates 45 px of separation change, so it would
+// accept this as a two-finger swipe; finishMultiTouchGesture() tries pinch
+// first, which is what makes it a pinch.
+void testPinchWinsWithTranslation() {
+  PinchResult result;
+  CHECK(classifyPinch({0, 0}, {100, 0}, {80, 0}, {160, 0}, result));
+  CHECK(near(result.scale, 0.8f, 0.01f));
+  CHECK(result.centerX == 85);
+  CHECK(result.centerY == 0);
+}
+
 }  // namespace
 
 int main() {
@@ -112,6 +140,8 @@ int main() {
   testRotationWinsWithTranslation();
   testPinchInAndOut();
   testPinchRejectionThresholds();
+  testPinchAndRotationAreMutuallyExclusive();
+  testPinchWinsWithTranslation();
 
   std::printf("%d checks, %d failures\n", checksRun, checksFailed);
   return checksFailed == 0 ? 0 : 1;

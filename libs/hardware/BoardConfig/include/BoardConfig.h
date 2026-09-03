@@ -212,14 +212,17 @@
 // targets only. When 0, UsbMassStorage links stub bodies and pulls in no
 // TinyUSB/MSC code.
 //
-// This does NOT require ARDUINO_USB_MODE=0. An earlier revision of this comment
-// said it did; the shipped implementation keeps ARDUINO_USB_MODE=1 so USB
-// Serial/JTAG stays the board's normal USB personality (monitor + flash), and
-// switches the shared PHY to OTG at runtime for the duration of the transfer
-// only. What it DOES require is the platform's prebuilt Arduino core, whose
-// TinyUSB component is built with CONFIG_TINYUSB_MSC_ENABLED: an env that
-// rebuilds the core from source (custom_sdkconfig / custom_component_remove)
-// drops that component and USBMSC will not link.
+// ARDUINO_USB_MODE=0 is one way to reach the OTG PHY, not a requirement of this
+// library. A firmware can equally keep ARDUINO_USB_MODE=1 — so USB Serial/JTAG
+// stays the board's normal USB personality for monitoring and flashing — and
+// switch the shared PHY to OTG at runtime for the duration of a transfer,
+// handing it back before it reboots out of the mode. X4 Pro and LilyGo T5 S3
+// both ship that way in CrossPoint.
+//
+// What this DOES require is the platform's prebuilt Arduino core, whose TinyUSB
+// component is built with CONFIG_TINYUSB_MSC_ENABLED: an env that rebuilds the
+// core from source (custom_sdkconfig / custom_component_remove) drops that
+// component and USBMSC will not link.
 //
 // Storage must expose a 512-byte-sector block device. Both SDCardManager
 // backends do — SDMMC natively, and SPI through SdFat's own SdCard — so this is
