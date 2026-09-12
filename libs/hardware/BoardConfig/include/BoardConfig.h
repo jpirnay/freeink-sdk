@@ -1582,9 +1582,16 @@ constexpr BoardProfile XTEINK_X4_PRO = {
     // needed. GPIO1 also triggers a refresh when toggled (likely a panel power
     // enable), but the panel works without driving it, so powerEnable stays unset.
     {12, 11, 13, 18, 14, 6, PIN_UNASSIGNED},
-    20000000,  // displaySpiHz: 20 MHz, matching the X4's default. The OEM clocks the panel at only 5 MHz
-               // (SPISettings 0x4C4B40), but the SSD1677 handles far more (X4 runs 20, de-link 40), so 20 MHz
-               // is well in spec and gives noticeably faster RAM writes. Drop back to 5 MHz if artifacts appear.
+    10000000,  // displaySpiHz: 10 MHz. This was 20 MHz, matching the X4's default and reasoning that the
+               // SSD1677 is specified to 20 for writes even though the OEM clocks the panel at only 5
+               // (SPISettings 0x4C4B40). Upstream main has since moved EVERY Xteink profile to a shared
+               // 10 MHz (XTEINK_DISPLAY_SPI_HZ, commit 39606d5, Justin Mitchell 2026-09-09), and he owns
+               // the X4 Pro port. Matched here for the X4 Pro only: it is the board whose bring-up is
+               // still ahead of us, its batch-dependent controller may be a UC81xx rather than the
+               // SSD1677 this clock was justified against, and a marginal plane write on this panel
+               // presents as "resets and runs waveforms but develops no image" -- the exact saga the
+               // SDK's own support doc spent a bring-up session chasing. The shipped C3 boards keep
+               // their validated clocks; moving those is a separate change with its own device run.
     // SD is native SDMMC (see the sdmmc field below) — the card is silent to SPI-mode CMD0 on
     // hardware. This SPI SdPins entry is retained only for its powerEnable=GPIO5, the SD enable
     // used by the SDMMC mount path. GPIO5 is ACTIVE-LOW: SdmmcBlockDevice pulses it HIGH→LOW
