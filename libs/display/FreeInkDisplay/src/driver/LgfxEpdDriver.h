@@ -54,6 +54,21 @@ class LgfxEpdDriver : public PanelDriver {
   void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;
   void cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) override;
 
+  // Native multi-level path. The composition canvas this driver already keeps is
+  // an 8-bit grayscale sprite, and Panel_EPD quantises it to the panel's 4-bpp
+  // buffer with a Bayer cell on every write outside the fast modes -- so the
+  // levels between the two AA greys cost nothing but a host willing to paint
+  // them.
+  //
+  // How many there are is a property of the WAVEFORM, not the panel: simulating
+  // the clean bank shows the vendor tables collapsing the nominal 16 onto 9-14
+  // distinct optical positions depending on temperature range, unevenly spaced.
+  // buildGrayResponse() measures that at begin() and inverts it; grayLevels()
+  // reports what came out.
+  uint8_t grayLevels() const override;
+  uint8_t* borrowGray8Canvas(uint16_t* stride) override;
+  void displayGray8Canvas(EpdBus& bus, RefreshMode mode, bool turnOff) override;
+
  private:
   const LgfxEpdConfig& _cfg;
 };

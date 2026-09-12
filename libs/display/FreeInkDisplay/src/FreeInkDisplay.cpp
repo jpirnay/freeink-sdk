@@ -797,6 +797,35 @@ void FreeInkDisplay::displayGrayscaleFrame(RefreshMode mode, bool turnOffScreen)
   // waveform and is verified flicker-free on the hardware, does not swap either.
 }
 
+uint8_t FreeInkDisplay::grayLevels() const {
+  // Inverted output is deliberately a crisp B/W mode; a grey ramp does not
+  // survive the inversion, so report the dual-plane floor and let callers take
+  // their existing path. Same guard as supportsGrayFrame().
+  if (_inverted || !_driver) return 4;
+  return _driver->grayLevels();
+}
+
+uint8_t* FreeInkDisplay::borrowGray8Canvas(uint16_t* stride) {
+  if (_inverted || _inversionDirty || !_driver) return nullptr;
+  // The host is about to write the driver's own buffer: no refresh may be
+  // reading it, and no queued async push may land on top of what it paints.
+  syncPendingAsync();
+  return _driver->borrowGray8Canvas(stride);
+}
+
+void FreeInkDisplay::displayGray8Canvas(RefreshMode mode, bool turnOffScreen) {
+  if (_inverted || _inversionDirty || !_driver) return;
+  syncPendingAsync();
+  // The frame came from the canvas, not from frameBuffer, so neither the shadow
+  // nor the RED baseline describes what is on the panel any more.
+  _shadowValid = false;
+  _redRamSynced = false;
+  _driver->displayGray8Canvas(_bus, toInternal(mode), turnOffScreen);
+  // No swapBuffers(), for the same reason displayGrayscaleFrame() omits it: the
+  // driver diffs against its own panel buffer and never reads `prev`, so a swap
+  // would only leave frameBuffer pointing at an older page.
+}
+
 void FreeInkDisplay::displayGrayBuffer(bool turnOffScreen, const unsigned char* lut, bool factoryMode) {
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
   Serial.printf("[EPD] displayGrayBuffer\n");

@@ -2,6 +2,7 @@
 
 #include <BoardConfig.h>
 
+#include <cmath>
 #include <cstring>
 
 #if FREEINK_DRIVER_LGFX_EPD
@@ -211,6 +212,165 @@ void overlayCanvasGray() {
   }
 }
 
+// --- panel optical response ------------------------------------------------
+//
+// The panel's 16 canvas levels are NOT evenly spaced in reflectance, and on this
+// waveform they are not even 16 distinct levels. Simulating the clean bank's
+// columns for the LilyGo's mid temperature range gives, per canvas level:
+//
+//   level:    0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15
+//   optical:  0  3  5  5  5  6  6  7  8  9  9  9 12 13 15 17
+//
+// Eleven distinct positions out of a 17-frame span, bunched hard in the middle:
+// levels 2-4 are one shade, 9-11 another. Handing such a panel a LINEAR ramp
+// spends most of the input range inside that cluster, and the result reads as
+// about six bands -- which is what a 16-level sleep image first looked like on
+// the hardware, near enough to the 4-level one to be worth nothing.
+//
+// So the ramp is linearised against the panel instead of against the encoding:
+// equal steps of input luminance become equal steps of OPTICAL position, with
+// Panel_EPD's Bayer cell dithering between the levels that bracket each target.
+//
+// Derived from the LUT at begin() rather than tabulated, so regenerating the
+// waveform (or picking a different temperature range, which changes both the
+// spacing AND the count) carries the correction along with it.
+
+// Display-response brightening, applied before the optical linearisation below.
+//
+// Linearising against the waveform makes output REFLECTANCE track input
+// luminance, which is correct in the physical sense and too dark in the visual
+// one: this panel's white is a fraction of paper's, so a mid-grey rendered at
+// exactly half reflectance reads much darker than the same pixel on a monitor.
+// The dual-plane path has always compensated for this -- the whole difference
+// between quantizeGray4's DisplayTuned and Native modes is thresholds of
+// 30/50/140 against the even 43/128/213, described there as "a deliberate,
+// output-referred brightening".
+//
+// Deliberately NOT reverse-engineered from those thresholds. They decide which
+// of four levels a pixel lands on, and reading them as a transfer function
+// implies a shadow segment mapping 30..50 onto 43..128 -- an enormous contrast
+// boost across 20 input values that would posterise everything it touched. Four
+// thresholds simply do not determine a curve. A gamma does the same job smoothly
+// and has one number to argue about.
+//
+// That number wants a human looking at the panel, so it is a build flag. Raise
+// it to brighten.
+#ifndef FREEINK_GRAY8_GAMMA
+#define FREEINK_GRAY8_GAMMA 2.2f
+#endif
+
+uint8_t g_grayRemap[256];    // linear luminance -> canvas byte
+uint8_t g_grayOptical[16];   // canvas level -> final optical position
+uint8_t g_grayDrive = 0;     // rail-to-rail drive length, in frames
+uint8_t g_grayDistinct = 4;  // optical positions this bank actually resolves
+bool g_grayRemapReady = false;
+
+// Walk one destination column and report where a pixel ends up, in frames above
+// the black rail. Drive codes are the vendor's: 1 = toward black, 2 = toward
+// white, 0 = undriven.
+int simulateGrayColumn(const uint32_t* lut, size_t steps, int level, int start, int rail) {
+  int pos = start;
+  const int shift = level * 2;
+  for (size_t phase = 0; phase < steps; ++phase) {
+    const uint8_t code = (lut[phase] >> shift) & 3;
+    if (code == 1) {
+      --pos;
+    } else if (code == 2) {
+      ++pos;
+    }
+    if (pos < 0) pos = 0;
+    if (pos > rail) pos = rail;
+  }
+  return pos;
+}
+
+void buildGrayResponse(const uint32_t* lut, size_t steps) {
+  g_grayRemapReady = false;
+  g_grayDistinct = 4;
+  if (!lut || steps == 0) return;
+
+  // The rail-to-rail drive length is the largest clamp at which EVERY column
+  // still lands on ONE position from every starting state. That source
+  // independence is exactly the property the vendor bank is cut for (see
+  // tools/gen_ed047tc2_waveform.py), so searching for it derives the number and
+  // checks the table is the shape this code assumes, in one pass. Scanning
+  // upward and stopping at the first failure costs ~drive iterations, not 64:
+  // the property holds for every rail below the true one.
+  int drive = 0;
+  for (int rail = 1; rail <= 63; ++rail) {
+    bool independent = true;
+    for (int level = 0; level < 16 && independent; ++level) {
+      const int first = simulateGrayColumn(lut, steps, level, 0, rail);
+      for (int start = 1; start <= rail; ++start) {
+        if (simulateGrayColumn(lut, steps, level, start, rail) != first) {
+          independent = false;
+          break;
+        }
+      }
+    }
+    if (!independent) break;
+    drive = rail;
+  }
+  if (drive < 2) {
+    Serial.printf("[epd] gray response: no source-independent rail found; native grayscale disabled\n");
+    return;
+  }
+
+  bool seen[64] = {false};
+  uint8_t distinct = 0;
+  for (int level = 0; level < 16; ++level) {
+    g_grayOptical[level] = static_cast<uint8_t>(simulateGrayColumn(lut, steps, level, 0, drive));
+    if (!seen[g_grayOptical[level]]) {
+      seen[g_grayOptical[level]] = true;
+      ++distinct;
+    }
+  }
+  // Monotonicity is what makes the inversion below well defined. A bank that
+  // fails it is not one this correction can describe, so leave the remap off and
+  // let the host fall back to the dual-plane path rather than ship a ramp that
+  // goes backwards somewhere in the middle.
+  for (int level = 1; level < 16; ++level) {
+    if (g_grayOptical[level] < g_grayOptical[level - 1]) {
+      Serial.printf("[epd] gray response: non-monotonic at level %d; native grayscale disabled\n", level);
+      return;
+    }
+  }
+
+  g_grayDrive = static_cast<uint8_t>(drive);
+  g_grayDistinct = distinct;
+
+  for (int v = 0; v < 256; ++v) {
+    const float brightened = powf(static_cast<float>(v) / 255.0f, 1.0f / (FREEINK_GRAY8_GAMMA));
+    const float target = brightened * drive;
+    if (target >= g_grayOptical[15]) {
+      g_grayRemap[v] = 255;
+      continue;
+    }
+    // The LAST level of the plateau at or below the target, so the dither pairs
+    // it with a level of a DIFFERENT shade. Pairing within a plateau would
+    // spread a pixel over two encodings of the same optical position and buy
+    // nothing.
+    int lower = 0;
+    for (int level = 0; level < 15; ++level) {
+      if (g_grayOptical[level] <= target && g_grayOptical[level + 1] > target) lower = level;
+    }
+    const float lo = g_grayOptical[lower];
+    const float hi = g_grayOptical[lower + 1];
+    const float frac = (hi > lo) ? (target - lo) / (hi - lo) : 0.0f;
+    // Panel_EPD reads a canvas byte c as level ((c + bayer - 8) >> 4), so
+    // c = level * 16 + 8 lands exactly and the values between dither across the
+    // pair in sixteenths.
+    const int byte = static_cast<int>((static_cast<float>(lower) + frac) * 16.0f + 8.5f);
+    g_grayRemap[v] = static_cast<uint8_t>(byte < 0 ? 0 : (byte > 255 ? 255 : byte));
+  }
+  g_grayRemapReady = true;
+
+  Serial.printf("[epd] gray response: %u frames of drive, %u distinct levels, gamma %.2f, optical", drive, distinct,
+                static_cast<double>(FREEINK_GRAY8_GAMMA));
+  for (int level = 0; level < 16; ++level) Serial.printf(" %u", g_grayOptical[level]);
+  Serial.printf("\n");
+}
+
 // The epd_mode of the last base push. Panel_EPD's per-pixel diff keys on the
 // epd_mode LUT offset, so the grayscale overlay must be pushed with the SAME mode
 // the base used or every pixel is re-driven (a full-screen flash). displayGray()
@@ -335,6 +495,9 @@ void LgfxEpdDriver::begin(EpdBus& bus) {
   g_grayDark = _cfg.grayDark;
   g_grayLight = _cfg.grayLight;
   allocCanvas(BoardConfig::ACTIVE.displayWidth, BoardConfig::ACTIVE.displayHeight);
+  // Against lutText: displayGray8Canvas() forces the clean bank, so that is the
+  // waveform whose response the correction has to invert.
+  buildGrayResponse(_cfg.lutText, _cfg.lutTextStep);
 #endif
 }
 
@@ -459,6 +622,69 @@ void LgfxEpdDriver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
   fillCanvasBW(bw);
 #else
   (void)bw;
+#endif
+}
+
+uint8_t* LgfxEpdDriver::borrowGray8Canvas(uint16_t* stride) {
+#if FREEINK_DRIVER_LGFX_EPD
+  if (!g_canvas) return nullptr;
+  auto* buf = static_cast<uint8_t*>(g_canvas->getBuffer());
+  if (!buf) return nullptr;
+  // Never hand out a buffer the panel task may still be scanning.
+  g_dev.waitDisplay();
+  if (stride) *stride = g_w;
+  return buf;
+#else
+  (void)stride;
+  return nullptr;
+#endif
+}
+
+// Display a host-painted 8-bit canvas at the panel's full 16 levels.
+//
+// No plane encoding and no B/W base: the canvas IS the frame. pushCanvasGraded()
+// writes it under epd_quality, which is the branch of Panel_EPD::_draw_pixels()
+// that keeps sixteen levels -- `min(15, max(0, (v + bayer - 8) >> 4))` -- rather
+// than the fast branch that thresholds every pixel to a rail.
+//
+// The refresh mode is forced to the clean bank rather than taken from the caller.
+// The fast bank carries columns for the two AA greys and nothing else, so a
+// mid-level asked of it lands on a column the LUT leaves undriven and the pixel
+// stays black. PanelDriver::displayGray8Canvas documents the substitution.
+uint8_t LgfxEpdDriver::grayLevels() const {
+#if FREEINK_DRIVER_LGFX_EPD
+  // What the bank measurably resolves, not what the panel is sold as. The
+  // datasheet's 16 is the encoding; buildGrayResponse() counts the distinct
+  // optical positions the vendor waveform actually lands (11 at room
+  // temperature, 9 at the warm end), and reports the dual-plane floor of 4 if
+  // the response could not be derived -- which routes callers back to the
+  // plane path rather than promising depth this driver cannot deliver.
+  return g_grayDistinct;
+#else
+  return 4;
+#endif
+}
+
+void LgfxEpdDriver::displayGray8Canvas(EpdBus& bus, RefreshMode mode, bool turnOff) {
+  (void)bus;
+  (void)mode;
+#if FREEINK_DRIVER_LGFX_EPD
+  if (!g_canvas) return;
+  // Linearise against the panel. The host paints in even steps of luminance;
+  // this turns them into even steps of REFLECTANCE, which on this waveform is a
+  // very different ramp (see buildGrayResponse). One pass over the canvas with a
+  // byte LUT, on the frame that is about to be thrown at a 51-phase refresh.
+  if (g_grayRemapReady) {
+    if (auto* buf = static_cast<uint8_t*>(g_canvas->getBuffer())) {
+      const size_t pixels = static_cast<size_t>(g_w) * g_h;
+      for (size_t i = 0; i < pixels; ++i) buf[i] = g_grayRemap[buf[i]];
+    }
+  }
+  g_lastBaseEpdMode = lgfx::epd_mode::epd_text;
+  pushCanvasGraded(g_lastBaseEpdMode);
+  if (turnOff) g_dev.sleep();
+#else
+  (void)turnOff;
 #endif
 }
 

@@ -256,6 +256,20 @@ class FreeInkDisplay {
   // the planes' meaning does not survive inversion).
   bool supportsGrayFrame() const;
   void displayGrayscaleFrame(RefreshMode mode, bool turnOffScreen = false);
+
+  // Grey levels this panel can land in one refresh. Four on every dual-plane
+  // controller -- that is the size of the (old, new) selector state space, not a
+  // tuning choice -- and more only where the driver keeps a multi-bit buffer of
+  // its own. Callers use it to choose a rendering strategy, so it reports 4
+  // whenever the borrow below cannot be served, inverted output included.
+  uint8_t grayLevels() const;
+  // Borrow the driver's composition buffer to paint 8-bit grey into directly:
+  // one byte per pixel (0x00 black, 0xFF white), `stride` bytes per row, panel
+  // height rows, panel orientation. nullptr when unavailable. The loan ends at
+  // displayGray8Canvas() or at the next ordinary refresh, which rebuilds the
+  // buffer from the 1-bpp framebuffer regardless.
+  uint8_t* borrowGray8Canvas(uint16_t* stride);
+  void displayGray8Canvas(RefreshMode mode, bool turnOffScreen = false);
   void displayGrayCalibration(uint16_t customX, uint16_t customY, uint16_t customW, uint16_t customH);
 
   void refreshDisplay(RefreshMode mode = FAST_REFRESH, bool turnOffScreen = false);
