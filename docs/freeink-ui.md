@@ -235,7 +235,7 @@ screen.header("Search");
 
 freeink::ui::QwertyKeyboardProps keys;
 keys.keyAction = ActionKeyboardKey;
-screen.qwertyKeyboard(keys, 144, freeink::ui::LayoutAnchor::Bottom);
+screen.qwertyKeyboard(keys, 0, freeink::ui::LayoutAnchor::Bottom);
 
 screen.list(results, resultCount, selected, ActionOpen);
 ```
@@ -328,8 +328,7 @@ The `Screen` API is also the target for design-time tooling. The bundled
       "action": "keyboardKey",
       "shiftAction": "keyboardShift",
       "deleteAction": "keyboardDelete",
-      "okAction": "keyboardOk",
-      "height": 144
+      "okAction": "keyboardOk"
     },
     {
       "type": "list",
@@ -730,6 +729,29 @@ keyboard.symbols = state.symbols;
 qwertyKeyboard(ui, keyboardRect, keyboard);
 ```
 
+`Screen::keyboard` and `Screen::qwertyKeyboard` use the full safe-area width,
+including the space outside text-content side margins. Their automatic height
+allocates at least 64px per row, scaling to 80px on a 480px-wide screen: 348px
+for four rows, or 434px with a dedicated number row. On short screens the total
+is capped at 50% of the safe height plus the extra row spacing, and the remaining
+content space. An explicit
+height still overrides automatic sizing. Low-level calls with a `Rect` use that
+rectangle exactly; reserve `keyboardPreferredHeight(width, layout.rowCount)`
+pixels to get the same taller rows there.
+
+Keys are borderless by default, with a filled highlight when selected or pressed. Primary labels
+use the body font slot, with smaller alternate hints. Set `labelText.font` to a
+larger registered font and `controlText.font` to a smaller font for word labels
+such as Shift or localized OK text. The gallery uses 36px letters, 24px control
+labels, and 13px alternate hints on a 480×800 display, with the five-row keyboard
+occupying the lower 416px. Rows are separated by 6px (`rowGap`), while the
+horizontal key spacing remains 2px (`gap`). Selected and pressed highlights are
+about 20% shorter and centered on the labels, without reducing hit targets; alternate
+hints keep the same position and 10px right padding in every state, inside the
+highlight area. Selecting or pressing a key changes only the hint color. Keys with alternate
+hints reserve 4px of extra headroom above the primary glyph, with matching
+clearance below so the highlight stays centered.
+
 The keyboard is stateless like every component: Shift and mode ("?123"/"ABC")
 keys only report their actions. With `symbols` set, `shifted` selects the
 second symbols page — the shift slot reads "#+=" on page one and "123" on page
@@ -976,6 +998,26 @@ freeink::ui::list(ui, rect, props);
 `listTopIndexFor` scrolls the window the minimal amount to keep the selection
 visible and clamps to the valid range, so GPIO up/down navigation gets correct
 scrolling for free.
+
+Rows are not all the same height: a wrapped label or subtitle grows one, so a
+layout routinely fits fewer indexes than `listVisibleRows()` estimates. Screens
+that scroll (swipe or button navigation) should therefore own a `ListNav` and
+call `nav.syncToProps(body, rowHeight, rowGap, count, props)` right before
+`list()`. `list()` reports the viewport it actually laid out back through
+`props.nav`, which gives the nav the real page size (`pageRows()`, the delta to
+page by) and lets it keep a clipped tail reachable. Because that feedback
+arrives only after a layout, a nav-managed screen must render in a small loop:
+
+```cpp
+for (int pass = 0; pass < 8; ++pass) {
+  app.render();
+  if (!nav.consumeRebuildNeeded()) break;
+}
+```
+
+Without the loop a clipped list can paint one frame with the selection or the
+scroll indicator missing. Callers repaint each pass over the previous one, so
+`list()` keeps the row geometry stable across the passes of a single render.
 
 ### Dialogs
 
