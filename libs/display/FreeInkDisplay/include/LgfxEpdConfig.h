@@ -68,11 +68,63 @@ struct LgfxEpdConfig {
   // the greys still come out dithered there, which is a waveform gap on that
   // board, not something this driver can paper over.
   bool grayNudgeInFastBank = false;
+
+  // True when a Half refresh should go out through the DIFFERENTIAL bank rather
+  // than the clean one, leaving Full as the board's only clean refresh.
+  //
+  // Set this on a board whose epd_fast LUT saturates every drive it makes -- each
+  // column carrying a full rail-to-rail impulse, so the destination lands from any
+  // source and the pixel's history is erased by the clamp. Such a bank does not
+  // accumulate ghosting, which is what makes it safe to spend on the periodic and
+  // post-transition refreshes that Half covers.
+  //
+  // The gain is not speed, it is the artefact the clean bank produces here: see
+  // epdModeFor() in LgfxEpdDriver.cpp for why two consecutive clean refreshes on
+  // such a panel show both pages at once and leave the old one as an imprint.
+  //
+  // Left false for a board on LovyanGFX's stock LUTs, whose fast bank drives the
+  // rails for a fixed few frames and does need the clean bank behind it.
+  bool halfUsesFastBank = false;
 };
 
 // Canvas byte that quantises to exactly `level` for every Bayer cell.
-constexpr uint8_t grayLevelByte(uint8_t level) {
-  return static_cast<uint8_t>((level << 4) | 8);
+constexpr uint8_t grayLevelByte(uint8_t level) { return static_cast<uint8_t>((level << 4) | 8); }
+
+// --- LUT block budget ------------------------------------------------------
+//
+// Panel_EPD packs a pixel's refresh progress into a uint16_t as
+// (lut_block << 8) | level, and blit_dmabuf reads it back through a SIGNED
+// cast and skips the pixel when the result is negative -- bit 15 means "this
+// pixel is idle". So no block index may ever reach 128: the five banks
+// together have to fit in 128 blocks.
+//
+// Overrunning it fails SILENTLY and globally. Every pixel whose waveform
+// reaches block 128 reads as idle mid-refresh, so refreshes stop completing --
+// which is how a cool-temperature waveform once blanked this panel below ~27 C
+// while warmer boots worked, and it cost a debugging session because nothing
+// reports it. Hence lgfxEpdLutBlocks() and the check in LgfxEpdDriver::begin().
+inline constexpr size_t LGFX_EPD_LUT_BLOCKS_MAX = 128;
+
+// Panel_EPD's hardcoded eraser bank, prepended to every epd_text / epd_quality
+// refresh and not supplied by config. Two drive rows, a park row and the
+// terminator (Panel_EPD.cpp, lut_eraser / lut_eraser_step).
+inline constexpr size_t LGFX_EPD_LUT_BLOCKS_ERASER = 4;
+
+// What Panel_EPD substitutes into a slot this config leaves empty. Counted from
+// its stock tables; a board on all four pays 85 of the 128 blocks.
+inline constexpr size_t LGFX_EPD_LUT_BLOCKS_STOCK_QUALITY = 32;
+inline constexpr size_t LGFX_EPD_LUT_BLOCKS_STOCK_TEXT = 32;
+inline constexpr size_t LGFX_EPD_LUT_BLOCKS_STOCK_FAST = 10;
+inline constexpr size_t LGFX_EPD_LUT_BLOCKS_STOCK_FASTEST = 7;
+
+// Blocks this config will actually occupy, stock substitution included. Mirrors
+// the accumulation in Panel_EPD::init_intenal().
+constexpr size_t lgfxEpdLutBlocks(const LgfxEpdConfig& c) {
+  return LGFX_EPD_LUT_BLOCKS_ERASER +
+         ((c.lutQuality && c.lutQualityStep) ? c.lutQualityStep : LGFX_EPD_LUT_BLOCKS_STOCK_QUALITY) +
+         ((c.lutText && c.lutTextStep) ? c.lutTextStep : LGFX_EPD_LUT_BLOCKS_STOCK_TEXT) +
+         ((c.lutFast && c.lutFastStep) ? c.lutFastStep : LGFX_EPD_LUT_BLOCKS_STOCK_FAST) +
+         ((c.lutFastest && c.lutFastestStep) ? c.lutFastestStep : LGFX_EPD_LUT_BLOCKS_STOCK_FASTEST);
 }
 
 }  // namespace freeink

@@ -1,11 +1,11 @@
 #include <BoardT5S3.h>
-
 #include <InputManager.h>
 #include <SPI.h>
 #include <Wire.h>
-#include <cassert>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+
+#include <cassert>
 
 namespace BoardT5S3 {
 namespace {
@@ -82,6 +82,8 @@ ScopedI2CLock::~ScopedI2CLock() {
     locked_ = false;
   }
 }
+
+SemaphoreHandle_t i2cMutexHandle() { return ensureI2CMutex(); }
 
 void beginI2C() {
   ensureI2CMutex();

@@ -8,7 +8,10 @@
 #if FREEINK_DRIVER_LGFX_EPD
 #include <M5GFX.h>  // pulls LovyanGFX; added to lib_deps only on the LilyGo env
 #include <esp_heap_caps.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <lgfx/v1/platforms/esp32/Bus_EPD.h>
+
 #include <lgfx/v1/platforms/esp32/Panel_EPD.hpp>
 #endif
 
@@ -21,6 +24,41 @@ namespace {
 // driver is a singleton (one panel), so a file-scope pointer is fine and mirrors
 // how M5GFX/LovyanGFX use global device objects.
 const LgfxEpdPowerHooks* g_hooks = nullptr;
+
+// Serialises powerControl(). Created in LgfxEpdDriver::begin() before anything
+// can call it -- see PowerLock and FreeInkBusEPD::powerControl.
+SemaphoreHandle_t g_powerMutex = nullptr;
+
+// Scope guard for g_powerMutex.
+//
+// powerControl() is reached from TWO tasks: LovyanGFX's panel task raises and
+// drops the rails around every refresh (Panel_EPD::task_update), and the render
+// task drops them through Panel_EPD::setSleep() whenever a caller passes
+// turnOffScreen -- which the fading-fix setting makes an ordinary refresh, not a
+// corner case. The function is a read-decide-act on _pwr_on/_pwr_known, two
+// plain bools with no synchronisation of their own, so interleaving the two
+// tasks can leave the cache believing the rails are up when they are down (the
+// next refresh clocks a frame out unpowered) or down when they are up (deep
+// sleep with the EPD PMIC live -- exactly what the board's powerOff hook exists
+// to prevent).
+//
+// Lock order is POWER then I2C, always: the hooks this guard brackets take the
+// board's I2C mutex, and nothing that holds I2C comes back round to
+// powerControl. Recursive to match the rest of the codebase's bus locks.
+//
+// A null mutex means powerControl() ran before begin(), which is a call-order
+// bug rather than a race; degrade to unguarded rather than fault the panel.
+class PowerLock {
+ public:
+  PowerLock() {
+    if (g_powerMutex) xSemaphoreTakeRecursive(g_powerMutex, portMAX_DELAY);
+  }
+  ~PowerLock() {
+    if (g_powerMutex) xSemaphoreGiveRecursive(g_powerMutex);
+  }
+  PowerLock(const PowerLock&) = delete;
+  PowerLock& operator=(const PowerLock&) = delete;
+};
 
 // Bus subclass that defers the board's power topology to injected hooks. Matches
 // the two override points LovyanGFX exposes: init() (pin setup) and
@@ -36,6 +74,7 @@ class FreeInkBusEPD : public lgfx::Bus_EPD {
   }
 
   bool powerControl(const bool powerOn) override {
+    PowerLock powerLock;  // two tasks reach this; see PowerLock
     // _pwr_known guards the short-circuit below. Without it a hook failure was
     // unrecoverable: _pwr_on was assigned whether or not the rails actually
     // moved, so one failed transition made the cached state a lie that no later
@@ -125,11 +164,39 @@ class FreeInkLgfxEpd : public lgfx::LGFX_Device {
 
 FreeInkLgfxEpd g_dev;
 
+// Set from the active config in begin(); see LgfxEpdConfig::halfUsesFastBank.
+bool g_halfUsesFastBank = false;
+
+// Which LovyanGFX bank each of our three refresh modes goes out under.
+//
+// Full is always the clean bank: that is the mode a user asks for by name when
+// the panel needs scrubbing, and the only one whose cost is the point.
+//
+// Half is the interesting one, because on this controller the clean bank is NOT
+// simply a slower, better refresh. Panel_EPD's epd_text branch drives a pixel
+// unless it was ALREADY REQUESTED WHITE and stays white (Panel_EPD.cpp, the
+// `white != d1 || d1 != s0` test), so a clean refresh whose predecessor was also
+// clean leaves the white background untouched and drives only the union of the
+// old and the new ink. On a bank that rail-normalizes before it lands -- the
+// ED047TC2 clean table drives every touched pixel to black, then to white, then
+// down to its level -- that reads on the glass as both pages standing at once
+// before the new one resolves, and the old ink then settles on the waveform's
+// white beside a background that was never driven, leaving its shape as a faint
+// imprint. Two clean refreshes in a row is not a rare sequence: Home arms one to
+// launch the reader and the reader arms one to come back.
+//
+// So a board whose differential bank already saturates every drive it makes can
+// hand Half to that bank instead and get a single-phase, artefact-free refresh --
+// the same one its page turns use -- while keeping Full as the real scrub. A
+// board on LovyanGFX's stock LUTs leaves the flag false and is unchanged.
 lgfx::epd_mode::epd_mode_t epdModeFor(RefreshMode m) {
   switch (m) {
-    case RefreshMode::Full: return lgfx::epd_mode::epd_text;
-    case RefreshMode::Half: return lgfx::epd_mode::epd_text;
-    default: return lgfx::epd_mode::epd_fast;
+    case RefreshMode::Full:
+      return lgfx::epd_mode::epd_text;
+    case RefreshMode::Half:
+      return g_halfUsesFastBank ? lgfx::epd_mode::epd_fast : lgfx::epd_mode::epd_text;
+    default:
+      return lgfx::epd_mode::epd_fast;
   }
 }
 
@@ -378,6 +445,22 @@ void buildGrayResponse(const uint32_t* lut, size_t steps) {
 // page refreshed with those modes flashed when its AA pass ran.
 lgfx::epd_mode::epd_mode_t g_lastBaseEpdMode = lgfx::epd_mode::epd_fast;
 
+#if defined(LGFX_EPD_PUSH_TRACE) && LGFX_EPD_PUSH_TRACE
+// The bank a refresh went out under, NAMED rather than numbered.
+//
+// The numbering invites exactly the wrong reading: LovyanGFX's enum starts at 1
+// (quality=1, text=2, fast=3, fastest=4), so the fast bank is 3 and a "2" is the
+// CLEAN bank -- the one that prepends lut_eraser and rail-normalizes -- not a
+// faster one. Shared by both push paths so the two traces cannot disagree.
+const char* epdModeName(lgfx::epd_mode::epd_mode_t mode) {
+  return mode == lgfx::epd_mode::epd_quality   ? "quality"
+         : mode == lgfx::epd_mode::epd_text    ? "text(clean bank, eraser)"
+         : mode == lgfx::epd_mode::epd_fast    ? "fast(diff bank)"
+         : mode == lgfx::epd_mode::epd_fastest ? "fastest"
+                                               : "?";
+}
+#endif
+
 // Wait out a refresh this driver just queued.
 //
 // waitDisplay() alone can return before the refresh has begun: Panel_EPD's
@@ -409,12 +492,24 @@ void pushCanvas(lgfx::epd_mode::epd_mode_t epdMode) {
 #endif
   g_dev.setEpdMode(epdMode);
   g_canvas->pushSprite(0, 0);  // commits to the panel; Panel_EPD runs the refresh
+#if defined(LGFX_EPD_PUSH_TRACE) && LGFX_EPD_PUSH_TRACE
+  const uint32_t tSprite = millis();
+#endif
   settleDisplay();
 #if defined(LGFX_EPD_PUSH_TRACE) && LGFX_EPD_PUSH_TRACE
   // The PLAIN push, traced alongside the graded one so the log shows EVERY
   // refresh this panel is asked for. A second push nobody accounts for is
   // indistinguishable from a slow waveform when only one of the two is traced.
-  Serial.printf("[epd] plain push: mode=%d took=%lums\n", (int)epdMode, (unsigned long)(millis() - tStart));
+  //
+  // Split like the graded push, and for a sharper reason: this is the path every
+  // 1-bit UI frame takes, so it is where an unexplained refresh cost has to be
+  // attributed. sprite= is the canvas expanded into Panel_EPD's 4bpp buffer
+  // (PSRAM to PSRAM, per pixel) plus the queue send that auto-display performs;
+  // settle= is the waveform itself. A large sprite= means the cost was never the
+  // panel; a settle= near zero means settleDisplay() returned before the refresh
+  // began and the number above it is fiction, not speed.
+  Serial.printf("[epd] plain push: mode=%s sprite=%lums settle=%lums\n", epdModeName(epdMode),
+                (unsigned long)(tSprite - tStart), (unsigned long)(millis() - tSprite));
 #endif
 }
 
@@ -461,12 +556,7 @@ void pushCanvasGraded(lgfx::epd_mode::epd_mode_t refreshMode) {
   //
   // display= is near zero by design: Panel_EPD queues the refresh and returns.
   // The waveform is settle=, so that is the number to read.
-  const char* modeName = refreshMode == lgfx::epd_mode::epd_quality   ? "quality"
-                         : refreshMode == lgfx::epd_mode::epd_text    ? "text(clean bank, eraser)"
-                         : refreshMode == lgfx::epd_mode::epd_fast    ? "fast(diff bank)"
-                         : refreshMode == lgfx::epd_mode::epd_fastest ? "fastest"
-                                                                      : "?";
-  Serial.printf("[epd] graded push: mode=%s sprite=%lums display=%lums settle=%lums\n", modeName,
+  Serial.printf("[epd] graded push: mode=%s sprite=%lums display=%lums settle=%lums\n", epdModeName(refreshMode),
                 (unsigned long)(tSprite - tWait), (unsigned long)(tDisplay - tSprite),
                 (unsigned long)(millis() - tDisplay));
 #endif
@@ -488,12 +578,56 @@ void LgfxEpdDriver::begin(EpdBus& bus) {
   (void)bus;
 #if FREEINK_DRIVER_LGFX_EPD
   g_hooks = &_cfg.power;
+  // Before g_dev.init(): that creates the panel task, which can raise the rails
+  // on its first refresh, and the render task can drop them through sleep().
+  // Neither may be the one to allocate this. See PowerLock.
+  if (!g_powerMutex) g_powerMutex = xSemaphoreCreateRecursiveMutex();
+
   g_dev.setup(_cfg, BoardConfig::ACTIVE.displayWidth, BoardConfig::ACTIVE.displayHeight);
+
+  // Waveform budget, checked and reported BEFORE the panel comes up, because
+  // overrunning it has no symptom of its own -- refreshes simply stop
+  // completing (see LGFX_EPD_LUT_BLOCKS_MAX). A board regenerating its
+  // waveform, or picking a longer one for a colder panel, finds out here
+  // instead of from a blank screen.
+  //
+  // The bytes are reported alongside the blocks because Panel_EPD sizes this
+  // allocation `blocks * 256 * sizeof(uint16_t)` and then fills it through a
+  // uint8_t* -- so HALF of it is never touched, and all of it is internal
+  // DMA-capable RAM, which is the scarcest pool on a board whose host
+  // framebuffers also live there. The waste is what a one-line upstream fix
+  // would return, and it scales with the waveform, so it is worth a number
+  // rather than an estimate.
+  {
+    const size_t lutBlocks = lgfxEpdLutBlocks(_cfg);
+    const size_t lutBytes = lutBlocks * 256u * sizeof(uint16_t);
+    if (lutBlocks > LGFX_EPD_LUT_BLOCKS_MAX) {
+      Serial.printf(
+          "[epd] WAVEFORM BUDGET EXCEEDED: %u LUT blocks > %u. Refreshes will truncate mid-waveform and the panel "
+          "will appear dead. Shorten a bank and regenerate.\n",
+          static_cast<unsigned>(lutBlocks), static_cast<unsigned>(LGFX_EPD_LUT_BLOCKS_MAX));
+    } else {
+      Serial.printf("[epd] LUT budget %u/%u blocks (%u spare), %u B internal DMA of which %u B is upstream slack\n",
+                    static_cast<unsigned>(lutBlocks), static_cast<unsigned>(LGFX_EPD_LUT_BLOCKS_MAX),
+                    static_cast<unsigned>(LGFX_EPD_LUT_BLOCKS_MAX - lutBlocks), static_cast<unsigned>(lutBytes),
+                    static_cast<unsigned>(lutBytes / 2u));
+    }
+  }
+
+  const size_t dmaFreeBefore = heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
   g_dev.init();
+  // What the panel actually cost: the LUT, the two scanline buffers and the
+  // internal half of anything else Panel_EPD took. Paired with the budget line
+  // above so a change in either is attributable without a bisect.
+  Serial.printf("[epd] panel init took %u B internal DMA (%u B -> %u B free)\n",
+                static_cast<unsigned>(dmaFreeBefore - heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL)),
+                static_cast<unsigned>(dmaFreeBefore),
+                static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL)));
   g_dev.setRotation(_cfg.rotation);
   g_dev.setEpdMode(lgfx::epd_mode::epd_fast);
   g_grayDark = _cfg.grayDark;
   g_grayLight = _cfg.grayLight;
+  g_halfUsesFastBank = _cfg.halfUsesFastBank;
   allocCanvas(BoardConfig::ACTIVE.displayWidth, BoardConfig::ACTIVE.displayHeight);
   // Against lutText: displayGray8Canvas() forces the clean bank, so that is the
   // waveform whose response the correction has to invert.
@@ -735,7 +869,8 @@ PanelDriver& lgfxEpdDriver() {
   return instance;
 }
 #elif FREEINK_DRIVER_LGFX_EPD
-#error "FREEINK_DRIVER_LGFX_EPD requires a board config: define `const LgfxEpdConfig& yourConfig();` in namespace freeink and build with -DFREEINK_LGFX_EPD_CONFIG=yourConfig"
+#error \
+    "FREEINK_DRIVER_LGFX_EPD requires a board config: define `const LgfxEpdConfig& yourConfig();` in namespace freeink and build with -DFREEINK_LGFX_EPD_CONFIG=yourConfig"
 #else
 // Driver not selected in this build: provide a stub so the accessor still links if
 // referenced. Never called (the facade only selects it under FREEINK_DRIVER_LGFX_EPD).

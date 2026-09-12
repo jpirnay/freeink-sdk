@@ -232,8 +232,8 @@ freeink::LgfxEpdConfig buildConfig() {
   // decides how the panel looks, it is chosen once and never revisited, and a
   // thermistor that reads high silently under-drives every transition. Without
   // this there is no way to tell a waveform problem from a wrong temperature.
-  Serial.printf("[epd] panel %d C%s -> waveform range %u (%u..%u C), %u drive frames, AA greys at level %u/%u\n",
-                tempC, measuredOk ? "" : " (assumed, thermistor read failed)", static_cast<unsigned>(range),
+  Serial.printf("[epd] panel %d C%s -> waveform range %u (%u..%u C), %u drive frames, AA greys at level %u/%u\n", tempC,
+                measuredOk ? "" : " (assumed, thermistor read failed)", static_cast<unsigned>(range),
                 freeink::ed047tc2::kTempRanges[range].minC, freeink::ed047tc2::kTempRanges[range].maxC,
                 freeink::ed047tc2::kDriveFrames[range], freeink::ed047tc2::kGrayLevelDark[range],
                 freeink::ed047tc2::kGrayLevelLight[range]);
@@ -285,6 +285,17 @@ freeink::LgfxEpdConfig buildConfig() {
       // which the B/W base drove the anti-aliased fringes BLACK first: the
       // overlay then saturated them to white — a visible flash — and they
       // settled too light, so the anti-aliasing read as having vanished.
+      true,
+      // halfUsesFastBank: this panel's fast bank is the vendor DU rails run for
+      // the full L[15] frames, so every drive it makes saturates and lands from
+      // any source -- which is why page turns come out ghost-free and with no
+      // intermediate state. The clean bank does land greys more precisely, but
+      // Panel_EPD will not re-drive an already-white background through it, so a
+      // clean refresh following another clean refresh drives only the old and new
+      // ink and leaves the old page's shape behind (see epdModeFor()). Half is
+      // exactly the mode that lands back-to-back -- Home arms one to launch the
+      // reader, the reader arms one to return -- so it goes to the fast bank and
+      // Full stays the clean refresh.
       true,
   };
 }
