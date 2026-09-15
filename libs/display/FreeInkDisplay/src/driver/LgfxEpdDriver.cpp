@@ -185,37 +185,24 @@ bool lastPushUsedCleanBank();
 
 // Which LovyanGFX bank each of our three refresh modes goes out under.
 //
-// Full is always the clean bank: that is the mode a user asks for by name when
-// the panel needs scrubbing, and the only one whose cost is the point.
-// normalizeForCleanBank() runs ahead of it where the panel needs the background
-// made fresh first.
+// Half and Full both take the clean bank, and neither is ever downgraded.
+// normalizeForCleanBank() runs ahead of them where the panel needs the
+// background made fresh first.
 //
-// Half is the interesting one, because on this controller the clean bank is NOT
-// simply a slower, better refresh -- see lastPushUsedCleanBank() above, and
-// LgfxEpdConfig::cleanBankNeedsFreshBackground for the full mechanism. Two clean
-// refreshes in a row is not a rare sequence: Home arms one to launch the reader
-// and the reader arms one to come back.
-//
-// Half is also the mode the host spends on exactly the transitions that should
-// scrub -- entering the reader, returning from it, the reader's own periodic
-// pass -- so handing it permanently to the differential bank, as this used to do,
-// buys the artefact off at the price of the scrub: the board then has no
-// mid-tier refresh at all, Half and Fast are the same waveform, and ghosting
-// accumulates until something asks for Full by name.
-//
-// So take the clean bank for Half whenever it can do its job -- which is
-// whenever the previous refresh did not already use it -- and fall back to the
-// differential bank only for the back-to-back case the panel cannot serve. The
-// fallback is self-correcting: a Half that went out fast leaves the background
-// fresh, so the Half after it gets the clean bank again. A board on LovyanGFX's
-// stock LUTs leaves the flag false and always gets the clean bank here.
+// An earlier version of this DID downgrade Half to the differential bank
+// whenever the previous refresh had used the clean one, on the theory that the
+// back-to-back case was rare. It is not rare, and the downgrade is exactly the
+// wrong trade: Half is the mode a host spends on the transitions that should
+// scrub, so every time the fallback fired the user saw ghosting where they had
+// asked for a clean screen -- returning from the reader after its periodic pass,
+// and every screen following the repair cycle, which is thirteen consecutive
+// Half pushes by construction. Normalizing costs a fraction of a refresh (see
+// below); not scrubbing costs the reason the mode exists.
 lgfx::epd_mode::epd_mode_t epdModeFor(RefreshMode m) {
   switch (m) {
     case RefreshMode::Full:
-      return lgfx::epd_mode::epd_text;
     case RefreshMode::Half:
-      if (!g_cleanBankNeedsFreshBackground) return lgfx::epd_mode::epd_text;
-      return lastPushUsedCleanBank() ? lgfx::epd_mode::epd_fast : lgfx::epd_mode::epd_text;
+      return lgfx::epd_mode::epd_text;
     default:
       return lgfx::epd_mode::epd_fast;
   }
@@ -468,6 +455,13 @@ lgfx::epd_mode::epd_mode_t g_lastBaseEpdMode = lgfx::epd_mode::epd_fast;
 
 bool lastPushUsedCleanBank() { return g_lastBaseEpdMode == lgfx::epd_mode::epd_text; }
 
+// Whether the fastest slot holds a bank that drives nothing -- a single 0u word,
+// which blit_dmabuf reads as "finished" on its first frame. Derived from the
+// config rather than declared by the board, because it IS the config: a board
+// that parks a real waveform there simply does not qualify and pays for the
+// fallback in normalizeForCleanBank(). Set in begin().
+bool g_noDriveBankAvailable = false;
+
 #if defined(LGFX_EPD_PUSH_TRACE) && LGFX_EPD_PUSH_TRACE
 // The bank a refresh went out under, NAMED rather than numbered.
 //
@@ -536,39 +530,50 @@ void pushCanvas(lgfx::epd_mode::epd_mode_t epdMode) {
 #endif
 }
 
-// Make the panel's white background fresh again, so the clean-bank refresh that
-// follows scrubs the whole screen rather than only the ink.
+// Re-tag every pixel so the clean-bank refresh that follows scrubs the whole
+// screen rather than only the ink.
 //
-// Only Panel_EPD's epd_text branch skips a pixel that is already requested white
-// under that same bank, and only when the previous refresh put it there -- so one
-// full-screen drive through ANY other bank clears the condition for every pixel
-// at once. Driving to the white rail through the differential bank is the cheapest
-// one available here that is also known-good: it is the drive every page turn
-// already makes, so it has no ghosting behaviour of its own to explain, and on the
-// glass it reads as the white flash a scrub is expected to open with.
+// Panel_EPD's epd_text branch skips a pixel that is already requested white under
+// that same bank, and `white` embeds the bank's LUT offset -- so the condition is
+// cleared for every pixel at once by one full-screen write through ANY OTHER
+// bank. Nothing has to reach the glass; only the offset stored in the reserved
+// half of _step_framebuf has to change.
 //
-// It writes the panel's own buffer and not the canvas, so the frame the caller is
-// about to push survives untouched -- which matters for displayGray8Canvas(),
-// where the canvas holds grey levels a fast-bank push would Bayer-dither to the
-// rails and show as a speckled preview of the sleep image.
+// That is what makes a no-drive bank the right instrument. blit_dmabuf treats a
+// zero LUT entry as "this pixel is finished" -- it loads the reserved request and
+// marks the pixel idle instead of driving it -- so a bank that is a single 0u
+// word is a complete refresh that takes ONE frame and never touches the ink,
+// while still leaving its own offset behind, which is the whole point. A board
+// with a spare slot already holds exactly that, so this costs a frame and a
+// canvas copy rather than a whole waveform.
 //
-// Costs a whole extra refresh, so it is spent only when the flag says the panel
-// needs it AND the previous refresh actually used the clean bank. Half never
-// reaches here: epdModeFor() routes it to the differential bank in exactly the
-// case this would fire, because a mid-tier refresh cannot afford two waveforms.
+// It has to be epd_fastest rather than epd_quality, even though both slots tend
+// to be spare. The fast modes take the flg_fast branch, which writes
+// d[0] = s0 - 0x8000 and goes straight to the bank; the others prepend
+// lut_eraser, so the pixel would run the eraser's two-frame nudge and then stop
+// with nothing driving it home -- a half-inverted screen that never resolves.
+//
+// A board with no such slot drives the white rail through the differential bank
+// instead: a real refresh, so a real cost, but known-good (it is the drive every
+// page turn makes) and on the glass it reads as the white flash a scrub is
+// expected to open with.
+//
+// Either way this writes the panel's own buffer and not the canvas, so the frame
+// the caller is about to push survives untouched -- which matters for
+// displayGray8Canvas(), where the canvas holds grey levels.
 void normalizeForCleanBank() {
   if (!g_cleanBankNeedsFreshBackground || !lastPushUsedCleanBank()) return;
+  const auto bank = g_noDriveBankAvailable ? lgfx::epd_mode::epd_fastest : lgfx::epd_mode::epd_fast;
   g_dev.waitDisplay();
-  g_dev.setEpdMode(lgfx::epd_mode::epd_fast);
+  g_dev.setEpdMode(bank);
   g_dev.setAutoDisplay(false);
   g_dev.fillScreen(g_dev.color888(255, 255, 255));
   g_dev.setAutoDisplay(true);
-  g_dev.display();
+  g_dev.display();  // covers the rect fillScreen accumulated
   settleDisplay();
-  g_lastBaseEpdMode = lgfx::epd_mode::epd_fast;
+  g_lastBaseEpdMode = bank;
 #if defined(LGFX_EPD_PUSH_TRACE) && LGFX_EPD_PUSH_TRACE
-  Serial.printf("[epd] normalize: white flash through the differential bank
-");
+  Serial.printf("[epd] normalize: re-tag through %s\n", epdModeName(bank));
 #endif
 }
 
@@ -687,6 +692,7 @@ void LgfxEpdDriver::begin(EpdBus& bus) {
   g_grayDark = _cfg.grayDark;
   g_grayLight = _cfg.grayLight;
   g_cleanBankNeedsFreshBackground = _cfg.cleanBankNeedsFreshBackground;
+  g_noDriveBankAvailable = _cfg.lutFastest != nullptr && _cfg.lutFastestStep == 1 && _cfg.lutFastest[0] == 0u;
   allocCanvas(BoardConfig::ACTIVE.displayWidth, BoardConfig::ACTIVE.displayHeight);
   // Against lutText: displayGray8Canvas() forces the clean bank, so that is the
   // waveform whose response the correction has to invert.
@@ -733,12 +739,11 @@ void LgfxEpdDriver::displayGrayFrame(EpdBus& bus, const uint8_t* fb, RefreshMode
   g_dev.waitDisplay();  // never write the canvas while a refresh may be in flight
   fillCanvasBW(fb);
   overlayCanvasGray();
-  // FULL, and HALF wherever epdModeFor() can give it the clean bank, go out
-  // through the GC16-style table, whose columns land every level exactly -- so
-  // the periodic scrub page carries its greys too. FAST, and the HALF that had
-  // to fall back, take the differential bank. Either way the write itself must
-  // be graded: a fast-mode write Bayer-dithers the greys to the rails before
-  // any LUT is consulted.
+  // HALF and FULL go out through the GC16-style clean table, whose columns land
+  // every level exactly, so the periodic scrub page carries its greys too. FAST
+  // takes the differential bank. Either way the write itself must be graded: a
+  // fast-mode write Bayer-dithers the greys to the rails before any LUT is
+  // consulted.
   const auto epdMode = epdModeFor(mode);
   if (epdMode == lgfx::epd_mode::epd_text) normalizeForCleanBank();
   g_lastBaseEpdMode = epdMode;
