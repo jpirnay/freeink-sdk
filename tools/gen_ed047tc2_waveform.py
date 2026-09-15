@@ -51,9 +51,10 @@ walks to its exact level. Destination-indexed yet source-independent, it both
 scrubs residue and resets any accumulated DC bias, because the saturating rail
 visit erases a pixel's drive history.
 
-Panel_EPD keeps one uint8_t block index per bank (lut_2pixel is addressed as
-lindex >> 8), so the five banks together must stay within 255 rows. The
-generator asserts that for every temperature range.
+Panel_EPD reads a pixel's progress word through a signed cast, so no block index
+may reach 128: the five banks together, terminators included, must fit in 128
+rows. The generator asserts that for every temperature range, because overrunning
+it kills every refresh silently.
 
 """
 
@@ -189,17 +190,31 @@ GRAY_TARGET_LIGHT = 0.625
 GRAY_MAX_FRACTION = 0.95
 GRAY_MIN_SEPARATION = 0.08
 
-# Panel_EPD's per-bank offsets are uint8_t block indices, so all five banks
-# (eraser + quality + text + fast + fastest) share a 255-row budget.
-LUT_ROW_BUDGET = 255
-ERASER_ROWS = 3  # LovyanGFX lut_eraser: 2 drive rows + terminator
-UNUSED_SLOT_ROWS = 1  # the board config stubs epd_quality/epd_fastest (see there)
+# All five banks (eraser + quality + text + fast + fastest) are laid out
+# consecutively in one expanded table, and NO BLOCK INDEX MAY EVER REACH 128.
+#
+# Panel_EPD keeps a pixel's refresh progress in a uint16_t as
+# (lut_block << 8) | level, and blit_dmabuf reads it back through a SIGNED cast
+# and skips the pixel when the result is negative -- bit 15 means "this pixel is
+# idle". A pixel advances one block per frame until it reads a zero LUT entry, so
+# the terminator of the LAST bank is the highest index anything reaches: the
+# total row count, terminators included, must be <= 128.
+#
+# Overrunning it fails SILENTLY and GLOBALLY -- every pixel whose waveform crosses
+# block 128 reads as idle mid-refresh, so refreshes stop completing and the panel
+# looks dead. Because a colder range needs longer banks, it can present as a board
+# that works warm and blanks cool. That is what happened here once, at fast start
+# block 131.
+#
+# 255 is NOT the limit, though the uint8_t _lut_offset_table invites that reading:
+# that bounds the offset TYPE, while the signed progress read is what binds.
+LUT_ROW_BUDGET = 128
 
-# The binding constraint is NOT the 255-row table: Panel_EPD stores per-pixel
-# progress in uint16_t and flags fast modes with +0x8000, so a fast bank's
-# STARTING block must be <= 127. Slot order is eraser, quality, text, fast,
-# fastest; with quality stubbed the fast start is eraser + stub + clean.
-FAST_START_BUDGET = 127
+# LovyanGFX lut_eraser, counted from Panel_EPD.cpp: two drive rows, a ~0u no-op
+# row, and the 0u terminator. Four, not three -- undercounting it puts every
+# total and every bank offset one row below the truth, in the unsafe direction.
+ERASER_ROWS = 4
+UNUSED_SLOT_ROWS = 1  # the board config stubs epd_quality/epd_fastest (see there)
 
 
 def pick_gray_levels(impulse):
@@ -344,9 +359,10 @@ HEADER = '''// GENERATED FILE -- DO NOT EDIT BY HAND.
 // compensation: e-ink particles move more slowly when cold, so a cold panel
 // needs a longer push for the same optical result.
 //
-// Panel_EPD addresses its expanded LUT with uint8_t block indices, so all five
-// banks together (eraser + quality + text + fast + fastest) must fit in 255
-// rows. Worst case here: {worst_rows} rows.
+// Panel_EPD reads a pixel's refresh progress through a signed cast, so no block
+// index may reach 128: all five banks together (eraser + quality + text + fast +
+// fastest), terminators included, must fit in 128 rows. Overrunning that stops
+// every refresh completing, with no error. Worst case here: {worst_rows} rows.
 
 #include <ED047TC2Waveform.h>
 
@@ -457,17 +473,18 @@ def main():
         # fastest are stubbed in the board config, so they cost one row each.
         total = ERASER_ROWS + 2 * UNUSED_SLOT_ROWS + (len(cr) + 1) + (len(fr) + 1)
         worst_rows = max(worst_rows, total)
+        # One check, on the total, because the banks are consecutive: the last
+        # bank's terminator sits at block total-1 and is the highest index any
+        # pixel reaches, so bounding the total bounds every bank at once. (A
+        # separate assertion on where the fast bank STARTS would be redundant --
+        # it cannot exceed a total that is already in range.)
         if total > LUT_ROW_BUDGET:
             raise SystemExit(
-                "range %d: %d LUT rows exceeds Panel_EPD's %d-row budget"
-                % (r, total, LUT_ROW_BUDGET)
-            )
-        fast_start = ERASER_ROWS + UNUSED_SLOT_ROWS + (len(cr) + 1)
-        if fast_start > FAST_START_BUDGET:
-            raise SystemExit(
-                "range %d: fast bank starts at block %d > %d -- the 0x8000 fast"
-                " flag would overflow Panel_EPD's uint16 step words and blank"
-                " the display" % (r, fast_start, FAST_START_BUDGET)
+                "range %d: %d LUT rows, %d over budget. Panel_EPD reads a pixel's"
+                " progress word as signed, so block %d would read as idle and"
+                " refreshes would stop completing -- the panel goes dead with no"
+                " error. Shorten a bank."
+                % (r, total, total - LUT_ROW_BUDGET, total - 1)
             )
 
     body = HEADER.format(
