@@ -286,16 +286,14 @@ freeink::LgfxEpdConfig buildConfig() {
       // overlay then saturated them to white — a visible flash — and they
       // settled too light, so the anti-aliasing read as having vanished.
       true,
-      // halfUsesFastBank: this panel's fast bank is the vendor DU rails run for
-      // the full L[15] frames, so every drive it makes saturates and lands from
-      // any source -- which is why page turns come out ghost-free and with no
-      // intermediate state. The clean bank does land greys more precisely, but
-      // Panel_EPD will not re-drive an already-white background through it, so a
-      // clean refresh following another clean refresh drives only the old and new
-      // ink and leaves the old page's shape behind (see epdModeFor()). Half is
-      // exactly the mode that lands back-to-back -- Home arms one to launch the
-      // reader, the reader arms one to return -- so it goes to the fast bank and
-      // Full stays the clean refresh.
+      // cleanBankNeedsFreshBackground: Panel_EPD will not re-drive an
+      // already-white background through the clean bank, so a clean refresh that
+      // follows another clean refresh drives only the old and the new ink and
+      // leaves the old page's shape behind. This panel's fast bank is the vendor
+      // DU rails run for the full L[15] frames, so every drive IT makes saturates
+      // and lands from any source -- which is why page turns come out ghost-free,
+      // and why it is the bank the driver can borrow to stand in for a clean
+      // refresh (Half) or to make the background fresh ahead of one (Full).
       true,
   };
 }

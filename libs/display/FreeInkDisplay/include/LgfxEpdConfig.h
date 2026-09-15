@@ -69,22 +69,30 @@ struct LgfxEpdConfig {
   // board, not something this driver can paper over.
   bool grayNudgeInFastBank = false;
 
-  // True when a Half refresh should go out through the DIFFERENTIAL bank rather
-  // than the clean one, leaving Full as the board's only clean refresh.
+  // True when this panel's clean bank only scrubs the whole screen if the refresh
+  // BEFORE it did not also use the clean bank.
   //
-  // Set this on a board whose epd_fast LUT saturates every drive it makes -- each
-  // column carrying a full rail-to-rail impulse, so the destination lands from any
-  // source and the pixel's history is erased by the clamp. Such a bank does not
-  // accumulate ghosting, which is what makes it safe to spend on the periodic and
-  // post-transition refreshes that Half covers.
+  // The mechanism is Panel_EPD's, not the board's: its epd_text branch drives a
+  // pixel unless it was already REQUESTED WHITE under that same bank and is
+  // requested white again (Panel_EPD.cpp, the `white != d1 || d1 != s0` test, in
+  // which `white` embeds the bank's own LUT offset). After a fast push every
+  // pixel compares unequal and the whole screen is driven; after another clean
+  // push the untouched white background is skipped, so only the union of the old
+  // and the new ink is driven. On a bank that rail-normalizes before it lands --
+  // black, then white, then down to the level -- that reads on the glass as both
+  // pages standing at once, and the old ink then settles beside a background that
+  // was never driven, leaving its shape as a faint imprint.
   //
-  // The gain is not speed, it is the artefact the clean bank produces here: see
-  // epdModeFor() in LgfxEpdDriver.cpp for why two consecutive clean refreshes on
-  // such a panel show both pages at once and leave the old one as an imprint.
+  // Set it on a board whose epd_fast LUT saturates every drive it makes, each
+  // column carrying a full rail-to-rail impulse so the destination lands from any
+  // source and the pixel's history is erased by the clamp. Only such a bank can
+  // stand in for the clean one (Half) or normalize the screen ahead of it (Full)
+  // without leaving ghosting of its own. See epdModeFor() and
+  // normalizeForCleanBank() in LgfxEpdDriver.cpp for the two policies it drives.
   //
   // Left false for a board on LovyanGFX's stock LUTs, whose fast bank drives the
-  // rails for a fixed few frames and does need the clean bank behind it.
-  bool halfUsesFastBank = false;
+  // rails for a fixed few frames and cannot stand in for anything.
+  bool cleanBankNeedsFreshBackground = false;
 };
 
 // Canvas byte that quantises to exactly `level` for every Bayer cell.
