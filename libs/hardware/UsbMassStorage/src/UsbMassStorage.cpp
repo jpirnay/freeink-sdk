@@ -11,6 +11,7 @@
 #include <cstring>
 
 extern "C" bool tud_mounted(void);
+extern "C" bool tud_suspended(void);
 extern "C" bool tud_disconnect(void);
 extern "C" bool tud_suspended(void);
 
@@ -157,10 +158,24 @@ bool UsbMassStorage::begin(FsBlockDeviceInterface* dev) {
 
 void UsbMassStorage::end() {
   if (!_active) return;
-  gMsc.end();
+  // Signal the host to release the device BEFORE tearing down callback state.
+  // tud_disconnect() disables the D+/D- pull-up so the host ejects the media;
+  // we then wait for tud_mounted() to go false so no in-flight MSC callback
+  // can fire after gMsc.end() zeroes the callback pointers or gDev/gOwner clear.
+  // On the dual-core S3 the TinyUSB task runs on the other core — without this
+  // drain, a callback can dereference null gDev/gOwner (or the zeroed msc_luns
+  // function pointers) and hard-fault during the subsequent ESP.restart().
+  tud_disconnect();
+  for (uint32_t i = 0; i < 50; i++) {  // ~500ms timeout at 10ms ticks
+    if (!tud_mounted()) break;
+    delay(10);
+  }
+  // Mark inactive first so any callback already dispatched bails out instead
+  // of dereferencing the globals that we clear below.
+  _active = false;
   gOwner.store(nullptr);
   gDev.store(nullptr);
-  _active = false;
+  gMsc.end();
   _state.store(UsbMassStorageState::Idle);
   _hostSeen.store(false);
 }
@@ -191,7 +206,7 @@ bool UsbMassStorage::hostConnected() const {
 
 bool UsbMassStorage::disconnectHost() const { return _active && tud_disconnect(); }
 
-bool UsbMassStorage::hostSuspended() const { return _active && tud_suspended(); }
+bool UsbMassStorage::hostSuspended() const { return _active && tud_mounted() && tud_suspended(); }
 
 void UsbMassStorage::markAccessed() const {
   auto current = _state.load();

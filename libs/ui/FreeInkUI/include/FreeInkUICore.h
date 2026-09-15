@@ -648,9 +648,15 @@ struct ThemeTokens {
   int16_t headerHeight = 44;
   int16_t footerHeight = 40;
   int16_t progressHeight = 4;
-  // List shape tokens: the theme supplies geometry (gaps, radii, insets)
-  // while rowHeight and text sizes derive from the bound fonts. Screen::list()
-  // forwards these into any ListProps field left at its inherit sentinel.
+  // Lists size each row from its content, separately from generic controls.
+  // An optional minimum supports deliberately spacious list themes.
+  int16_t listMinRowHeight = 0;
+  int16_t listRowPaddingY = 4;
+  // Touch comfort is distinct from the minimum valid hit-target size.
+  int16_t listTouchMinRowHeight = 56;
+  int16_t listTouchRowPaddingY = 8;
+  int16_t listTouchRowGap = 6;
+  // List shape tokens forwarded by Screen::resolveListProps().
   int16_t listRowGap = 0;
   uint8_t listRowRadius = 0;
   int16_t listSidePadding = 8; // text inset within a row
@@ -702,6 +708,10 @@ struct ThemeDocument {
 class DrawTarget {
 public:
   virtual ~DrawTarget() = default;
+  // Optional pixel clipping in logical coordinates. Unsupported targets return
+  // false; components must then omit partially visible content.
+  virtual Rect clipRect() const { return Rect{0, 0, 32767, 32767}; }
+  virtual bool setClipRect(Rect) { return false; }
   virtual Size measureText(FontId font, const char *text,
                            TextStyle style) const = 0;
   virtual int16_t lineHeight(FontId font) const = 0;
@@ -928,6 +938,9 @@ public:
 
   void setEnabled(bool enabled) { enabled_ = enabled; }
   bool enabled() const { return enabled_; }
+
+  Rect clipRect() const override { return inner_.clipRect(); }
+  bool setClipRect(Rect rect) override { return inner_.setClipRect(rect); }
 
   Size measureText(FontId font, const char *text,
                    TextStyle style) const override {

@@ -77,6 +77,7 @@ class UsbMassStorage {
   bool active() const { return false; }
   UsbMassStorageState state() const { return UsbMassStorageState::Idle; }
   bool hostConnected() const { return false; }
+  bool hostSuspended() const { return false; }
   bool disconnectHost() const { return false; }
   bool hostSuspended() const { return false; }
 };
