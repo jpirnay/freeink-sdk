@@ -79,7 +79,6 @@ class UsbMassStorage {
   bool hostConnected() const { return false; }
   bool hostSuspended() const { return false; }
   bool disconnectHost() const { return false; }
-  bool hostSuspended() const { return false; }
 };
 }  // namespace freeink
 
