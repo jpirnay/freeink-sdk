@@ -56,6 +56,19 @@ class PanelDriver {
     display(bus, fb, prev, RefreshMode::Fast, turnOff);
   }
 
+  // True when displayWindow() actually drives only the requested rectangle,
+  // rather than taking the full-frame fallback above.
+  //
+  // The fallback keeps every driver CORRECT without this, so a host that only
+  // cares about the pixels need not ask. A host that would trade something for
+  // a windowed push must: the fallback costs a whole frame, and the window
+  // path is blocking on drivers whose full refresh can be asynchronous. Giving
+  // up an async full refresh for a synchronous one that then repaints the whole
+  // panel is a regression on exactly the devices that gain nothing.
+  //
+  // Must agree with whether displayWindow() is overridden.
+  virtual bool supportsWindowedRefresh() const { return false; }
+
   // True when displayStart() defers (returns true) rather than completing
   // inline. Lets the facade skip async scaffolding (shadow setup) on blocking
   // drivers without a trial call, and lets hosts size overlap buffers up

@@ -83,6 +83,7 @@ class Ssd1677Driver : public PanelDriver {
   bool supportsAsyncDisplay() const override { return true; }
   void displayWindow(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, uint16_t x, uint16_t y, uint16_t w,
                      uint16_t h, bool turnOff) override;
+  bool supportsWindowedRefresh() const override { return true; }
 
   void requestResync(uint8_t) override { _needsGrayClear = true; _absoluteInput = false; }
   void beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback, bool turnOff) override;

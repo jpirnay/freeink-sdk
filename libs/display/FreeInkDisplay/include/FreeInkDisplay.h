@@ -265,6 +265,12 @@ class FreeInkDisplay {
 
   // EXPERIMENTAL: Windowed update - display only a rectangular region
   void displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool turnOffScreen = false);
+  // True when displayWindow() will drive only the requested rectangle. False
+  // means it is still correct but repaints the whole frame, so a caller that
+  // would trade an asynchronous full refresh for a blocking windowed one should
+  // ask first. Also false while an inversion is pending, which displayWindow()
+  // resolves with a full refresh regardless of driver.
+  bool supportsWindowedRefresh() const;
   void displayGrayBuffer(bool turnOffScreen = false, const unsigned char* lut = nullptr, bool factoryMode = false);
   // Single-push grayscale: composes the framebuffer (B/W) with the staged
   // LSB/MSB planes and displays them as one waveform. Falls back to a plain

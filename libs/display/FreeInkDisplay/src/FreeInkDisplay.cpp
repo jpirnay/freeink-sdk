@@ -802,6 +802,12 @@ void FreeInkDisplay::displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t 
 #endif
 }
 
+bool FreeInkDisplay::supportsWindowedRefresh() const {
+  // _inverted / _inversionDirty take the full-refresh path inside
+  // displayWindow(), so report honestly rather than by driver alone.
+  return !_inverted && !_inversionDirty && _driver && _driver->supportsWindowedRefresh();
+}
+
 bool FreeInkDisplay::supportsGrayFrame() const { return !_inverted && _driver && _driver->supportsGrayFrame(); }
 
 void FreeInkDisplay::displayGrayscaleFrame(RefreshMode mode, bool turnOffScreen) {
