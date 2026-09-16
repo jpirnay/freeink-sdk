@@ -63,6 +63,15 @@ struct ListProps {
   // keep a selection in view while scrolling.
   uint16_t topIndex = 0;
   int16_t selectedIndex = -1;
+  // Out: the rectangle the selected row was drawn into, in screen coordinates,
+  // after any hug-contents narrowing so it matches the ink. Left untouched when
+  // the selection falls outside the drawn window, so initialise it and check.
+  //
+  // Exists so a host can push only what changed. A selection move dirties two
+  // rows -- the one losing the highlight and the one gaining it -- and their
+  // union is one contiguous band, which on a panel with windowed refresh is a
+  // great deal less than repainting the frame to move a highlight.
+  Rect* selectedRowRectOut = nullptr;
   ActionId action = NO_ACTION;
   uint16_t inputMask = InputDefault | InputPrev | InputNext;
   TextStyle labelText{};
@@ -637,6 +646,8 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
       if (hugW < row.width)
         row.width = hugW;
     }
+    if (!partial && props.selectedIndex == static_cast<int16_t>(i) && props.selectedRowRectOut)
+      *props.selectedRowRectOut = row;
     State state = partial ? static_cast<State>(item.state & ~(StateSelected | StateFocused | StateActive))
                           : item.state;
     if (!partial && props.selectedIndex == static_cast<int16_t>(i))
