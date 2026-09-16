@@ -783,6 +783,19 @@ struct BoardProfile {
   // I2C frontlight (LM3630A). Defaulted so existing profiles need no change;
   // a board with one sets it (EEGO A4).
   I2cFrontlightConfig i2cFrontlight = NO_I2C_FRONTLIGHT;
+  // The panel visibly fades in direct sunlight unless the driver powers it down
+  // between refreshes.
+  //
+  // A property of the glass and the enclosure, not of the controller: the Xteink
+  // C3 units show it (strongly on the white X4, less so on the X3) while boards
+  // around the same controllers do not. So it cannot be derived from
+  // displayController or any other field here, and it is not a capability the
+  // firmware can probe -- it has to be recorded per board, from observation.
+  //
+  // Consumers gate the "sunlight fading fix" setting on this. Keeping the flag
+  // here rather than testing a board name at the call site is what lets a new
+  // board answer the question by filling in a profile.
+  bool panelFadesInSunlight = false;
 };
 
 constexpr TouchConfig NO_TOUCH = {TouchController::None,
@@ -932,7 +945,12 @@ constexpr BoardProfile XTEINK_X4 = {Board::XteinkX4,
                                     // not self-latch and stays powered only while the button is held.
                                     // Asserting the latch is a no-op on self-latching units. Driving it
                                     // LOW is the battery power-off (see consumers' deep-sleep path).
-                                    {13, PIN_UNASSIGNED}};
+                                    {13, PIN_UNASSIGNED},
+                                    0,                      // displayControllerVariant
+                                    {},                     // viewableInsets: profile default
+                                    false,                  // batteryChargeStatusActiveHigh
+                                    NO_I2C_FRONTLIGHT,      // i2cFrontlight
+                                    true};                  // panelFadesInSunlight: white units fade strongly
 
 // --- Xteink X3 — ESP32-C3, UC8253 (792x528) ----------------------------------
 // Same board/pinout as X4; differs only in panel controller + size. Selected at
@@ -969,7 +987,14 @@ constexpr BoardProfile XTEINK_X3 = {
     NO_SDMMC,
     {20, 0, 400000, 0x55, 0},  // BQ27220 fuel gauge (0x55) on SDA20/SCL0; no charger IC
     NO_MIC,
-    {20, 0, 400000, 0x68, 0, 0x6B, 0, RtcType::Ds3231, ImuType::Qmi8658}};
+    {20, 0, 400000, 0x68, 0, 0x6B, 0, RtcType::Ds3231, ImuType::Qmi8658},
+    1.0f,               // uiScale: button-navigated device
+    {},                 // power: no latch
+    0,                  // displayControllerVariant
+    {},                 // viewableInsets: profile default
+    false,              // batteryChargeStatusActiveHigh
+    NO_I2C_FRONTLIGHT,  // i2cFrontlight
+    true};              // panelFadesInSunlight: fades too, less than the X4
 
 // --- Xteink X3 (UC8279d run) — ESP32-C3, UC8279d (792x528) -------------------
 // Newer X3 production units swap the UC8253 for a UC8279d ("d_B" silicon; the
@@ -1001,7 +1026,14 @@ constexpr BoardProfile XTEINK_X3_UC8279 = {
     NO_SDMMC,
     {20, 0, 400000, 0x55, 0},
     NO_MIC,
-    {20, 0, 400000, 0x68, 0, 0x6B, 0, RtcType::Ds3231, ImuType::Qmi8658}};
+    {20, 0, 400000, 0x68, 0, 0x6B, 0, RtcType::Ds3231, ImuType::Qmi8658},
+    1.0f,               // uiScale: button-navigated device
+    {},                 // power: no latch
+    0,                  // displayControllerVariant
+    {},                 // viewableInsets: profile default
+    false,              // batteryChargeStatusActiveHigh
+    NO_I2C_FRONTLIGHT,  // i2cFrontlight
+    true};              // panelFadesInSunlight: fades too, less than the X4
 
 // --- M5Stack PaperColor — ESP32-S3, ED2208 color panel, M5PM1 PMIC -----------
 constexpr BoardProfile M5STACK_PAPER_COLOR = {Board::M5StackPaperColor,
