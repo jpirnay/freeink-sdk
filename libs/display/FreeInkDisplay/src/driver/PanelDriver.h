@@ -177,6 +177,18 @@ class PanelDriver {
   // state -- a driver advertises that with supportsGrayFrame(). Everyone else
   // keeps the two-push base + displayGray() flow.
   virtual bool supportsGrayFrame() const { return false; }
+  // Deferred form of displayGrayFrame(): queue the frame and return while the
+  // waveform runs, so the caller can spend it on its own work. Returns true when
+  // it actually deferred, in which case displayFinish() must run before the host
+  // touches the panel again -- same contract as displayStart().
+  //
+  // Default forwards to the blocking form and reports false, so a driver that has
+  // no way to overlap is unchanged and its callers still see settled pixels.
+  virtual bool displayGrayFrameStart(EpdBus& bus, const uint8_t* fb, RefreshMode mode, bool turnOff) {
+    displayGrayFrame(bus, fb, mode, turnOff);
+    return false;
+  }
+
   virtual void displayGrayFrame(EpdBus& bus, const uint8_t* fb, RefreshMode mode, bool turnOff) {
     (void)bus;
     (void)fb;

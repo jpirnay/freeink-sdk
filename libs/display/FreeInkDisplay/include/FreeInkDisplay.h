@@ -272,6 +272,11 @@ class FreeInkDisplay {
   // the planes' meaning does not survive inversion).
   bool supportsGrayFrame() const;
   void displayGrayscaleFrame(RefreshMode mode, bool turnOffScreen = false);
+  // Deferred displayGrayscaleFrame(): returns while the waveform runs where the
+  // driver can. The caller owes a completeDisplay()/finishDisplayAsync() before it
+  // next touches the panel -- exactly like triggerDisplay(). Falls back to the
+  // blocking form (and leaves nothing pending) on a driver that cannot overlap.
+  void triggerGrayscaleFrame(RefreshMode mode, bool turnOffScreen = false);
 
   // Grey levels this panel can land in one refresh. Four on every dual-plane
   // controller -- that is the size of the (old, new) selector state space, not a

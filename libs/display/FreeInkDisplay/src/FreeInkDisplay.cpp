@@ -816,6 +816,17 @@ void FreeInkDisplay::displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t 
 
 bool FreeInkDisplay::supportsGrayFrame() const { return !_inverted && _driver && _driver->supportsGrayFrame(); }
 
+void FreeInkDisplay::triggerGrayscaleFrame(RefreshMode mode, bool turnOffScreen) {
+  if (_inverted || _inversionDirty || !_driver || !_driver->supportsGrayFrame()) {
+    displayBuffer(mode, turnOffScreen);
+    return;
+  }
+  syncPendingAsync();
+  _shadowValid = false;
+  _refreshPending = _driver->displayGrayFrameStart(_bus, frameBuffer, toInternal(mode), turnOffScreen);
+  // No swapBuffers(), for the same reason displayGrayscaleFrame() omits it -- see there.
+}
+
 void FreeInkDisplay::displayGrayscaleFrame(RefreshMode mode, bool turnOffScreen) {
   if (_inverted || _inversionDirty || !_driver || !_driver->supportsGrayFrame()) {
     displayBuffer(mode, turnOffScreen);

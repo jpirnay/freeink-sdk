@@ -621,6 +621,20 @@ void normalizeForCleanBank() {
 // pixels land (16 levels, no dither), fast when the refresh goes out (no eraser,
 // and the same LUT bank the B/W base used, so Panel_EPD's per-pixel diff still
 // skips everything that did not change).
+// As pushCanvasGraded(), but returns once the panel task owns the job rather than
+// once the waveform has finished. See ingestDisplay() for why the yield stays.
+void pushCanvasGradedAsync(lgfx::epd_mode::epd_mode_t refreshMode) {
+  if (!g_canvas) return;
+  g_dev.waitDisplay();
+  g_dev.setEpdMode(lgfx::epd_mode::epd_quality);
+  g_dev.setAutoDisplay(false);
+  g_canvas->pushSprite(0, 0);  // writes the panel buffer, queues no refresh
+  g_dev.setAutoDisplay(true);
+  g_dev.setEpdMode(refreshMode);
+  g_dev.display();  // covers the rect pushSprite accumulated
+  ingestDisplay();
+}
+
 void pushCanvasGraded(lgfx::epd_mode::epd_mode_t refreshMode) {
   if (!g_canvas) return;
   g_dev.waitDisplay();
@@ -797,6 +811,36 @@ void LgfxEpdDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
 // drive imbalance each time; under one push, Panel_EPD's diff drives a pixel
 // only when its target changes, and every grey drive begins with a saturating
 // rail visit that erases accumulated bias.
+// Deferred single-push: identical to displayGrayFrame() except that it returns
+// while the waveform runs.
+//
+// Safe to hand the host framebuffer back this early because this panel does not
+// read it during the refresh: pushSprite() copies the canvas into Panel_EPD's own
+// 4bpp buffer synchronously, and the refresh walks that buffer and _step_framebuf.
+// That is the same property displayGrayscaleFrame() relies on when it deliberately
+// skips swapBuffers().
+bool LgfxEpdDriver::displayGrayFrameStart(EpdBus& bus, const uint8_t* fb, RefreshMode mode, bool turnOff) {
+  (void)bus;
+#if FREEINK_DRIVER_LGFX_EPD
+  if (!fb) return false;
+  g_dev.waitDisplay();  // never write the canvas while a refresh may be in flight
+  fillCanvasBW(fb);
+  overlayCanvasGray();
+  const auto epdMode = epdModeFor(mode);
+  // Blocking on purpose: a separate refresh that must finish before ours is queued.
+  if (epdMode == lgfx::epd_mode::epd_text) normalizeForCleanBank();
+  g_lastBaseEpdMode = epdMode;
+  pushCanvasGradedAsync(g_lastBaseEpdMode);
+  g_pendingTurnOff = turnOff;
+  return true;
+#else
+  (void)fb;
+  (void)mode;
+  (void)turnOff;
+  return false;
+#endif
+}
+
 void LgfxEpdDriver::displayGrayFrame(EpdBus& bus, const uint8_t* fb, RefreshMode mode, bool turnOff) {
   (void)bus;
 #if FREEINK_DRIVER_LGFX_EPD

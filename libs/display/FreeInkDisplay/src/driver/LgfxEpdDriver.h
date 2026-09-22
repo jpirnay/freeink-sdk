@@ -56,6 +56,8 @@ class LgfxEpdDriver : public PanelDriver {
   // (see ED047TC2Waveform.cpp); the generic two-push flow stays available for
   // callers that do not use it.
   bool supportsGrayFrame() const override { return true; }
+  // Deferred single-push; see the .cpp for why the host framebuffer is free early.
+  bool displayGrayFrameStart(EpdBus& bus, const uint8_t* fb, RefreshMode mode, bool turnOff) override;
   void displayGrayFrame(EpdBus& bus, const uint8_t* fb, RefreshMode mode, bool turnOff) override;
   void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
   void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;
