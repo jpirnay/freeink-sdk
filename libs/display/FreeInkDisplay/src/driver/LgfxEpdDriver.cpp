@@ -496,9 +496,38 @@ const char* epdModeName(lgfx::epd_mode::epd_mode_t mode) {
 // wait after it then means what it says. (1.5.16 shipped this, 1.5.17 reverted
 // it on a ghosting suspicion; the ghosting survived the revert, which clears
 // this guard of that charge.)
+// The two halves of settleDisplay(), split so a caller can spend the waveform on
+// its own work instead of standing in front of it.
+//
+// The yield is NOT the optional half. It is what makes _display_busy mean
+// anything: until the panel task has ingested the job the flag reads false for a
+// refresh that has not started, and a caller that trusts it walks straight into
+// the task's diff copy -- the documented path to a wedged panel and a reader
+// frozen with input still alive. So ingestDisplay() runs the yield and returns
+// with the job owned by the panel task; awaitDisplay() is then a wait that means
+// what it says. See the comment above settleDisplay() for the full history.
+void ingestDisplay() { vTaskDelay(pdMS_TO_TICKS(2)); }
+void awaitDisplay() { g_dev.waitDisplay(); }
+
 void settleDisplay() {
-  vTaskDelay(pdMS_TO_TICKS(2));
+  ingestDisplay();
+  awaitDisplay();
+}
+
+// turnOff deferred from displayStart() to displayFinish(): PanelDriver's finish
+// signature carries no turnOff, and the panel must not be put to sleep while its
+// own waveform is still running.
+bool g_pendingTurnOff = false;
+
+// As pushCanvas(), but returns once the panel task owns the job rather than once
+// the waveform has finished. Split out rather than parameterised so the trace
+// build keeps attributing the two cases separately.
+void pushCanvasAsync(lgfx::epd_mode::epd_mode_t epdMode) {
+  if (!g_canvas) return;
   g_dev.waitDisplay();
+  g_dev.setEpdMode(epdMode);
+  g_canvas->pushSprite(0, 0);  // commits to the panel; Panel_EPD runs the refresh
+  ingestDisplay();
 }
 
 void pushCanvas(lgfx::epd_mode::epd_mode_t epdMode) {
@@ -700,21 +729,57 @@ void LgfxEpdDriver::begin(EpdBus& bus) {
 #endif
 }
 
-void LgfxEpdDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
+// Queue the frame and return while the waveform runs.
+//
+// Panel_EPD has always been asynchronous underneath -- display() posts to
+// _update_queue_handle and a dedicated panel task drives the frames -- but this
+// driver collapsed that back to synchronous by settling after every push. That
+// cost every caller the overlap the other boards get: page turns cannot
+// pre-render, SleepActivity's PopupShip::Async silently degrades to blocking,
+// and the reader's inline-AA path (which assumes the BW waveform is still
+// running) is unreachable here.
+//
+// Returns true unconditionally: the facade must call displayFinish() before it
+// next touches the framebuffer or the panel.
+bool LgfxEpdDriver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode,
+                                 bool turnOff) {
   (void)bus;
   (void)prev;
 #if FREEINK_DRIVER_LGFX_EPD
   fillCanvasBW(fb);  // expand the 1-bpp frame into the gray canvas
   const auto epdMode = epdModeFor(mode);
+  // Blocking on purpose: this is a separate refresh that must complete before the
+  // one below is queued, and it settles itself.
   if (epdMode == lgfx::epd_mode::epd_text) normalizeForCleanBank();
   g_lastBaseEpdMode = epdMode;
-  pushCanvas(g_lastBaseEpdMode);
-  if (turnOff) g_dev.sleep();
+  pushCanvasAsync(g_lastBaseEpdMode);
+  g_pendingTurnOff = turnOff;
+  return true;
 #else
   (void)fb;
   (void)mode;
   (void)turnOff;
+  return false;
 #endif
+}
+
+void LgfxEpdDriver::displayFinish(EpdBus& bus, const uint8_t* fb) {
+  (void)bus;
+  (void)fb;
+#if FREEINK_DRIVER_LGFX_EPD
+  awaitDisplay();
+  // Only now: sleeping the panel mid-waveform would abandon the refresh.
+  if (g_pendingTurnOff) {
+    g_pendingTurnOff = false;
+    g_dev.sleep();
+  }
+#endif
+}
+
+// The blocking path is the async one plus its finish, so the two cannot drift.
+void LgfxEpdDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
+  displayStart(bus, fb, prev, mode, turnOff);
+  displayFinish(bus, fb);
 }
 
 // One render, one push: the whole page -- text and its anti-aliasing greys --

@@ -38,6 +38,13 @@ class LgfxEpdDriver : public PanelDriver {
   void deepSleep(EpdBus& bus) override;
   void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
 
+  // Panel_EPD runs refreshes on its own task; this driver used to discard that by
+  // settling after every push. See displayStart() in the .cpp for what the
+  // overlap buys and why the yield inside it is load-bearing.
+  bool supportsAsyncDisplay() const override { return true; }
+  bool displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
+  void displayFinish(EpdBus& bus, const uint8_t* fb) override;
+
   // 16-gray path: the facade streams LSB/MSB 1-bpp planes (whole or in strips);
   // displayGray combines them with the B/W base into the panel's 8-bit gray canvas.
   GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const override {
