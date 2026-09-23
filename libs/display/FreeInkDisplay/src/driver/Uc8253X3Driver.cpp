@@ -274,7 +274,11 @@ void Uc8253X3Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
   // ISR-backed wait: displayStart() already confirmed BUSY dropped LOW, so the
   // waveform is running and waitRefreshComplete() will wake on the exact
   // completion edge rather than polling at 1 ms granularity.
-  bus.waitRefreshComplete(" X3_DRF");
+  // Name the bank the waveform actually ran, not just that one ran. Which of the three a
+  // refresh took is decided from four flags inside displayStart() and is otherwise invisible
+  // from a serial log -- and "was that a real scrub or a single-pass drive?" is the first
+  // question any ghosting report needs answered.
+  bus.waitRefreshComplete(doFullSync ? " X3_DRF_full" : fastMode ? " X3_DRF_fast" : " X3_DRF_half");
   if (turnOff) {
     bus.cmd(CMD_POWER_OFF);
     bus.waitBusy(" X3_POF");
@@ -382,12 +386,12 @@ void Uc8253X3Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, Refres
   if (cleanBaseNeeded) {
     display(bus, fb, nullptr, fallback, /*turnOff=*/false);
     loadBankCdi(bus, 0xA9, 0x07, _cfg.preBwMid);
-    triggerRefresh(bus, turnOff);
+    triggerRefresh(bus, turnOff, " X3_GRAYBASE_clean");
     return;
   }
   bus.sendPlaneFlipped(CMD_DTM2, fb, _h, _wb);
   loadBankCdi(bus, 0xA9, 0x07, _cfg.preBwMid);
-  triggerRefresh(bus, turnOff);
+  triggerRefresh(bus, turnOff, " X3_GRAYBASE_diff");
   // Keep the driver invariant that DTM1 mirrors the displayed frame; the gray
   // plane writes that normally follow overwrite both planes anyway.
   bus.sendPlaneFlipped(CMD_DTM1, fb, _h, _wb);
