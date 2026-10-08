@@ -71,6 +71,7 @@ class FsVolume {
 class SdFat : public FsVolume {
  public:
   bool begin(uint8_t, uint32_t) { return true; }
+  void end() {}
   int sdErrorCode() const { return 0; }
   int sdErrorData() const { return 0; }
 };
