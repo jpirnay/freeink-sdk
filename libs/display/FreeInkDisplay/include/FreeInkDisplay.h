@@ -193,6 +193,29 @@ class FreeInkDisplay {
   // can skip overlap scaffolding (e.g. whole-plane grayscale buffers) when
   // there is nothing to overlap.
   bool supportsAsyncRefresh() const;
+
+  // What the facade does with this panel, for hosts planning around it. Ask these
+  // rather than isX3Mode(): each answers the one question a host has, and the
+  // facade's own refresh decisions below are made by these very predicates, so
+  // the answer cannot drift from the behaviour.
+  //
+  // A FAST refresh diffs against the previous frame the HOST keeps: the secondary
+  // buffer, or the RED plane seeded from it (syncRedRamFromFrameBuffer()). So while
+  // the secondary is released or lent a FAST becomes a HALF unless the caller
+  // seeded RED and opted in (setSingleBufferFastDiff), and a dramatic frame change
+  // can under-drive pixels. False on the X3 panel path, whose controller baseline
+  // (DTM1) is re-synced by the driver: there a release costs no FAST refreshes and
+  // needs no seed. Keyed on the panel selection, not on the driver -- the X4-family
+  // UltraChip drivers re-sync their own DTM1 too, but the facade still feeds them
+  // the host frame; see the PanelSel/baseline-model split in the firmware notes.
+  bool fastRefreshNeedsHostFrame() const { return _panelSel == PanelSel::X4; }
+  // An asynchronous refresh keeps the LIVE frame buffer in use until it completes:
+  // the driver re-reads it after the waveform and the facade keeps no shadow copy,
+  // so the refresh stays pending (isRefreshPending()) for the whole waveform and
+  // the host must not draw into the frame buffer meanwhile. The X3 panel path.
+  bool asyncRefreshHoldsFrameBuffer() const { return _panelSel == PanelSel::X3; }
+  // See PanelDriver::ghostsUnderFastRefresh(). False before begin().
+  bool ghostsUnderFastRefresh() const;
   // True when the selected driver can use an ordinary deferred B/W refresh as
   // the base for a following grayscale pass.
   bool supportsAsyncGrayscaleBase() const;

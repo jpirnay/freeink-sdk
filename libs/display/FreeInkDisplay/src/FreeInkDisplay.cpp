@@ -362,7 +362,7 @@ FreeInkDisplay::RefreshMode FreeInkDisplay::resolveReleasedMode(RefreshMode mode
   // both planes and cannot ghost off a stale baseline. X3 keeps its baseline in the
   // controller (DTM1) and M5 uses a different model, so a host-side release never
   // degrades their fast path — no downgrade there.
-  if (mode == FAST_REFRESH && _panelSel == PanelSel::X4 && !frameBufferActive && !_singleBufferFastDiff) {
+  if (mode == FAST_REFRESH && fastRefreshNeedsHostFrame() && !frameBufferActive && !_singleBufferFastDiff) {
     return HALF_REFRESH;
   }
   return mode;
@@ -582,6 +582,8 @@ bool FreeInkDisplay::supportsAsyncRefresh() const {
   return !_inverted && !_inversionDirty && _driver != nullptr && _driver->supportsAsyncDisplay();
 }
 
+bool FreeInkDisplay::ghostsUnderFastRefresh() const { return _driver != nullptr && _driver->ghostsUnderFastRefresh(); }
+
 GrayscaleCapabilities FreeInkDisplay::grayscaleCapabilities(GrayscaleMode mode) const {
   if (_inverted || !_driver) return {};
   auto caps = _driver->grayscaleCapabilities(mode);
@@ -671,7 +673,7 @@ void FreeInkDisplay::displayAsyncImpl(RefreshMode mode, bool turnOffScreen, bool
   // a panel whose displayFinish() re-reads the frame (X3 DTM1 sync) cannot
   // honor that; take the blocking path there. Use the noShadow entry (with its
   // frame-intact contract) or triggerDisplay() for X3 overlap.
-  if (_panelSel == PanelSel::X3) {
+  if (asyncRefreshHoldsFrameBuffer()) {
     displayBuffer(mode, turnOffScreen);
     return;
   }
@@ -735,7 +737,7 @@ void FreeInkDisplay::triggerDisplay(RefreshMode mode, bool turnOffScreen) {
 }
 
 void FreeInkDisplay::triggerDisplayAsync(RefreshMode mode, bool turnOffScreen) {
-  if (_panelSel == PanelSel::X3) {
+  if (asyncRefreshHoldsFrameBuffer()) {
     // X3's triggerDisplay() already returns while the waveform runs;
     // completeDisplay() remains its finish and finishDisplayAsync() a no-op.
     triggerDisplay(mode, turnOffScreen);

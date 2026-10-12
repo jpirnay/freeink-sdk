@@ -739,6 +739,11 @@ struct PowerConfig {
   // until sleep isolates the pad and lets the line float back to enabled.
   int8_t chargeEnable = PIN_UNASSIGNED;
   bool chargeEnableActiveHigh = false;  // "n"-suffixed enables are active-low
+  // latch0 holds a battery MOSFET that the power button closes (the X4's GPIO13),
+  // rather than keeping a peripheral rail up (the X4 Pro's GPIO1). Two things
+  // follow on such a board: being powered at all means the button was pressed,
+  // and driving latch0 LOW is the battery power-off.
+  bool latch0GatesBattery = false;
 };
 
 // Panel rows/columns the device's bezel physically overlaps, in the panel's
@@ -982,7 +987,7 @@ constexpr BoardProfile XTEINK_X4 = {Board::XteinkX4,
                                     // not self-latch and stays powered only while the button is held.
                                     // Asserting the latch is a no-op on self-latching units. Driving it
                                     // LOW is the battery power-off (see consumers' deep-sleep path).
-                                    {13, PIN_UNASSIGNED},
+                                    {13, PIN_UNASSIGNED, PIN_UNASSIGNED, false, /*latch0GatesBattery=*/true},
                                     0,                      // displayControllerVariant
                                     {},                     // viewableInsets: profile default
                                     false,                  // batteryChargeStatusActiveHigh

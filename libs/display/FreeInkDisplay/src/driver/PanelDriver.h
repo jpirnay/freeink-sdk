@@ -62,6 +62,13 @@ class PanelDriver {
   // front. Must agree with what displayStart() actually returns.
   virtual bool supportsAsyncDisplay() const { return false; }
 
+  // True when repeated FAST refreshes leave visible residue on this panel --
+  // speckle and ghost outlines that only a HALF clears -- so a screen that redraws
+  // in place many times (a menu) should spend a periodic HALF. A property of the
+  // driver's FAST waveform, not of the board: set by the X3's UC8253 and UC8279d
+  // drivers; the X4-family drivers (including the X4 Pro's UC8279) leave it false.
+  virtual bool ghostsUnderFastRefresh() const { return false; }
+
   // Two-call refresh split (CrossPoint EInkDisplay::triggerDisplay/completeDisplay).
   // For the shadowed async path the facade passes its own baseline copy as
   // `prev`, so the live fb may be redrawn immediately; otherwise `fb` must
