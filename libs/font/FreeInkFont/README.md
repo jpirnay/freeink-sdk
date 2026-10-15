@@ -232,16 +232,23 @@ own way can kern and find ligatures without FreeInkFont's engines. A consumer
 that already depends on FreeInkFont does not need it: FreeInkFont compiles the
 same readers.
 
-GPOS kerning follows what a shaper does with the `kern` feature: the feature
-is the one any script's DefaultLangSys activates (Latin, Cyrillic and Greek
-kern alike), its lookups apply in LookupList order, the first subtable that
-matches the pair counts in each lookup, and the lookups' adjustments add up.
+GPOS kerning applies the `kern` feature's lookups as a shaper does: in
+LookupList order, the first subtable that matches the pair counting in each
+lookup, the lookups' adjustments added up. Which lookups is where the two
+differ. A shaper applies only those of the run's script, and falls back to the
+legacy `kern` table when that script has none; this reader, which has no
+script input, takes the union of every script's DefaultLangSys `kern`
+lookups. The two agree when the font points every script at the same lookups,
+as most fonts do (Latin, Cyrillic and Greek then kern alike); a font that
+splits its kern lookups by script gets their union.
 `PairKernAdjustment(gpos, size, left, right)` walks the script, feature and
 lookup lists on every call. A caller kerning many pairs resolves the
 subtables once with `ResolveKernSubtables()` (byte offsets into the table, so
 they survive the table moving) and passes them to the resolved overload,
-which gives the same value without the walk and can also report whether the
-left glyph kerns with anything at all. `kerntable::PairKernAdjustment()` reads
+which skips the walk and can also report whether the left glyph kerns with
+anything at all. It gives the per-call value while that walk stays within its
+budget (resolving is allowed a larger one) and the caller passes every
+resolved subtable. `kerntable::PairKernAdjustment()` reads
 the legacy table, for fonts with no GPOS kerning, as `FT_Get_Kerning()` does
 for sorted subtables, but skips cross-stream subtables, which FreeType adds in.
 All three are bounds-checked and keep their work bounded on hostile counts.

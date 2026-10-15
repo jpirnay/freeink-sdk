@@ -12,12 +12,17 @@
 // bounds-checked and capped against malformed/hostile font data, in the same
 // style as the GSUB ligature reader (see Gsub.h).
 //
-// The 'kern' feature is the one any script's DefaultLangSys activates (its
-// required feature included): Latin, Cyrillic and Greek kern alike, and fonts
-// usually point every script at the same lookups. Named language systems are
-// not consulted, since this API has no language input. The feature's lookups
-// apply as a shaper applies them: in LookupList order, the first subtable
-// that matches the pair in each, their adjustments added.
+// The lookups are those of the 'kern' feature of every script's
+// DefaultLangSys (its required feature included), taken together, since this
+// API has no script input. A shaper applies only the run's script's kern
+// lookups, and falls back to the legacy 'kern' table (KernTable.h) when that
+// script has none. The two agree when the font points every script at the
+// same kern lookups, as most fonts do (Latin, Cyrillic and Greek then kern
+// alike); a font that splits its kern lookups by script gets their union
+// here. Named language systems are not consulted either: there is no
+// language input. The lookups apply as a shaper applies them: in LookupList
+// order, the first subtable that matches the pair in each, their adjustments
+// added.
 //
 // Only the FIRST value record's X-advance adjustment is returned (how much
 // the left glyph's advance changes before drawing the right glyph) — that is
@@ -55,10 +60,18 @@ constexpr uint32_t kLookupStart = 0x80000000u;
 // fit. 0 when the font does not kern, or the table is too malformed to walk.
 unsigned ResolveKernSubtables(const uint8_t* gposBytes, size_t gposSize, uint32_t* subtables, unsigned capacity);
 
-// PairKernAdjustment over resolved subtables: the same value, without the
-// walk. `covered`, when not null, is set to whether any subtable covers
-// `leftGlyph` at all; a caller remembering pairs need not remember the ones
-// whose left glyph kerns with nothing.
+// PairKernAdjustment over resolved subtables, without the walk. It gives the
+// per-call overload's value when two things hold: that walk stays within its
+// budget (kQueryBudget reads per call, where resolving allows kResolveBudget;
+// both in Gpos.cpp), and the caller passes every subtable
+// ResolveKernSubtables() found. A table too large for the per-call walk can
+// kern differently here, as the resolved subtables reach further; a caller
+// that keeps only the first ones kerns with those alone. This overload has no
+// budget of its own: it reads each of the `count` subtables it is given.
+// `covered`, when not null, is set to whether any of them covers `leftGlyph`,
+// whatever the right glyph; it is false when either glyph is 0 (the value is
+// then 0). A caller remembering pairs need not remember the ones whose left
+// glyph kerns with nothing.
 int32_t PairKernAdjustment(const uint8_t* gposBytes, size_t gposSize, const uint32_t* subtables, unsigned count,
                            uint32_t leftGlyph, uint32_t rightGlyph, bool* covered = nullptr);
 
