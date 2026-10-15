@@ -38,7 +38,11 @@ sealed, and the next start must finish the load.
 ```sh
 sh libs/font/FreeInkFont/test/host/run.sh
 sh libs/font/FreeInkFont/test/host/run_ligature.sh
+sh libs/font/FreeInkFont/test/host/run_gpos.sh
 ```
+
+Where the sanitizers do not link (MinGW), run the three without them:
+`SANITIZERS= CC=gcc CXX=g++ sh <script>`.
 
 Covers `FtFont::RenderOptions` (every `HintingMode` plus monochrome) against a
 real bundled font, plus a minimal build with none of the three
