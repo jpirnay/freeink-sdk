@@ -221,6 +221,32 @@ Two things worth knowing if you extend this:
   caller's `setGsubByteBudget()` policy rather than silently retaining up to
 1 MiB per face.
 
+### The layout readers on their own: FreeInkOpenType
+
+The three table readers, `Gpos.h` (GPOS pair kerning), `Gsub.h` (GSUB
+ligatures) and `KernTable.h` (the legacy `kern` table), use nothing from
+FreeType or stb_truetype: they take a table's raw bytes and glyph IDs. Their
+headers live in `../FreeInkOpenType/include`, and the `FreeInkOpenType`
+library builds just their three sources, so a consumer that draws fonts its
+own way can kern and find ligatures without FreeInkFont's engines. A consumer
+that already depends on FreeInkFont does not need it: FreeInkFont compiles the
+same readers.
+
+GPOS kerning follows what a shaper does with the `kern` feature: the feature
+is the one any script's DefaultLangSys activates (Latin, Cyrillic and Greek
+kern alike), its lookups apply in LookupList order, the first subtable that
+matches the pair counts in each lookup, and the lookups' adjustments add up.
+`PairKernAdjustment(gpos, size, left, right)` walks the script, feature and
+lookup lists on every call. A caller kerning many pairs resolves the
+subtables once with `ResolveKernSubtables()` (byte offsets into the table, so
+they survive the table moving) and passes them to the resolved overload,
+which gives the same value without the walk and can also report whether the
+left glyph kerns with anything at all. `kerntable::PairKernAdjustment()` reads
+what `FT_Get_Kerning()` reads, for fonts with no GPOS kerning. All three are
+bounds-checked and keep their work bounded on hostile counts. `run_gpos.sh`
+checks the resolved reader against the per-call one, and the kern table
+reader against FreeType, on DejaVuSans.
+
 ### FtFont integration APIs
 
 Renderers that already own layout and caching can use `FtFont` without adopting

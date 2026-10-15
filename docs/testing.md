@@ -54,6 +54,12 @@ bundled font: exact-value assertions for the five standard Latin ligatures,
 the codepoint-vs-glyph-ID contract boundary, deinit()/re-init cache
 invalidation, and a null-pointer safety check on `Gsub::LigatureGlyphId`.
 
+Covers the GPOS and legacy kern table readers (FreeInkOpenType): both PairPos
+formats, the `kern` feature under any script, lookups adding up, the
+resolved-once API against the per-call walk, malformed-table robustness, and
+on DejaVuSans the resolved reader against the per-call one and the kern table
+reader against `FT_Get_Kerning`.
+
 ## BLE HID host
 
 ```sh

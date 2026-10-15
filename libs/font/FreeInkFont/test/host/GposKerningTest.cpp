@@ -1,13 +1,14 @@
 // Host test for the GPOS pair-kerning reader (Gpos.h) and FtFont's kerning
-// fallback through it. Run via test/host/run_gpos.sh under ASan/UBSan.
+// fallback through it, and for the legacy kern table reader (KernTable.h).
+// Run via test/host/run_gpos.sh under ASan/UBSan.
 //
-// Two layers: a synthetic hand-built GPOS blob exercises both PairPos
+// Two layers: synthetic hand-built GPOS and kern blobs exercise both PairPos
 // formats (1 via an Extension wrapper, 2 via class matrices), activation by
 // any script, lookups adding up, the resolved-once API, and malformed-input
 // robustness deterministically; the DejaVuSans fixture then proves the FtFont
 // plumbing end-to-end, including that stripping the legacy 'kern' table
 // leaves kerning working through GPOS alone, and checks the resolved reader
-// against the stateless one.
+// against the stateless one and the kern table reader against FreeType.
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -20,6 +21,7 @@
 
 #include "FtFont.h"
 #include "Gpos.h"
+#include "KernTable.h"
 
 using freeink::font::FtFont;
 
@@ -275,6 +277,28 @@ int32_t resolvedKern(const std::vector<uint8_t>& gpos, uint32_t left, uint32_t r
                                                  right, covered);
 }
 
+// A legacy kern table, version 0: one subtable per entry of `subtables`, each (coverage, sorted pairs).
+std::vector<uint8_t> kernTableWith(
+    const std::vector<std::pair<uint16_t, std::vector<std::pair<uint32_t, int16_t>>>>& subtables) {
+  std::vector<uint8_t> bytes;
+  appendU16be(bytes, 0);
+  appendU16be(bytes, uint16_t(subtables.size()));
+  for (const auto& [coverage, pairs] : subtables) {
+    appendU16be(bytes, 0);
+    appendU16be(bytes, uint16_t(14 + 6 * pairs.size()));
+    appendU16be(bytes, coverage);
+    appendU16be(bytes, uint16_t(pairs.size()));
+    appendU16be(bytes, 0);
+    appendU16be(bytes, 0);
+    appendU16be(bytes, 0);
+    for (const auto& [pair, value] : pairs) {
+      appendU32be(bytes, pair);
+      appendU16be(bytes, uint16_t(value));
+    }
+  }
+  return bytes;
+}
+
 // sfnt table lookup for plain (non-collection) fonts — enough for fixtures.
 bool findTable(const std::vector<uint8_t>& font, const char* tag, size_t& offset, size_t& length) {
   if (font.size() < 12) return false;
@@ -405,6 +429,33 @@ int main(int argc, char** argv) {
     expect(true, "resolved truncation/corruption sweep completed");
   }
 
+  // --- The legacy kern table -------------------------------------------------
+  {
+    using freeink::font::kerntable::PairKernAdjustment;
+    const std::vector<uint8_t> table = kernTableWith({{0x0001, {{(10u << 16) | 20, -40}, {(10u << 16) | 40, 15}}},
+                                                     {0x0001, {{(10u << 16) | 20, -5}}},
+                                                     {0x0003, {{(10u << 16) | 20, -999}}},  // minimum values
+                                                     {0x0005, {{(30u << 16) | 40, -999}}}});  // cross-stream
+    bool covered = false;
+    expect(PairKernAdjustment(table.data(), table.size(), 10, 20, &covered) == -45 && covered,
+           "horizontal subtables add up; minimum and cross-stream ones do not count");
+    expect(PairKernAdjustment(table.data(), table.size(), 10, 30, &covered) == 0 && covered,
+           "a covered left glyph, kerning nothing with this right");
+    expect(PairKernAdjustment(table.data(), table.size(), 30, 40, &covered) == 0 && !covered,
+           "only a cross-stream subtable lists it: not covered");
+    const std::vector<uint8_t> override =
+        kernTableWith({{0x0001, {{(10u << 16) | 20, -40}}}, {0x0009, {{(10u << 16) | 20, -7}}}});
+    expect(PairKernAdjustment(override.data(), override.size(), 10, 20) == -7, "an override subtable replaces");
+    expect(PairKernAdjustment(nullptr, 0, 10, 20) == 0, "null kern table");
+    for (size_t len = 0; len <= table.size(); ++len) (void)PairKernAdjustment(table.data(), len, 10, 20);
+    for (size_t i = 0; i < table.size(); ++i) {
+      std::vector<uint8_t> corrupt = table;
+      corrupt[i] ^= 0xFF;
+      (void)PairKernAdjustment(corrupt.data(), corrupt.size(), 10, 20);
+    }
+    expect(true, "kern table truncation/corruption sweep completed");
+  }
+
   // A hostile table: thousands of scripts sharing one LangSys of 65,535
   // out-of-range feature indices must stay within the walk budget.
   {
@@ -481,17 +532,21 @@ int main(int argc, char** argv) {
     expect(ft.kerning('A', 'V', 32, 0) <= 0, "integer kerning() API agrees in sign");
 
     // Every printable ASCII pair: the resolved reader gives what the stateless
-    // one gives.
+    // one gives, and the kern table reader what FreeType gives.
     FT_Library library = nullptr;
     FT_Face face = nullptr;
     expect(FT_Init_FreeType(&library) == 0 &&
                FT_New_Memory_Face(library, font.data(), FT_Long(font.size()), 0, &face) == 0,
            "FreeType opens the fixture");
+    size_t kernOffset = 0;
+    size_t kernLength = 0;
+    const bool hasKern = findTable(font, "kern", kernOffset, kernLength);
     std::vector<uint32_t> subtables(256);
     const unsigned count =
         hasGpos ? ResolveKernSubtables(&font[gposOffset], gposLength, subtables.data(), unsigned(subtables.size())) : 0;
     expect(count <= subtables.size(), "the fixture's subtables fit");
     bool resolvedAgrees = true;
+    bool kernAgrees = true;
     int kerned = 0;
     for (unsigned l = 0x21; l < 0x7F; ++l) {
       for (unsigned r = 0x21; r < 0x7F; ++r) {
@@ -504,11 +559,19 @@ int main(int argc, char** argv) {
           resolvedAgrees = resolvedAgrees && stateless == resolved;
           kerned += stateless != 0;
         }
+        if (hasKern) {
+          FT_Vector delta{0, 0};
+          FT_Get_Kerning(face, gl, gr, FT_KERNING_UNSCALED, &delta);
+          kernAgrees = kernAgrees && freeink::font::kerntable::PairKernAdjustment(&font[kernOffset], kernLength, gl,
+                                                                                  gr) == int32_t(delta.x);
+        }
       }
     }
     expect(resolvedAgrees, "resolved GPOS agrees with the stateless reader on every ASCII pair");
     expect(!hasGpos || kerned > 100, "the fixture's GPOS kerns ASCII pairs (not a vacuous match)");
-    printf("info: %u kern subtables resolved, %d ASCII pairs kerned\n", count, kerned);
+    expect(kernAgrees, "the kern table reader agrees with FT_Get_Kerning on every ASCII pair");
+    printf("info: %u kern subtables resolved, %d ASCII pairs kerned; legacy kern table %s\n", count, kerned,
+           hasKern ? "checked against FreeType" : "absent");
     FT_Done_Face(face);
     FT_Done_FreeType(library);
   }

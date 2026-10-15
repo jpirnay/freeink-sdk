@@ -1,7 +1,7 @@
 {
   "name": "FreeInkOpenType",
   "version": "0.1.0",
-  "description": "FreeInkFont's OpenType layout readers on their own: GPOS pair kerning and GSUB ligatures. For a consumer that draws fonts its own way and wants none of FreeInkFont's FreeType or stb_truetype engines.",
+  "description": "FreeInkFont's OpenType layout readers on their own: GPOS pair kerning (resolved once or per call), GSUB ligatures and the legacy kern table. For a consumer that draws fonts its own way and wants none of FreeInkFont's FreeType or stb_truetype engines.",
   "keywords": "font, opentype, gpos, gsub, kerning, ligatures",
   "authors": [
     {
@@ -16,7 +16,8 @@
     "srcFilter": [
       "-<*>",
       "+<Gpos.cpp>",
-      "+<Gsub.cpp>"
+      "+<Gsub.cpp>",
+      "+<KernTable.cpp>"
     ]
   },
   "license": "MIT"

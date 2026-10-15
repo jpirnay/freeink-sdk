@@ -21,6 +21,7 @@ done
 # shellcheck disable=SC2086
 ${CXX:-c++} -std=c++17 $INCLUDES $SANITIZERS \
   "$FONT_ROOT/src/FtFont.cpp" "$FONT_ROOT/src/FontAlloc.c" "$FONT_ROOT/src/Gsub.cpp" "$FONT_ROOT/src/Gpos.cpp" \
+  "$FONT_ROOT/src/KernTable.cpp" \
   "$SCRIPT_DIR/GposKerningTest.cpp" "$BUILD_DIR"/ft_*.o \
   -o "$BUILD_DIR/ftfont-gpos-test"
 "$BUILD_DIR/ftfont-gpos-test" "$FONT_FIXTURE"
