@@ -2,65 +2,19 @@
 
 #include <string.h>
 
+#include "OpenType.h"
+
 namespace freeink {
 namespace font {
 namespace gsub {
 
 namespace {
 
+using otl::coverageIndex;
+using otl::View;
+
 constexpr uint32_t kTagLatn = uint32_t('l') << 24 | uint32_t('a') << 16 | uint32_t('t') << 8 | 'n';
 constexpr uint32_t kTagDflt = uint32_t('D') << 24 | uint32_t('F') << 16 | uint32_t('L') << 8 | 'T';
-
-struct View {
-  const uint8_t* data = nullptr;
-  size_t size = 0;
-
-  bool has(size_t offset, size_t count) const { return offset <= size && count <= size - offset; }
-  unsigned u16(size_t offset) const { return has(offset, 2) ? unsigned(data[offset]) * 256 + data[offset + 1] : 0; }
-  uint32_t u32(size_t offset) const { return has(offset, 4) ? (uint32_t(u16(offset)) << 16) | u16(offset + 2) : 0; }
-  // Offset 0 is OpenType's own NULL convention for an absent optional
-  // field — treating it as a real offset would alias `this` view's own
-  // header as the child table (harmless memory-safety-wise since it's still
-  // in bounds, but can manufacture a bogus "match" out of a malformed font).
-  View sub(size_t offset) const {
-    return (offset != 0 && has(offset, 1)) ? View{data + offset, size - offset} : View{};
-  }
-};
-
-// GSUB CoverageTable lookup: returns the coverage index of `glyph`, or -1.
-// Format 1's search is a binary search (cheap even at the 16-bit field's
-// natural max), but format 2's is linear, and coverageIndex() isn't reached
-// through the outer loop's `work` budget below — so unlike every other count
-// in this file, this one keeps its own cap. 8192 is far beyond any real
-// font's coverage range-list size (coverage compacts into ranges, so even
-// huge CJK fonts stay in the tens-to-low-hundreds), but still bounds
-// worst-case scan time against a hostile "count" field.
-int coverageIndex(View view, unsigned glyph) {
-  const unsigned format = view.u16(0);
-  const unsigned rawCount = view.u16(2);
-  const unsigned count = rawCount < 8192 ? rawCount : 8192;
-  if (format == 1 && view.has(4, size_t(count) * 2)) {
-    unsigned low = 0;
-    unsigned high = count;
-    while (low < high) {
-      const unsigned middle = (low + high) / 2;
-      if (view.u16(4 + middle * 2) < glyph)
-        low = middle + 1;
-      else
-        high = middle;
-    }
-    return low < count && view.u16(4 + low * 2) == glyph ? int(low) : -1;
-  }
-  if (format == 2 && view.has(4, size_t(count) * 6)) {
-    for (unsigned i = 0; i < count; ++i) {
-      const size_t position = 4 + i * 6;
-      const unsigned start = view.u16(position);
-      const unsigned end = view.u16(position + 2);
-      if (glyph >= start && glyph <= end) return int(view.u16(position + 4) + glyph - start);
-    }
-  }
-  return -1;
-}
 
 }  // namespace
 
