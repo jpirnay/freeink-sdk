@@ -120,7 +120,7 @@ unsigned kernLookups(View gpos, uint16_t (&out)[kMaxKernLookups], unsigned& work
   }
   unsigned count = 0;
   const auto addFeature = [&](const unsigned featureIndex) {
-    if (featureIndex >= featureCount || ++work > budget) return;
+    if (++work > budget || featureIndex >= featureCount) return;
     const size_t record = 2 + size_t(featureIndex) * 6;
     if (features.u32(record) != kTagKern) return;
     View feature = features.sub(features.u16(record + 4));
@@ -145,7 +145,7 @@ unsigned kernLookups(View gpos, uint16_t (&out)[kMaxKernLookups], unsigned& work
     const unsigned featureIndexCount = langSys.u16(4);
     if (!langSys.has(6, size_t(featureIndexCount) * 2)) continue;
     if (requiredFeatureIndex != 0xFFFFu) addFeature(requiredFeatureIndex);
-    for (unsigned i = 0; i < featureIndexCount; ++i) addFeature(langSys.u16(6 + i * 2));
+    for (unsigned i = 0; i < featureIndexCount && work <= budget; ++i) addFeature(langSys.u16(6 + i * 2));
   }
   return count;
 }

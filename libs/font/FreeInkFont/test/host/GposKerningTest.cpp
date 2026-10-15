@@ -8,6 +8,7 @@
 // plumbing end-to-end, including that stripping the legacy 'kern' table
 // leaves kerning working through GPOS alone, and checks the resolved reader
 // against the stateless one.
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -402,6 +403,41 @@ int main(int argc, char** argv) {
                                                     10, 20);
     }
     expect(true, "resolved truncation/corruption sweep completed");
+  }
+
+  // A hostile table: thousands of scripts sharing one LangSys of 65,535
+  // out-of-range feature indices must stay within the walk budget.
+  {
+    const unsigned scriptCount = 4096;
+    const unsigned featureIndexCount = 65535;
+    std::vector<uint8_t> hostile;
+    appendU16be(hostile, 1);
+    appendU16be(hostile, 0);   // version
+    appendU16be(hostile, 14);  // ScriptList
+    appendU16be(hostile, 10);  // FeatureList
+    appendU16be(hostile, 12);  // LookupList
+    appendU16be(hostile, 0);   // FeatureCount
+    appendU16be(hostile, 0);   // LookupCount
+    appendU16be(hostile, uint16_t(scriptCount));
+    for (unsigned s = 0; s < scriptCount; ++s) {
+      appendTag(hostile, "latn");
+      appendU16be(hostile, uint16_t(2 + scriptCount * 6));  // the one shared Script
+    }
+    appendU16be(hostile, 4);  // DefaultLangSys offset
+    appendU16be(hostile, 0);  // LangSysCount
+    appendU16be(hostile, 0);  // LookupOrder
+    appendU16be(hostile, 0xFFFF);
+    appendU16be(hostile, uint16_t(featureIndexCount));
+    for (unsigned i = 0; i < featureIndexCount; ++i) appendU16be(hostile, 0xFFFE);
+
+    const auto start = std::chrono::steady_clock::now();
+    int32_t sum = 0;
+    for (int i = 0; i < 20; ++i) sum += PairKernAdjustment(hostile.data(), hostile.size(), 10, 20);
+    uint32_t subtables[8];
+    const unsigned resolved = ResolveKernSubtables(hostile.data(), hostile.size(), subtables, 8);
+    const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    expect(sum == 0 && resolved == 0, "a hostile table kerns nothing");
+    expect(seconds < 1.0, "a hostile table costs bounded time");
   }
 
   // --- Real font: FtFont fallback end-to-end -------------------------------
