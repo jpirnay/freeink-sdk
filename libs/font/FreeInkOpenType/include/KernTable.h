@@ -1,10 +1,14 @@
 #pragma once
 
 // FreeInk SDK — the legacy TrueType 'kern' table, for fonts that have no GPOS
-// kerning (see Gpos.h). Reads what FreeType's FT_Get_Kerning() reads: the
-// Microsoft table (version 0), its horizontal format 0 subtables that hold
-// kerning values (not minimums, not cross-stream), added together unless a
-// subtable says it overrides. Bounds-checked like the layout readers.
+// kerning (see Gpos.h). Reads the Microsoft table (version 0), its horizontal
+// format 0 subtables that hold kerning values (not minimums), added together
+// unless a subtable says it overrides: what FreeType's FT_Get_Kerning() gives
+// for such a table, with two exceptions. Cross-stream subtables, which
+// FreeType adds to the horizontal value and this reader skips (they move
+// glyphs across the line, not along it), and unsorted subtables, which
+// FreeType searches linearly and this reader's binary searches can miss.
+// Bounds-checked like the layout readers.
 
 #include <stddef.h>
 #include <stdint.h>

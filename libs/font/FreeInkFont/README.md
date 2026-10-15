@@ -242,10 +242,11 @@ subtables once with `ResolveKernSubtables()` (byte offsets into the table, so
 they survive the table moving) and passes them to the resolved overload,
 which gives the same value without the walk and can also report whether the
 left glyph kerns with anything at all. `kerntable::PairKernAdjustment()` reads
-what `FT_Get_Kerning()` reads, for fonts with no GPOS kerning. All three are
-bounds-checked and keep their work bounded on hostile counts. `run_gpos.sh`
-checks the resolved reader against the per-call one, and the kern table
-reader against FreeType, on DejaVuSans.
+the legacy table, for fonts with no GPOS kerning, as `FT_Get_Kerning()` does
+for sorted subtables, but skips cross-stream subtables, which FreeType adds in.
+All three are bounds-checked and keep their work bounded on hostile counts.
+`run_gpos.sh` checks the resolved reader against the per-call one, and the
+kern table reader against FreeType, on DejaVuSans.
 
 ### FtFont integration APIs
 
