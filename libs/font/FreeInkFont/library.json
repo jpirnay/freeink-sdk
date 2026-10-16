@@ -8,7 +8,7 @@
   "platforms": "*",
   "frameworks": "*",
   "build": {
-    "flags": ["-I third_party/stb", "-I third_party/freetype/include"]
+    "flags": ["-I third_party/stb", "-I third_party/freetype/include", "-I ../FreeInkOpenType/include"]
   },
   "license": "MIT",
   "export": {"exclude": ["test"]}

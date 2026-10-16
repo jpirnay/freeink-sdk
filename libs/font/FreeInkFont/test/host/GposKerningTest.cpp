@@ -1,19 +1,27 @@
 // Host test for the GPOS pair-kerning reader (Gpos.h) and FtFont's kerning
-// fallback through it. Run via test/host/run_gpos.sh under ASan/UBSan.
+// fallback through it, and for the legacy kern table reader (KernTable.h).
+// Run via test/host/run_gpos.sh under ASan/UBSan.
 //
-// Two layers: a synthetic hand-built GPOS blob exercises both PairPos
-// formats (1 via an Extension wrapper, 2 via class matrices), activation,
-// and malformed-input robustness deterministically; the DejaVuSans fixture
-// then proves the FtFont plumbing end-to-end, including that stripping the
-// legacy 'kern' table leaves kerning working through GPOS alone.
+// Two layers: synthetic hand-built GPOS and kern blobs exercise both PairPos
+// formats (1 via an Extension wrapper, 2 via class matrices), activation by
+// any script, lookups adding up, the resolved-once API, and malformed-input
+// robustness deterministically; the DejaVuSans fixture then proves the FtFont
+// plumbing end-to-end, including that stripping the legacy 'kern' table
+// leaves kerning working through GPOS alone, and checks the resolved reader
+// against the stateless one and the kern table reader against FreeType.
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
 
+#include <ft2build.h>
+#include FT_FREETYPE_H
+
 #include "FtFont.h"
 #include "Gpos.h"
+#include "KernTable.h"
 
 using freeink::font::FtFont;
 
@@ -194,6 +202,103 @@ std::vector<uint8_t> syntheticGpos() {
   return bytes;
 }
 
+// A lookup holding several subtables, in order (no Extension).
+std::vector<uint8_t> lookupOf(uint16_t type, const std::vector<std::vector<uint8_t>>& subtables) {
+  std::vector<uint8_t> bytes;
+  appendU16be(bytes, type);
+  appendU16be(bytes, 0);
+  appendU16be(bytes, uint16_t(subtables.size()));
+  size_t offset = 6 + 2 * subtables.size();
+  for (const auto& subtable : subtables) {
+    appendU16be(bytes, uint16_t(offset));
+    offset += subtable.size();
+  }
+  for (const auto& subtable : subtables) appendBlob(bytes, subtable);
+  return bytes;
+}
+
+// A GPOS whose scripts each activate their own 'kern' feature through their
+// DefaultLangSys, listing the given lookups.
+std::vector<uint8_t> gposWith(const std::vector<std::pair<const char*, std::vector<uint16_t>>>& scripts,
+                              const std::vector<std::vector<uint8_t>>& lookups) {
+  std::vector<uint8_t> scriptList;
+  appendU16be(scriptList, uint16_t(scripts.size()));
+  size_t offset = 2 + 6 * scripts.size();
+  for (size_t i = 0; i < scripts.size(); ++i) {
+    appendTag(scriptList, scripts[i].first);
+    appendU16be(scriptList, uint16_t(offset + 12 * i));
+  }
+  for (size_t i = 0; i < scripts.size(); ++i) {
+    appendU16be(scriptList, 4);       // DefaultLangSys offset (from Script)
+    appendU16be(scriptList, 0);       // LangSysCount
+    appendU16be(scriptList, 0);       // LookupOrder
+    appendU16be(scriptList, 0xFFFF);  // RequiredFeatureIndex
+    appendU16be(scriptList, 1);       // FeatureIndexCount
+    appendU16be(scriptList, uint16_t(i));
+  }
+  std::vector<uint8_t> featureList;
+  appendU16be(featureList, uint16_t(scripts.size()));
+  offset = 2 + 6 * scripts.size();
+  for (size_t i = 0; i < scripts.size(); ++i) {
+    appendTag(featureList, "kern");
+    appendU16be(featureList, uint16_t(offset));
+    offset += 4 + 2 * scripts[i].second.size();
+  }
+  for (const auto& script : scripts) {
+    appendU16be(featureList, 0);
+    appendU16be(featureList, uint16_t(script.second.size()));
+    for (const uint16_t index : script.second) appendU16be(featureList, index);
+  }
+  std::vector<uint8_t> lookupList;
+  appendU16be(lookupList, uint16_t(lookups.size()));
+  offset = 2 + 2 * lookups.size();
+  for (const auto& lookup : lookups) {
+    appendU16be(lookupList, uint16_t(offset));
+    offset += lookup.size();
+  }
+  for (const auto& lookup : lookups) appendBlob(lookupList, lookup);
+
+  std::vector<uint8_t> bytes;
+  appendU32be(bytes, 0x00010000);
+  appendU16be(bytes, 10);
+  appendU16be(bytes, uint16_t(10 + scriptList.size()));
+  appendU16be(bytes, uint16_t(10 + scriptList.size() + featureList.size()));
+  appendBlob(bytes, scriptList);
+  appendBlob(bytes, featureList);
+  appendBlob(bytes, lookupList);
+  return bytes;
+}
+
+// The resolved reader's answer for a pair, resolving first.
+int32_t resolvedKern(const std::vector<uint8_t>& gpos, uint32_t left, uint32_t right, bool* covered = nullptr) {
+  uint32_t subtables[64];
+  const unsigned count = freeink::font::gpos::ResolveKernSubtables(gpos.data(), gpos.size(), subtables, 64);
+  return freeink::font::gpos::PairKernAdjustment(gpos.data(), gpos.size(), subtables, count < 64 ? count : 64, left,
+                                                 right, covered);
+}
+
+// A legacy kern table, version 0: one subtable per entry of `subtables`, each (coverage, sorted pairs).
+std::vector<uint8_t> kernTableWith(
+    const std::vector<std::pair<uint16_t, std::vector<std::pair<uint32_t, int16_t>>>>& subtables) {
+  std::vector<uint8_t> bytes;
+  appendU16be(bytes, 0);
+  appendU16be(bytes, uint16_t(subtables.size()));
+  for (const auto& [coverage, pairs] : subtables) {
+    appendU16be(bytes, 0);
+    appendU16be(bytes, uint16_t(14 + 6 * pairs.size()));
+    appendU16be(bytes, coverage);
+    appendU16be(bytes, uint16_t(pairs.size()));
+    appendU16be(bytes, 0);
+    appendU16be(bytes, 0);
+    appendU16be(bytes, 0);
+    for (const auto& [pair, value] : pairs) {
+      appendU32be(bytes, pair);
+      appendU16be(bytes, uint16_t(value));
+    }
+  }
+  return bytes;
+}
+
 // sfnt table lookup for plain (non-collection) fonts — enough for fixtures.
 bool findTable(const std::vector<uint8_t>& font, const char* tag, size_t& offset, size_t& length) {
   if (font.size() < 12) return false;
@@ -256,6 +361,136 @@ int main(int argc, char** argv) {
   }
   expect(true, "truncation/corruption sweep completed");
 
+  // --- Lookups and scripts --------------------------------------------------
+  using freeink::font::gpos::ResolveKernSubtables;
+  {
+    // Two lookups kerning the same pair: a shaper applies both.
+    const std::vector<uint8_t> summed = gposWith({{"latn", {0, 1}}}, {lookup(2, pairPos1(10, 20, -100), false),
+                                                                      lookup(2, pairPos1(10, 20, -20), false)});
+    expect(PairKernAdjustment(summed.data(), summed.size(), 10, 20) == -120, "the kern feature's lookups add up");
+    expect(resolvedKern(summed, 10, 20) == -120, "resolved: the lookups add up");
+
+    // Within a lookup, the first subtable that has the pair wins.
+    const std::vector<uint8_t> firstWins =
+        gposWith({{"latn", {0}}}, {lookupOf(2, {pairPos1(10, 20, -100), pairPos1(10, 20, -50)})});
+    expect(PairKernAdjustment(firstWins.data(), firstWins.size(), 10, 20) == -100,
+           "the first matching subtable of a lookup wins");
+    expect(resolvedKern(firstWins, 10, 20) == -100, "resolved: the first matching subtable wins");
+
+    // Any script's DefaultLangSys activates its kern feature: Cyrillic kerned
+    // under 'cyrl' only.
+    const std::vector<uint8_t> scripts =
+        gposWith({{"cyrl", {1}}, {"latn", {0}}},
+                 {lookup(2, pairPos1(10, 20, -100), false), lookup(2, pairPos1(30, 40, -25), false)});
+    expect(PairKernAdjustment(scripts.data(), scripts.size(), 30, 40) == -25, "a cyrl-only kern feature kerns");
+    expect(PairKernAdjustment(scripts.data(), scripts.size(), 10, 20) == -100, "latn still kerns beside it");
+    expect(resolvedKern(scripts, 30, 40) == -25, "resolved: a cyrl-only kern feature kerns");
+
+    // A lookup listed by two scripts applies once.
+    const std::vector<uint8_t> shared =
+        gposWith({{"cyrl", {0}}, {"latn", {0}}}, {lookup(2, pairPos1(10, 20, -100), false)});
+    expect(PairKernAdjustment(shared.data(), shared.size(), 10, 20) == -100, "a lookup two scripts list applies once");
+  }
+
+  // --- Resolved once ----------------------------------------------------------
+  {
+    uint32_t subtables[8];
+    expect(ResolveKernSubtables(gpos.data(), gpos.size(), subtables, 8) == 2, "two subtables resolved");
+    expect((subtables[0] & freeink::font::gpos::kLookupStart) && (subtables[1] & freeink::font::gpos::kLookupStart),
+           "each starts its own lookup");
+    expect(ResolveKernSubtables(gpos.data(), gpos.size(), nullptr, 0) == 2, "counting alone");
+    uint32_t one[1] = {0};
+    expect(ResolveKernSubtables(gpos.data(), gpos.size(), one, 1) == 2 && one[0] != 0,
+           "a short buffer gets what fits, and the full count");
+    const unsigned glyphs[] = {0, 10, 20, 30, 40, 99};
+    bool agree = true;
+    for (const unsigned left : glyphs) {
+      for (const unsigned right : glyphs) {
+        agree = agree && resolvedKern(gpos, left, right) == PairKernAdjustment(gpos.data(), gpos.size(), left, right);
+      }
+    }
+    expect(agree, "resolved and stateless agree on every synthetic pair");
+    bool covered = false;
+    expect(resolvedKern(gpos, 10, 10, &covered) == 0 && covered,
+           "a covered left glyph, kerning nothing with this right");
+    expect(resolvedKern(gpos, 99, 20, &covered) == 0 && !covered, "an uncovered left glyph");
+    expect(freeink::font::gpos::PairKernAdjustment(nullptr, 0, subtables, 2, 10, 20) == 0, "null table, resolved");
+    for (size_t len = 0; len <= gpos.size(); ++len) {
+      (void)ResolveKernSubtables(gpos.data(), len, subtables, 8);
+      (void)freeink::font::gpos::PairKernAdjustment(gpos.data(), len, subtables, 2, 10, 20);
+    }
+    for (size_t i = 0; i < gpos.size(); ++i) {
+      std::vector<uint8_t> corrupt = gpos;
+      corrupt[i] ^= 0xFF;
+      const unsigned count = ResolveKernSubtables(corrupt.data(), corrupt.size(), subtables, 8);
+      (void)freeink::font::gpos::PairKernAdjustment(corrupt.data(), corrupt.size(), subtables, count < 8 ? count : 8,
+                                                    10, 20);
+    }
+    expect(true, "resolved truncation/corruption sweep completed");
+  }
+
+  // --- The legacy kern table -------------------------------------------------
+  {
+    using freeink::font::kerntable::PairKernAdjustment;
+    const std::vector<uint8_t> table = kernTableWith({{0x0001, {{(10u << 16) | 20, -40}, {(10u << 16) | 40, 15}}},
+                                                     {0x0001, {{(10u << 16) | 20, -5}}},
+                                                     {0x0003, {{(10u << 16) | 20, -999}}},  // minimum values
+                                                     {0x0005, {{(30u << 16) | 40, -999}}}});  // cross-stream
+    bool covered = false;
+    expect(PairKernAdjustment(table.data(), table.size(), 10, 20, &covered) == -45 && covered,
+           "horizontal subtables add up; minimum and cross-stream ones do not count");
+    expect(PairKernAdjustment(table.data(), table.size(), 10, 30, &covered) == 0 && covered,
+           "a covered left glyph, kerning nothing with this right");
+    expect(PairKernAdjustment(table.data(), table.size(), 30, 40, &covered) == 0 && !covered,
+           "only a cross-stream subtable lists it: not covered");
+    const std::vector<uint8_t> override =
+        kernTableWith({{0x0001, {{(10u << 16) | 20, -40}}}, {0x0009, {{(10u << 16) | 20, -7}}}});
+    expect(PairKernAdjustment(override.data(), override.size(), 10, 20) == -7, "an override subtable replaces");
+    expect(PairKernAdjustment(nullptr, 0, 10, 20) == 0, "null kern table");
+    for (size_t len = 0; len <= table.size(); ++len) (void)PairKernAdjustment(table.data(), len, 10, 20);
+    for (size_t i = 0; i < table.size(); ++i) {
+      std::vector<uint8_t> corrupt = table;
+      corrupt[i] ^= 0xFF;
+      (void)PairKernAdjustment(corrupt.data(), corrupt.size(), 10, 20);
+    }
+    expect(true, "kern table truncation/corruption sweep completed");
+  }
+
+  // A hostile table: thousands of scripts sharing one LangSys of 65,535
+  // out-of-range feature indices must stay within the walk budget.
+  {
+    const unsigned scriptCount = 4096;
+    const unsigned featureIndexCount = 65535;
+    std::vector<uint8_t> hostile;
+    appendU16be(hostile, 1);
+    appendU16be(hostile, 0);   // version
+    appendU16be(hostile, 14);  // ScriptList
+    appendU16be(hostile, 10);  // FeatureList
+    appendU16be(hostile, 12);  // LookupList
+    appendU16be(hostile, 0);   // FeatureCount
+    appendU16be(hostile, 0);   // LookupCount
+    appendU16be(hostile, uint16_t(scriptCount));
+    for (unsigned s = 0; s < scriptCount; ++s) {
+      appendTag(hostile, "latn");
+      appendU16be(hostile, uint16_t(2 + scriptCount * 6));  // the one shared Script
+    }
+    appendU16be(hostile, 4);  // DefaultLangSys offset
+    appendU16be(hostile, 0);  // LangSysCount
+    appendU16be(hostile, 0);  // LookupOrder
+    appendU16be(hostile, 0xFFFF);
+    appendU16be(hostile, uint16_t(featureIndexCount));
+    for (unsigned i = 0; i < featureIndexCount; ++i) appendU16be(hostile, 0xFFFE);
+
+    const auto start = std::chrono::steady_clock::now();
+    int32_t sum = 0;
+    for (int i = 0; i < 20; ++i) sum += PairKernAdjustment(hostile.data(), hostile.size(), 10, 20);
+    uint32_t subtables[8];
+    const unsigned resolved = ResolveKernSubtables(hostile.data(), hostile.size(), subtables, 8);
+    const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    expect(sum == 0 && resolved == 0, "a hostile table kerns nothing");
+    expect(seconds < 1.0, "a hostile table costs bounded time");
+  }
+
   // --- Real font: FtFont fallback end-to-end -------------------------------
   if (argc > 1) {
     const std::vector<uint8_t> font = readFile(argv[1]);
@@ -295,6 +530,50 @@ int main(int argc, char** argv) {
 
     // Integer Font-API route shares the same fallback.
     expect(ft.kerning('A', 'V', 32, 0) <= 0, "integer kerning() API agrees in sign");
+
+    // Every printable ASCII pair: the resolved reader gives what the stateless
+    // one gives, and the kern table reader what FreeType gives.
+    FT_Library library = nullptr;
+    FT_Face face = nullptr;
+    expect(FT_Init_FreeType(&library) == 0 &&
+               FT_New_Memory_Face(library, font.data(), FT_Long(font.size()), 0, &face) == 0,
+           "FreeType opens the fixture");
+    size_t kernOffset = 0;
+    size_t kernLength = 0;
+    const bool hasKern = findTable(font, "kern", kernOffset, kernLength);
+    std::vector<uint32_t> subtables(256);
+    const unsigned count =
+        hasGpos ? ResolveKernSubtables(&font[gposOffset], gposLength, subtables.data(), unsigned(subtables.size())) : 0;
+    expect(count <= subtables.size(), "the fixture's subtables fit");
+    bool resolvedAgrees = true;
+    bool kernAgrees = true;
+    int kerned = 0;
+    for (unsigned l = 0x21; l < 0x7F; ++l) {
+      for (unsigned r = 0x21; r < 0x7F; ++r) {
+        const unsigned gl = FT_Get_Char_Index(face, l);
+        const unsigned gr = FT_Get_Char_Index(face, r);
+        if (hasGpos) {
+          const int32_t stateless = PairKernAdjustment(&font[gposOffset], gposLength, gl, gr);
+          const int32_t resolved = freeink::font::gpos::PairKernAdjustment(&font[gposOffset], gposLength,
+                                                                          subtables.data(), count, gl, gr);
+          resolvedAgrees = resolvedAgrees && stateless == resolved;
+          kerned += stateless != 0;
+        }
+        if (hasKern) {
+          FT_Vector delta{0, 0};
+          FT_Get_Kerning(face, gl, gr, FT_KERNING_UNSCALED, &delta);
+          kernAgrees = kernAgrees && freeink::font::kerntable::PairKernAdjustment(&font[kernOffset], kernLength, gl,
+                                                                                  gr) == int32_t(delta.x);
+        }
+      }
+    }
+    expect(resolvedAgrees, "resolved GPOS agrees with the stateless reader on every ASCII pair");
+    expect(!hasGpos || kerned > 100, "the fixture's GPOS kerns ASCII pairs (not a vacuous match)");
+    expect(kernAgrees, "the kern table reader agrees with FT_Get_Kerning on every ASCII pair");
+    printf("info: %u kern subtables resolved, %d ASCII pairs kerned; legacy kern table %s\n", count, kerned,
+           hasKern ? "checked against FreeType" : "absent");
+    FT_Done_Face(face);
+    FT_Done_FreeType(library);
   }
 
   printf("%d checks, %d failures\n", checks, failures);
