@@ -451,6 +451,9 @@ class FreeInkDisplay {
   // Block until a pending async refresh completes (no-op when none is).
   // Every blocking panel operation calls this before touching the bus.
   void syncPendingAsync();
+  // After a single-push grayscale frame, which leaves frameBuffer as the write buffer
+  // (no swap): copy it into frameBufferActive, the displayed frame the host keeps.
+  void keepDisplayedCopy();
   // Shared body of displayBufferAsync() / triggerDisplayAsync(): fire the
   // update and return while the waveform runs (_asyncPending set).
   void displayAsyncImpl(RefreshMode mode, bool turnOffScreen, bool noShadow = false);

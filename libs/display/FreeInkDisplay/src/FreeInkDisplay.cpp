@@ -369,6 +369,21 @@ FreeInkDisplay::RefreshMode FreeInkDisplay::resolveReleasedMode(RefreshMode mode
 }
 #endif
 
+// The frame just pushed is frameBuffer, and with no swap it stays the write buffer. Every other
+// display leaves the panel's frame in frameBufferActive, and syncWriteBufferFromActive() hands that
+// back to whatever paints over the screen (popups, a light drawer, a screenshot); a single-push
+// frame left it at whatever the last swap had put there, an earlier page or the boot screen
+// (LilyGo T5 S3: the light drawer pulled down over a chapter's last page showed an earlier page
+// without its status bar). So the frame is copied there. Safe while the waveform runs: the only
+// driver with this path copied the frame into its own canvas before returning and never reads the
+// host buffers during the refresh. While the secondary is lent there is nothing to keep; its return
+// seeds it from frameBuffer.
+void FreeInkDisplay::keepDisplayedCopy() {
+#ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
+  if (frameBuffer && frameBufferActive) memcpy(frameBufferActive, frameBuffer, bufferSize);
+#endif
+}
+
 void FreeInkDisplay::syncWriteBufferFromActive() const {
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
   if (frameBuffer && frameBufferActive) memcpy(frameBuffer, frameBufferActive, bufferSize);
@@ -827,6 +842,7 @@ void FreeInkDisplay::triggerGrayscaleFrame(RefreshMode mode, bool turnOffScreen)
   _shadowValid = false;
   _refreshPending = _driver->displayGrayFrameStart(_bus, frameBuffer, toInternal(mode), turnOffScreen);
   // No swapBuffers(), for the same reason displayGrayscaleFrame() omits it -- see there.
+  keepDisplayedCopy();
 }
 
 void FreeInkDisplay::displayGrayscaleFrame(RefreshMode mode, bool turnOffScreen) {
@@ -837,6 +853,7 @@ void FreeInkDisplay::displayGrayscaleFrame(RefreshMode mode, bool turnOffScreen)
   syncPendingAsync();
   _shadowValid = false;
   _driver->displayGrayFrame(_bus, frameBuffer, toInternal(mode), turnOffScreen);
+  keepDisplayedCopy();
   // Deliberately NO swapBuffers(), unlike displayBuffer().
   //
   // It was added here once, reasoning that a display should leave the buffer it
