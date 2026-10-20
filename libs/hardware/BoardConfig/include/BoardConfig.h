@@ -211,6 +211,45 @@
    FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_PAPERMONO || FREEINK_DEVICE_PAPERS3 || FREEINK_DEVICE_MURPHY_M4 || \
    FREEINK_DEVICE_EEGO_A4 || FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_PICCO)
 #endif
+// Touch-controller drivers, one flag per BoardConfig::TouchController. InputManager
+// dispatches on ACTIVE.touch.controller at runtime and selectDevice() can switch
+// ACTIVE, so without these a touch build carries every driver. Each flag is 1 when
+// a selected device's profile names that controller; a multi-device binary gets
+// the union over its devices. Override any with -DFREEINK_TOUCH_<CONTROLLER>=0/1:
+// switching off a driver a selected profile needs fails the static_asserts after
+// DEFAULT_DEVICE, so it is a build error rather than a touchscreen that never
+// answers. A touch build whose selected profiles name no controller (CAP_TOUCH
+// forced on for touchless devices, or a device not classified here yet) keeps
+// every driver, as before; -DFREEINK_TOUCH_ALL_DRIVERS=1 forces that anywhere.
+#ifndef FREEINK_TOUCH_ALL_DRIVERS
+#define FREEINK_TOUCH_ALL_DRIVERS                                                                              \
+  (!(FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_M5PAPER || FREEINK_DEVICE_STICKY ||      \
+     FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_PAPERMONO || FREEINK_DEVICE_PAPERS3 || FREEINK_DEVICE_MURPHY_M4 || \
+     FREEINK_DEVICE_EEGO_A4 || FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_PICCO))
+#endif
+#ifndef FREEINK_TOUCH_CHSC6X  // Murphy M3
+#define FREEINK_TOUCH_CHSC6X (FREEINK_CAP_TOUCH && (FREEINK_TOUCH_ALL_DRIVERS || FREEINK_DEVICE_MURPHY))
+#endif
+#ifndef FREEINK_TOUCH_GT911  // LilyGo T5 S3, M5Paper v1.1, PaperS3, Sticky, X4 Pro
+#define FREEINK_TOUCH_GT911                                                                              \
+  (FREEINK_CAP_TOUCH && (FREEINK_TOUCH_ALL_DRIVERS || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_M5PAPER || \
+                         FREEINK_DEVICE_PAPERS3 || FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4PRO))
+#endif
+#ifndef FREEINK_TOUCH_FT5X06  // Paper Mono (its FT6336 on the FT5x06 register set)
+#define FREEINK_TOUCH_FT5X06 (FREEINK_CAP_TOUCH && (FREEINK_TOUCH_ALL_DRIVERS || FREEINK_DEVICE_PAPERMONO))
+#endif
+#ifndef FREEINK_TOUCH_FT6336U  // Murphy M4
+#define FREEINK_TOUCH_FT6336U (FREEINK_CAP_TOUCH && (FREEINK_TOUCH_ALL_DRIVERS || FREEINK_DEVICE_MURPHY_M4))
+#endif
+#ifndef FREEINK_TOUCH_GSLX680  // EEGO A4
+#define FREEINK_TOUCH_GSLX680 (FREEINK_CAP_TOUCH && (FREEINK_TOUCH_ALL_DRIVERS || FREEINK_DEVICE_EEGO_A4))
+#endif
+#ifndef FREEINK_TOUCH_CST816S  // Metalio E-Ink 4
+#define FREEINK_TOUCH_CST816S (FREEINK_CAP_TOUCH && (FREEINK_TOUCH_ALL_DRIVERS || FREEINK_DEVICE_METALIO_EINK4))
+#endif
+#ifndef FREEINK_TOUCH_PICCO_CST  // Onyx Picco
+#define FREEINK_TOUCH_PICCO_CST (FREEINK_CAP_TOUCH && (FREEINK_TOUCH_ALL_DRIVERS || FREEINK_DEVICE_PICCO))
+#endif
 #ifndef FREEINK_CAP_FRONTLIGHT
 // EEGO A4's frontlight is an I2C LED driver (viaI2cLed), not LEDC PWM — the
 // FrontlightManager I2C backend drives it.
@@ -2257,6 +2296,60 @@ constexpr BoardProfile DEFAULT_DEVICE = XTEINK_X3;  // X3-only binary
 #else
 // X4-only or the dual X3+X4 C3 binary: boot as X4, runtime-swap to X3 on detect.
 constexpr BoardProfile DEFAULT_DEVICE = XTEINK_X4;
+#endif
+
+// True when this build compiles InputManager's driver for `c` (FREEINK_TOUCH_*).
+constexpr bool touchDriverCompiled(TouchController c) {
+  switch (c) {
+    case TouchController::None:
+      return true;
+    case TouchController::Chsc6x:
+      return FREEINK_TOUCH_CHSC6X;
+    case TouchController::Gt911:
+      return FREEINK_TOUCH_GT911;
+    case TouchController::Ft5x06:
+      return FREEINK_TOUCH_FT5X06;
+    case TouchController::Ft6336u:
+      return FREEINK_TOUCH_FT6336U;
+    case TouchController::Gslx680:
+      return FREEINK_TOUCH_GSLX680;
+    case TouchController::Cst816s:
+      return FREEINK_TOUCH_CST816S;
+    case TouchController::PiccoCst:
+      return FREEINK_TOUCH_PICCO_CST;
+  }
+  return false;
+}
+
+// Every profile selectDevice() can make ACTIVE in this build must find its touch
+// driver compiled in. A device listed here with a touchless profile still gets
+// its line, so a profile that later gains a controller is checked too. Builds
+// with FREEINK_CAP_TOUCH=0 drop touch outright (InputManager::hasTouch() is false).
+#if FREEINK_CAP_TOUCH
+#define FREEINK_CHECK_TOUCH_DRIVER(device, profile)                         \
+  static_assert(!(device) || touchDriverCompiled(profile.touch.controller), \
+                #profile ".touch.controller has no InputManager driver in this build (see FREEINK_TOUCH_*)")
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_X4, XTEINK_X4);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_X3, XTEINK_X3);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_X3, XTEINK_X3_UC8279);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_M5, M5STACK_PAPER_COLOR);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_MURPHY, MURPHY_M3);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_MURPHY_M4, MURPHY_M4);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_DELINK, DE_LINK);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_LILYGO, LILYGO_T5S3);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_M5PAPER, M5PAPER_V11);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_STICKY, STICKY);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_X4PRO, XTEINK_X4_PRO);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_X4CLASSIC, XTEINK_X4_CLASSIC);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_PAPERMONO, PAPER_MONO);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_PAPERS3, M5PAPER_S3);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_EEGO_A4, EEGO_A4);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_ONEPAGE, ONEPAGE);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_METALIO_EINK4, METALIO_EINK4);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_WS397, WS_EPAPER_397);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_PICCO, PICCO);
+FREEINK_CHECK_TOUCH_DRIVER(1, DEFAULT_DEVICE);  // a device missing above still boots as this
+#undef FREEINK_CHECK_TOUCH_DRIVER
 #endif
 
 // Runtime-active profile. Defaults to DEFAULT_DEVICE — identical to the old

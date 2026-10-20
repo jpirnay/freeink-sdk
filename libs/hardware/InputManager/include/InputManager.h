@@ -334,6 +334,7 @@ class InputManager {
 
   // Touch backend. Compiled only when FREEINK_CAP_TOUCH is set; dispatches on
   // BoardConfig::ACTIVE.touch.controller (CHSC6x, GT911, or FT5x06/FT6336).
+  // Each driver's definitions exist only when its FREEINK_TOUCH_* flag is set.
   void beginTouch();
   uint8_t serviceTouch();  // runs the machine; returns synthesized button mask
   void updateTouchFromIrq(unsigned long now,
