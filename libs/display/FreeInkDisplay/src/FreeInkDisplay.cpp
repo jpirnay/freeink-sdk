@@ -902,6 +902,7 @@ void FreeInkDisplay::triggerGrayscaleFrame(RefreshMode mode, bool turnOffScreen)
     displayBuffer(mode, turnOffScreen);
     return;
   }
+  DisplayPmLock pmLock;
   syncPendingAsync();
   _shadowValid = false;
   _refreshPending = _driver->displayGrayFrameStart(_bus, frameBuffer, toInternal(mode), turnOffScreen);
@@ -914,6 +915,7 @@ void FreeInkDisplay::displayGrayscaleFrame(RefreshMode mode, bool turnOffScreen)
     displayBuffer(mode, turnOffScreen);
     return;
   }
+  DisplayPmLock pmLock;
   syncPendingAsync();
   _shadowValid = false;
   _driver->displayGrayFrame(_bus, frameBuffer, toInternal(mode), turnOffScreen);
@@ -948,6 +950,7 @@ uint8_t* FreeInkDisplay::borrowGray8Canvas(uint16_t* stride) {
 
 void FreeInkDisplay::displayGray8Canvas(RefreshMode mode, bool turnOffScreen) {
   if (_inverted || _inversionDirty || !_driver) return;
+  DisplayPmLock pmLock;
   syncPendingAsync();
   // The frame came from the canvas, not from frameBuffer, so neither the shadow
   // nor the RED baseline describes what is on the panel any more.
