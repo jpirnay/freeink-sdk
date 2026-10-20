@@ -16,6 +16,10 @@ namespace freeink {
 
 bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
   if (pins.busWidth == 0) return false;
+  // The sleep path may hold the bus pads (Picco); a held pad ignores the slot setup.
+  for (const int8_t pin : {pins.clk, pins.cmd, pins.d0, pins.d1, pins.d2, pins.d3}) {
+    if (pin >= 0) gpio_hold_dis(static_cast<gpio_num_t>(pin));
+  }
 
 #if FREEINK_DEVICE_METALIO_EINK4
   if (BoardConfig::isMetalioEInk4()) {
@@ -107,11 +111,13 @@ bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
   // block I/O works, and the gate is left in the exact LOW state that read succeeded under.
   esp_err_t mountErr = ESP_FAIL;
   for (int attempt = 0; attempt < 4; attempt++) {
-    if (sdPwr >= 0) {
+    if (sdPwr >= 0 && BoardConfig::ACTIVE.sd.powerCycleOnMount) {
       digitalWrite(sdPwr, HIGH);
       delay(80);
       digitalWrite(sdPwr, LOW);  // run with the enable held LOW
       delay(120);
+    } else if (sdPwr >= 0) {
+      digitalWrite(sdPwr, BoardConfig::ACTIVE.sd.powerActiveHigh ? HIGH : LOW);  // keep the rail on
     }
     esp_err_t e = sdmmc_card_init(&host, card);
     if (e != ESP_OK && card->csd.capacity == 0) {

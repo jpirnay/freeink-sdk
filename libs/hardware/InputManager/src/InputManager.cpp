@@ -7,6 +7,9 @@
 #if FREEINK_CAP_TOUCH
 #include <Wire.h>
 #include <driver/gpio.h>
+#if FREEINK_DEVICE_PICCO
+#include <driver/rtc_io.h>
+#endif
 #if FREEINK_DEVICE_MURPHY_M4
 #include <driver/i2c_master.h>
 #include <esp_rom_sys.h>
@@ -92,9 +95,19 @@ InputManager::InputManager()
       twoButtonLongPressActive(false) {}
 
 void InputManager::begin() {
+#if FREEINK_DEVICE_PICCO
+  // pinMode preserves wake interrupt types; a held polled button must not trigger a level ISR.
+  if (BoardConfig::isPicco() && BoardConfig::ACTIVE.input.power >= 0) {
+    detachInterrupt(BoardConfig::ACTIVE.input.power);
+  }
+#endif
 #if FREEINK_DEVICE_METALIO_EINK4
   if (BoardConfig::isMetalioEInk4()) freeink::metalio::ensureBooted();
 #endif
+  if (hasToggleSwitch()) {
+    pinMode(BoardConfig::ACTIVE.input.toggleSwitch, INPUT_PULLUP);
+    toggleSwitchOn = toggleSwitchRaw = digitalRead(BoardConfig::ACTIVE.input.toggleSwitch) == LOW;
+  }
   if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::XteinkAdcLadder) {
     pinMode(BUTTON_ADC_PIN_1, INPUT);
     pinMode(BUTTON_ADC_PIN_2, INPUT);
@@ -225,6 +238,13 @@ uint8_t InputManager::getState() {
 
 InputManager::ButtonHook InputManager::s_buttonHook = nullptr;
 
+#if FREEINK_DEVICE_PICCO
+namespace {
+uint16_t piccoReadReport(uint8_t addr, uint8_t* buf, uint16_t cap);
+bool piccoWaitInt(int8_t irq, unsigned long timeoutMs);
+}  // namespace
+#endif
+
 bool InputManager::prepareForDeepSleep() {
 #if FREEINK_DEVICE_EEGO_A4
   const auto& t = BoardConfig::ACTIVE.touch;
@@ -241,6 +261,31 @@ bool InputManager::prepareForDeepSleep() {
       pinMode(t.reset, OUTPUT);
       digitalWrite(t.reset, LOW);
       gpio_hold_en(reset);
+    }
+    touchDataEnabled = false;
+    return ok;
+  }
+#endif
+#if FREEINK_DEVICE_PICCO
+  const auto& t = BoardConfig::ACTIVE.touch;
+  if (t.controller == BoardConfig::TouchController::PiccoCst && t.i2cAddress != 0) {
+    // Stock FUN_4200c730: SET_POWER(SLEEP) to command register 0x0005, wait
+    // for the response, then pull RST/INT/GPIO12 down. deepSleep() floats the
+    // digital pad config, so the pulldowns are set in the RTC domain.
+    static const uint8_t sleepCmd[] = {0x05, 0x00, 0x01, 0x08};
+    Wire.beginTransmission(t.i2cAddress);
+    Wire.write(sleepCmd, sizeof(sleepCmd));
+    const bool ok = Wire.endTransmission() == 0;
+    uint8_t buf[16];
+    if (ok && piccoWaitInt(t.irq, 500)) piccoReadReport(t.i2cAddress, buf, sizeof(buf));
+    if (t.irq >= 0) detachInterrupt(t.irq);
+    for (const int8_t pin : {t.reset, t.irq, int8_t(12)}) {
+      if (pin < 0) continue;
+      const auto g = static_cast<gpio_num_t>(pin);
+      rtc_gpio_init(g);
+      rtc_gpio_set_direction(g, RTC_GPIO_MODE_INPUT_ONLY);
+      rtc_gpio_pullup_dis(g);
+      rtc_gpio_pulldown_en(g);
     }
     touchDataEnabled = false;
     return ok;
@@ -563,6 +608,7 @@ void InputManager::update() {
   touchHomeKeyEvent = false;
   touchHomeKeyTapEvent = false;
   touchHomeKeyLongEvent = false;
+  updateToggleSwitch(currentTime);
 
   if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::DigitalConfirmBackHold) {
     updateConfirmBackHold(currentTime);
@@ -589,6 +635,19 @@ void InputManager::update() {
     if (state != currentState) {
       applyStateChange(state, currentTime);
     }
+  }
+}
+
+void InputManager::updateToggleSwitch(const unsigned long now) {
+  toggleSwitchChangedEvent = false;
+  if (!hasToggleSwitch()) return;
+  const bool raw = digitalRead(BoardConfig::ACTIVE.input.toggleSwitch) == LOW;
+  if (raw != toggleSwitchRaw) {
+    toggleSwitchRaw = raw;
+    toggleSwitchRawSince = now;
+  } else if (raw != toggleSwitchOn && now - toggleSwitchRawSince > DEBOUNCE_DELAY) {
+    toggleSwitchOn = raw;
+    toggleSwitchChangedEvent = true;
   }
 }
 
@@ -1277,6 +1336,10 @@ void InputManager::beginTouch() {
     beginGslx680();
     return;
   }
+  if (t.controller == BoardConfig::TouchController::PiccoCst) {
+    beginPiccoTouch();
+    return;
+  }
   // CHSC6x: I2C bus only. The IRQ is left unconfigured — it's a brief pulse on
   // this controller, so detection polls I2C and gates on the frame's touch bit
   // instead (see decodeChsc6xFrame / updateTouchFromIrq).
@@ -1316,6 +1379,8 @@ uint8_t InputManager::serviceTouch() {
     pollFt6336u(now);
   } else if (t.controller == BoardConfig::TouchController::Gslx680) {
     pollGslx680(now);
+  } else if (t.controller == BoardConfig::TouchController::PiccoCst) {
+    pollPiccoTouch(now);
   } else {
     updateTouchFromIrq(now, 0);  // detection polls I2C; the IRQ is unused now
     // Synthesized confirm tracks an actually-detected press, not the IRQ line.
@@ -1862,6 +1927,58 @@ void InputManager::beginGslx680() {
 #endif
 }
 
+// EEGO A4 stock factory touch calibration: four corner points fanned around a
+// centre point, each mapping a raw GSLX680 sample to a portrait screen pixel.
+// A sample is interpolated barycentrically inside the centre/corner/corner
+// triangle that contains it, then clamped to the 552x768 portrait screen.
+namespace {
+struct GslCalPoint {
+  int32_t rawX, rawY, screenX, screenY;
+};
+constexpr GslCalPoint GSL_CAL_CENTRE = {549, 337, 276, 306};
+constexpr GslCalPoint GSL_CAL_CORNERS[4] = {
+    {720, 94, 80, 168}, {694, 560, 472, 168}, {392, 558, 472, 444}, {374, 97, 80, 444}};
+
+int32_t roundedDiv(int64_t num, int64_t den) {
+  if (den < 0) {
+    num = -num;
+    den = -den;
+  }
+  return static_cast<int32_t>(num >= 0 ? (num + den / 2) / den : -((-num + den / 2) / den));
+}
+}  // namespace
+
+void InputManager::gslCalibrate(const uint16_t rawX, const uint16_t rawY, int16_t& screenX, int16_t& screenY) {
+  const auto& c = GSL_CAL_CENTRE;
+  const int64_t dx = static_cast<int32_t>(rawX) - c.rawX;
+  const int64_t dy = static_cast<int32_t>(rawY) - c.rawY;
+  // The triangle whose two corners bracket the sample; the last one otherwise.
+  int a = 3;
+  int b = 0;
+  for (int i = 0; i < 4; ++i) {
+    const auto& p = GSL_CAL_CORNERS[i];
+    const auto& q = GSL_CAL_CORNERS[(i + 1) % 4];
+    const int64_t px = p.rawX - c.rawX, py = p.rawY - c.rawY;
+    const int64_t qx = q.rawX - c.rawX, qy = q.rawY - c.rawY;
+    if (px * dy - py * dx >= 0 && qy * dx - qx * dy >= 0) {
+      a = i;
+      b = (i + 1) % 4;
+      break;
+    }
+  }
+  const auto& p = GSL_CAL_CORNERS[a];
+  const auto& q = GSL_CAL_CORNERS[b];
+  const int64_t px = p.rawX - c.rawX, py = p.rawY - c.rawY;
+  const int64_t qx = q.rawX - c.rawX, qy = q.rawY - c.rawY;
+  const int64_t den = px * qy - qx * py;
+  const int64_t wp = dx * qy - qx * dy;  // weight of p, times den
+  const int64_t wq = px * dy - dx * py;  // weight of q, times den
+  const int32_t x = c.screenX + roundedDiv(wp * (p.screenX - c.screenX) + wq * (q.screenX - c.screenX), den);
+  const int32_t y = c.screenY + roundedDiv(wp * (p.screenY - c.screenY) + wq * (q.screenY - c.screenY), den);
+  screenX = static_cast<int16_t>(x < 0 ? 0 : (x > 551 ? 551 : x));
+  screenY = static_cast<int16_t>(y < 0 ? 0 : (y > 767 ? 767 : y));
+}
+
 void InputManager::pollGslx680(const unsigned long now) {
   if (now < touchReadAt) return;
   touchReadAt = now + TOUCH_SAMPLE_DELAY_MS;
@@ -1893,10 +2010,16 @@ void InputManager::pollGslx680(const unsigned long now) {
   const uint16_t rawYWord = static_cast<uint16_t>(frame[5]) << 8 | frame[4];
   const uint16_t rawXWord = static_cast<uint16_t>(frame[7]) << 8 | frame[6];
 
-  // The capacitive home key below the panel reports a fixed sentinel (not a
-  // coordinate). Route it to the home-key events instead of a screen tap.
-  const bool homeKeyDown = count == 1 && rawXWord == 0x03a0 && rawYWord == 0x1020;
-  if (homeKeyDown) {
+  // Classified as the stock firmware does (the words' top nibble is the
+  // contact's track id, so only the 12-bit coordinates count):
+  //  - (0x3a0, 0x20) is the capacitive home key, ignored while a screen touch
+  //    is in progress;
+  //  - any other sample at X >= 920 is past the glass and dropped, leaving all
+  //    touch and key state alone (clamped, it would land on the top edge);
+  //  - an on-glass touch cancels a pending key press without firing it.
+  const uint16_t sampleX = rawXWord & 0x0fff;
+  if (sampleX == 0x03a0 && (rawYWord & 0x0fff) == 0x0020) {
+    if (touchPressed) return;
     if (!touchHomeKeyDown) {
       touchHomeKeyEvent = true;
       touchHomeKeyDown = true;
@@ -1906,25 +2029,22 @@ void InputManager::pollGslx680(const unsigned long now) {
       touchHomeKeyLongEvent = true;
       touchHomeKeyLongFired = true;
     }
-    touchPressed = false;
-    touchPoint.valid = false;
     return;
   }
-  finishHomeKey();
+  if (sampleX >= 920) return;
+  touchHomeKeyDown = false;
+  touchHomeKeyLongFired = false;
 
-  // GSLX680 1.2.7 calibration: the digitizer is portrait (raw ~0..920 x 0..680)
-  // over a landscape 768x552 framebuffer. Map, swap the axes, then mirror the
-  // short axis for GfxRenderer's Portrait transform. Returns panel-native coords.
-  const uint16_t rawY = rawYWord & 0x0fff;
-  const uint16_t rawX = rawXWord & 0x0fff;
-  const uint16_t limitedY = rawY > 680 ? 680 : rawY;
-  const uint16_t limitedX = rawX > 920 ? 920 : rawX;
-  const uint16_t portraitX = static_cast<uint32_t>(limitedY) * 551 / 680;
-  const uint16_t portraitY = static_cast<uint32_t>(920 - limitedX) * 767 / 920;
-
+  // Stock factory calibration to portrait screen pixels, then into the
+  // panel-native frame (x = portrait y, y = 551 - portrait x). The profile's
+  // raw range can still trim the result.
+  int16_t screenX = 0;
+  int16_t screenY = 0;
+  gslCalibrate(sampleX, rawYWord & 0x0fff, screenX, screenY);
+  const auto& t = BoardConfig::ACTIVE.touch;
   touchPoint.valid = true;
-  touchPoint.x = portraitY;
-  touchPoint.y = static_cast<uint16_t>(551 - portraitX);
+  touchPoint.x = mapTouchAxis(static_cast<uint16_t>(screenY), t.rawMinX, t.rawMaxX, t.rawMaxX - t.rawMinX);
+  touchPoint.y = mapTouchAxis(static_cast<uint16_t>(551 - screenX), t.rawMinY, t.rawMaxY, t.rawMaxY - t.rawMinY);
   touchPoint.timestamp = now;
 
   if (!touchPressed) {
@@ -1942,6 +2062,196 @@ void InputManager::pollGslx680(const unsigned long now) {
     if (absInt(dx) > TOUCH_TAP_RELEASE_SLOP_PX || absInt(dy) > TOUCH_TAP_RELEASE_SLOP_PX)
       touchMovedBeyondTapReleaseSlop = true;
   }
+}
+
+// --- Onyx Picco (PiccoCst, I2C 0x24) — TAP-DUMP SCAFFOLD --------------------
+//
+// Recovered from the retail firmware (Ghidra). Init/reset/INT are HIGH
+// confidence; the coordinate read is only PARTIALLY recovered, so this driver
+// brings the controller up and reads on INT but does NOT yet publish touch
+// coordinates. Enough is known to finish it from a hardware tap-dump:
+//   * INT (irq): active-low, falls when a sample is ready (attachInterrupt
+//     FALLING in FUN_4200bcc4). Here it is polled.
+//   * RST: pulse HIGH -> 1ms -> LOW -> 10ms -> HIGH, then ~50ms settle (FUN_4200b984).
+//   * The firmware writes a framed command (header 0x04, length, marker 0x2F/0x40,
+//     cmd, 16-bit checksum) then reads a 0x108-byte status block. In that block
+//     buf[0x36]==0x1F is the report id and buf[0x38]&0x7F is the touch-point count.
+//     The per-point X/Y byte offsets were NOT recovered (handler is in a packed
+//     .irom region). Build -DTOUCH_PROBE_DEBUG, tap a unit, read the dumped bytes
+//     to locate X/Y, then mirror pollFt6336u's publish/slop/press-release logic.
+// --- Onyx Picco: Parade/Cypress TMA525C (PIP protocol) -----------------------
+// Recovered from the stock firmware (build 2912, "TMA525C" driver). Every read is
+// a 2-byte little-endian length followed by a re-read of the whole report from its
+// start; a zero length means nothing pending. Touch reports (report ID 0x01)
+// carry the record count in byte 5 bits 0-4 and 10-byte records from byte 7:
+// rec[1] bits 0-4 = touch ID, bits 5-6 = event (3 = lift-off), rec[2..3] = X,
+// rec[4..5] = Y (LE). Stock inverts both against the native 480x800 portrait
+// digitizer (x = 480 - X, y = 800 - Y).
+namespace {
+constexpr uint16_t PICCO_TOUCH_W = 480;
+constexpr uint16_t PICCO_TOUCH_H = 800;
+constexpr uint8_t PICCO_REPORT_TOUCH = 0x01;
+constexpr uint8_t PICCO_MODE_APP = 0xF7;
+constexpr uint8_t PICCO_MODE_BOOTLOADER = 0xFF;
+constexpr unsigned long PICCO_TOUCH_STALE_MS = 3000;
+
+// One PIP report into buf (at most cap bytes); returns its length, 0 if none.
+uint16_t piccoReadReport(uint8_t addr, uint8_t* buf, uint16_t cap) {
+  if (Wire.requestFrom(addr, static_cast<uint8_t>(2), static_cast<uint8_t>(true)) != 2) return 0;
+  const uint16_t len = Wire.read() | (Wire.read() << 8);
+  if (len < 2 || len > cap) return 0;
+  const uint8_t got = Wire.requestFrom(addr, static_cast<uint8_t>(len), static_cast<uint8_t>(true));
+  for (uint8_t i = 0; i < got; ++i) buf[i] = Wire.read();
+  return got == len ? len : 0;
+}
+
+bool piccoWaitInt(int8_t irq, unsigned long timeoutMs) {
+  const unsigned long start = millis();
+  while (irq >= 0 && digitalRead(irq) != LOW) {
+    if (millis() - start > timeoutMs) return false;
+    delay(1);
+  }
+  return true;
+}
+
+// CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF): the PIP bootloader packet CRC.
+uint16_t piccoCrc(const uint8_t* p, size_t n) {
+  uint16_t crc = 0xFFFF;
+  while (n--) {
+    crc ^= static_cast<uint16_t>(*p++) << 8;
+    for (uint8_t b = 0; b < 8; ++b) crc = (crc & 0x8000) ? (crc << 1) ^ 0x1021 : crc << 1;
+  }
+  return crc;
+}
+}  // namespace
+
+void InputManager::beginPiccoTouch() {
+  const auto& t = BoardConfig::ACTIVE.touch;
+  if (t.sda < 0 || t.scl < 0 || t.i2cAddress == 0) return;
+
+  if (t.irq >= 0) pinMode(t.irq, INPUT_PULLUP);  // active-low data-ready
+
+  Wire.begin(t.sda, t.scl, 400000);
+  Wire.setTimeOut(10);
+
+  // Stock reset: HIGH, 1 ms, LOW 10 ms, HIGH, then 50 ms.
+  if (t.reset >= 0) {
+    pinMode(t.reset, OUTPUT);
+    digitalWrite(t.reset, HIGH);
+    delay(1);
+    digitalWrite(t.reset, LOW);
+    delay(10);
+    digitalWrite(t.reset, HIGH);
+    delay(50);
+  }
+
+  uint8_t buf[128];
+  // Drain the reset sentinel / anything queued (stock: up to 4 reads while INT is low).
+  for (int i = 0; i < 4 && t.irq >= 0 && digitalRead(t.irq) == LOW; ++i) {
+    delay(100);
+    piccoReadReport(t.i2cAddress, buf, sizeof(buf));
+  }
+
+  // HID descriptor read (register 0x0001): byte 2 of the reply is the mode.
+  uint8_t mode = 0;
+  for (int attempt = 0; attempt < 3 && mode == 0; ++attempt) {
+    Wire.beginTransmission(t.i2cAddress);
+    Wire.write(0x01);
+    Wire.write(0x00);
+    if (Wire.endTransmission() != 0) {
+      delay(120);
+      continue;
+    }
+    if (piccoWaitInt(t.irq, 500) && piccoReadReport(t.i2cAddress, buf, sizeof(buf)) >= 3) mode = buf[2];
+  }
+
+  if (mode == PICCO_MODE_BOOTLOADER) {
+    // Launch the application: output register 0x0004, report 0x40, then the
+    // bootloader packet SOP(01) cmd(3B) len(0000) crc(LE) EOP(17).
+    uint8_t pkt[] = {0x04, 0x00, 0x0B, 0x00, 0x40, 0x00, 0x01, 0x3B, 0x00, 0x00, 0x00, 0x00, 0x17};
+    const uint16_t crc = piccoCrc(&pkt[6], 4);
+    pkt[10] = crc & 0xFF;
+    pkt[11] = crc >> 8;
+    Wire.beginTransmission(t.i2cAddress);
+    Wire.write(pkt, sizeof(pkt));
+    Wire.endTransmission();
+    if (piccoWaitInt(t.irq, 500)) piccoReadReport(t.i2cAddress, buf, sizeof(buf));
+    mode = PICCO_MODE_APP;  // stock proceeds once the launch is acknowledged
+  }
+  touchDataEnabled = (mode == PICCO_MODE_APP);
+#ifdef TOUCH_PROBE_DEBUG
+  touchDebugPrintf("[touch] Picco TMA525C mode=0x%02X enabled=%d\r\n", mode, touchDataEnabled);
+#endif
+}
+
+void InputManager::pollPiccoTouch(const unsigned long now) {
+  if (!touchDataEnabled) return;
+  const auto& t = BoardConfig::ACTIVE.touch;
+
+  // INT low = report pending. Release comes from the lift-off record; the
+  // controller can go quiet while a finger rests still, so the hold-over is only
+  // a long safety net for a missed lift-off (it must outlast a long press).
+  if (t.irq >= 0 && digitalRead(t.irq) != LOW) {
+    if (touchPressed && now >= touchReleaseAt) {
+      touchReleasedEvent = true;
+      lastTouchHeldDurationMs = now - touchDownPoint.timestamp;
+      touchUpPoint = touchPoint;
+      touchPressed = false;
+      touchPoint.valid = false;
+    }
+    return;
+  }
+
+  uint8_t buf[128];
+  const uint16_t len = piccoReadReport(t.i2cAddress, buf, sizeof(buf));
+  if (len < 7 || buf[2] != PICCO_REPORT_TOUCH) return;
+  const uint8_t count = buf[5] & 0x1F;
+  const uint8_t* rec = &buf[7];
+  const bool lifted = count == 0 || len < 17 || ((rec[1] >> 5) & 0x03) == 3;
+#ifdef TOUCH_PROBE_DEBUG
+  if (len >= 17)
+    touchDebugPrintf("[touch] Picco n=%u id=%u ev=%u x=%u y=%u\r\n", count, rec[1] & 0x1F, (rec[1] >> 5) & 0x03,
+                     rec[2] | (rec[3] << 8), rec[4] | (rec[5] << 8));
+#endif
+
+  if (lifted) {
+    if (touchPressed) {
+      touchReleasedEvent = true;
+      lastTouchHeldDurationMs = now - touchDownPoint.timestamp;
+      touchUpPoint = touchPoint;
+    }
+    touchPressed = false;
+    touchPoint.valid = false;
+    return;
+  }
+
+  const uint16_t x = static_cast<uint16_t>(rec[2] | (rec[3] << 8));
+  const uint16_t y = static_cast<uint16_t>(rec[4] | (rec[5] << 8));
+  if (x > PICCO_TOUCH_W || y > PICCO_TOUCH_H) return;
+  const uint16_t px = PICCO_TOUCH_W - x;  // stock orientation
+  const uint16_t py = PICCO_TOUCH_H - y;
+  const uint16_t sx = t.swapXY ? py : px;
+  const uint16_t sy = t.swapXY ? px : py;
+  touchPoint.valid = true;
+  touchPoint.x = mapTouchAxis(sx, t.rawMinX, t.rawMaxX, t.rawMaxX - t.rawMinX);
+  touchPoint.y = mapTouchAxis(sy, t.rawMinY, t.rawMaxY, t.rawMaxY - t.rawMinY);
+  if (t.flipX) touchPoint.x = static_cast<uint16_t>((t.rawMaxX - t.rawMinX) - touchPoint.x);
+  if (t.flipY) touchPoint.y = static_cast<uint16_t>((t.rawMaxY - t.rawMinY) - touchPoint.y);
+  touchPoint.timestamp = now;
+  if (!touchPressed) {
+    touchPressedEvent = true;
+    touchDownPoint = touchPoint;
+    touchMovedBeyondTapSlop = false;
+    touchMovedBeyondTapReleaseSlop = false;
+  }
+  touchUpPoint = touchPoint;
+  const int dx = static_cast<int>(touchUpPoint.x) - static_cast<int>(touchDownPoint.x);
+  const int dy = static_cast<int>(touchUpPoint.y) - static_cast<int>(touchDownPoint.y);
+  if (absInt(dx) > TOUCH_TAP_SLOP_PX || absInt(dy) > TOUCH_TAP_SLOP_PX) touchMovedBeyondTapSlop = true;
+  if (absInt(dx) > TOUCH_TAP_RELEASE_SLOP_PX || absInt(dy) > TOUCH_TAP_RELEASE_SLOP_PX)
+    touchMovedBeyondTapReleaseSlop = true;
+  touchPressed = true;
+  touchReleaseAt = now + PICCO_TOUCH_STALE_MS;
 }
 
 // --- GT911 (LilyGo) ---------------------------------------------------------
