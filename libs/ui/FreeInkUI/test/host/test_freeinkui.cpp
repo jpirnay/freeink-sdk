@@ -1930,6 +1930,115 @@ void testListRtlMirrorsToggleSide() {
   CHECK_EQ(rtlDraw.ops[1].rect.x, 4);             // left edge (band.x + valueInset) in RTL
 }
 
+// ListItem::indent moves a row's content in from the leading edge, the way a
+// table of contents nests its levels: the label and subtitle start past it,
+// the value keeps the trailing edge, and the row's fill and touch target keep
+// the full width. RTL takes the indent from the right.
+void testListIndentInsetsLeadingContent() {
+  for (const bool rtl : {false, true}) {
+    ListItem item{};
+    item.label = "Chapter";
+    item.subtitle = "Part one";
+    item.value = "12";
+
+    ListProps props;
+    props.items = &item;
+    props.count = 1;
+    props.action = 7;
+    props.rowHeight = 40;
+    props.sidePadding = 0;
+    props.rtl = rtl;
+
+    DeviceContext device = makeDevice();
+    InputSnapshot input;
+    FakeDrawTarget flatDraw;
+    InteractionBuffer<4> flatHits;
+    Frame<4> flatFrame(flatDraw, device, input, flatHits);
+    list(flatFrame, Rect{0, 0, 480, 40}, props);
+
+    item.indent = 30;
+    FakeDrawTarget indentDraw;
+    InteractionBuffer<4> indentHits;
+    Frame<4> indentFrame(indentDraw, device, input, indentHits);
+    list(indentFrame, Rect{0, 0, 480, 40}, props);
+
+    // Row fill, then value, label and subtitle text, on both passes.
+    CHECK_EQ(flatDraw.opCount, 4u);
+    CHECK_EQ(indentDraw.opCount, 4u);
+    const Rect flatRow = flatDraw.ops[0].rect;
+    const Rect row = indentDraw.ops[0].rect;
+    CHECK_EQ(row.x, flatRow.x);
+    CHECK_EQ(row.width, flatRow.width);
+    const Rect flatValue = flatDraw.ops[1].rect;
+    const Rect value = indentDraw.ops[1].rect;
+    CHECK_EQ(value.x, flatValue.x);
+    CHECK_EQ(value.width, flatValue.width);
+    for (int k = 2; k <= 3; ++k) {  // label, then subtitle
+      const Rect flat = flatDraw.ops[k].rect;
+      const Rect indented = indentDraw.ops[k].rect;
+      CHECK_EQ(indented.width, flat.width - 30);
+      if (rtl) {
+        CHECK_EQ(indented.right(), flat.right() - 30);
+      } else {
+        CHECK_EQ(indented.x, flat.x + 30);
+      }
+    }
+    CHECK_EQ(indentHits.count(), 1u);
+    CHECK_EQ(indentHits.data()[0].rect.x, flatHits.data()[0].rect.x);
+    CHECK_EQ(indentHits.data()[0].rect.width, flatHits.data()[0].rect.width);
+  }
+}
+
+// The indent comes out of the width the label wraps in, so a label that fits
+// one line at full width wraps -- and its row grows -- once indented.
+void testListIndentNarrowsWrapWidth() {
+  FakeDrawTarget draw;
+  ListProps props;
+  props.rowHeight = 20;
+  props.labelText.maxLines = 2;
+  ListItem item{};
+  item.label = "aaaa bbbb cccc dddd eeee ffff";  // 174 px of the 184 inside the padding
+  const ListRowLayout flat = measureListRow(draw, nullptr, 200, props, item);
+  CHECK_EQ(flat.labelWidth, 184);
+  CHECK_EQ(flat.labelLines, 1);
+  CHECK_EQ(flat.height, 20);
+
+  item.indent = 30;
+  const ListRowLayout indented = measureListRow(draw, nullptr, 200, props, item);
+  CHECK_EQ(indented.labelWidth, 154);
+  CHECK_EQ(indented.labelLines, 2);
+  CHECK_EQ(indented.height, 32);
+}
+
+// A hug-content row is as wide as its label plus padding; an indent widens it
+// by the indent, or the label would run past the row's pill.
+void testListIndentWidensHuggedRow() {
+  ListItem item{};
+  item.label = "Menu";  // 24 px
+
+  ListProps props;
+  props.items = &item;
+  props.count = 1;
+  props.rowHeight = 40;
+  props.sidePadding = 8;
+  props.hugContents = true;
+
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  FakeDrawTarget flatDraw;
+  InteractionBuffer<4> flatHits;
+  Frame<4> flatFrame(flatDraw, device, input, flatHits);
+  list(flatFrame, Rect{0, 0, 480, 40}, props);
+  CHECK_EQ(flatDraw.ops[0].rect.width, 24 + 2 * 8);
+
+  item.indent = 30;
+  FakeDrawTarget indentDraw;
+  InteractionBuffer<4> indentHits;
+  Frame<4> indentFrame(indentDraw, device, input, indentHits);
+  list(indentFrame, Rect{0, 0, 480, 40}, props);
+  CHECK_EQ(indentDraw.ops[0].rect.width, 24 + 2 * 8 + 30);
+}
+
 void testButtonRegistersExpandedHit() {
   FakeDrawTarget draw;
   DeviceContext device = makeDevice();
@@ -5967,6 +6076,9 @@ int main() {
   testListCanUseFullTitleWidthWithShortValue();
   testListRtlMirrorsIconAndValueSides();
   testListRtlMirrorsToggleSide();
+  testListIndentInsetsLeadingContent();
+  testListIndentNarrowsWrapWidth();
+  testListIndentWidensHuggedRow();
   testButtonRegistersExpandedHit();
   testProgressBarClamps();
   testBatteryIndicator();

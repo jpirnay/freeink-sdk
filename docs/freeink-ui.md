@@ -1423,7 +1423,9 @@ component set:
 - menus and settings: rows with label, subtitle, right-aligned value, icon,
   and the full selected/focused/active/disabled state set; disabled rows
   register no interactions; section header rows (`ListItem::isHeader`) render
-  shorter, underlined, and non-interactive with configurable section padding
+  shorter, underlined, and non-interactive with configurable section padding;
+  nested rows (`ListItem::indent`, a table of contents) inset their content
+  on the leading side, wrapped lines included
 - sleep/standby screens: app-drawn cover slot plus title block and a stats
   overlay composed from `metricCard` cells, icons, and `progressBar` — no
   bespoke surface needed

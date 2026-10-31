@@ -27,9 +27,16 @@ struct ListItem {
   bool toggle = false;
   bool toggleChecked = false;
   // Optional section heading drawn immediately before this selectable row.
-  // It shares the row's logical index and interaction value. Kept last so
-  // existing aggregate initializers remain source-compatible.
+  // It shares the row's logical index and interaction value. Kept at the end
+  // (with indent below) so existing aggregate initializers remain
+  // source-compatible.
   const char *sectionHeading = nullptr;
+  // Leading inset in px for this row's content (icon, label, subtitle), the
+  // way a table of contents nests its levels. Every wrapped line keeps it,
+  // unlike leading spaces in the label, which wrapping drops. The value or
+  // toggle keeps the trailing edge; the row's fill and touch target keep the
+  // full width. RTL takes it from the right edge.
+  int16_t indent = 0;
 };
 
 struct ListNav;
@@ -457,7 +464,7 @@ inline ListRowLayout measureListRow(const DrawTarget &target, AssetResolver *ass
   const int16_t labelLh = target.lineHeight(props.labelText.font);
   const BitmapRef icon = item.icon ? item.icon : resolveBitmap(assets, item.iconAsset);
   const int16_t iconSize = icon ? (props.iconSize > 0 ? props.iconSize : icon.width) : 0;
-  const int16_t contentWidth = static_cast<int16_t>(width - sidePad * 2 -
+  const int16_t contentWidth = static_cast<int16_t>(width - sidePad * 2 - item.indent -
                                                    (icon ? iconSize + props.textGap : 0));
   result.labelWidth = contentWidth;
   if (item.toggle) {
@@ -712,7 +719,7 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
           frame.target()
               .measureText(props.labelText.font, item.label, props.labelText)
               .width;
-      const int16_t hugW = static_cast<int16_t>(labelW + sidePad * 2);
+      const int16_t hugW = static_cast<int16_t>(labelW + sidePad * 2 + item.indent);
       if (hugW < row.width)
         row.width = hugW;
     }
@@ -779,7 +786,11 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
                             style.corners);
     }
 
-    Rect content = row.inset(Insets{0, sidePad, 0, sidePad});
+    // The indent narrows the content on its leading side only, so the value
+    // slot below stays on the trailing edge (measureListRow took it off the
+    // label's width already).
+    Rect content = row.inset(Insets{0, static_cast<int16_t>(sidePad + (props.rtl ? item.indent : 0)), 0,
+                                    static_cast<int16_t>(sidePad + (props.rtl ? 0 : item.indent))});
 
     // Slot layout (mirrors settingRow): the label owns a "title band" and the
     // icon and value align to it; the subtitle spans the full content width
