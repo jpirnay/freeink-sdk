@@ -392,14 +392,14 @@
 #define FREEINK_FB_PSRAM (FREEINK_DEVICE_M5PAPER || FREEINK_DEVICE_PAPERMONO)
 #endif
 
-// SD transport. de-link (4-bit) and X4 Pro (1-bit) are wired for SDMMC; SdFat
-// can't drive SDIO, so they get a native esp-idf SDMMC block device behind
-// SDCardManager. Every other board stays on SdFat-over-SPI. The consumer's build
-// must define USE_BLOCK_DEVICE_INTERFACE=1 for the SdFat FsVolume these mount on.
+// SD transport. de-link, Murphy M3, and the listed newer boards are wired for
+// SDMMC; SdFat can't drive SDIO, so they get a native esp-idf SDMMC block device
+// behind SDCardManager. Every other board stays on SdFat-over-SPI. The consumer's
+// build must define USE_BLOCK_DEVICE_INTERFACE=1 for the SdFat FsVolume these mount on.
 // Override with -DFREEINK_SD_SDMMC=0/1.
 #ifndef FREEINK_SD_SDMMC
 #define FREEINK_SD_SDMMC                                                                            \
-  (FREEINK_DEVICE_DELINK || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_X4CLASSIC || FREEINK_DEVICE_PAPERMONO || \
+  (FREEINK_DEVICE_DELINK || FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_X4CLASSIC || FREEINK_DEVICE_PAPERMONO || \
    FREEINK_DEVICE_MURPHY_M4 || FREEINK_DEVICE_WS397 || FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_PICCO)
 #endif
 
@@ -1311,21 +1311,27 @@ constexpr BoardProfile MURPHY_M3 = {
     240,
     {4, 3, 5, 6, 7, 8, PIN_UNASSIGNED},
     0,  // displaySpiHz: 0 -> Murphy UC8253 driver default (4 MHz)
-    {39, 13, 40, 10, PIN_UNASSIGNED, true, 0},
+    {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 10, true, 0, false},
+    // The three confirmed side keys are GPIO1 (top), GPIO2 (middle), and
+    // GPIO0 (bottom). GPIO0 is retained as a temporary raw wake pin until the
+    // separate left-side wake key reported on this unit is identified; its
+    // Confirm press is not exposed as a logical BTN_POWER event.
     {PIN_UNASSIGNED, 0, PIN_UNASSIGNED, PIN_UNASSIGNED, 1, 2, 0, false},
     9,               // batteryAdc: stock firmware samples analogRead(9) for battery voltage
     PIN_UNASSIGNED,  // batteryChargeStatus: not identified
     3.030303f,       // stock firmware scales ADC by 0.0016 / 0.33, implying a 1:0.33 divider
     PIN_UNASSIGNED,
-    {TouchController::Chsc6x, 13, 12, 44, 45, 0x2e, 24, 224, 24, 398, false, 0, true, false},
+    // CHSC6x raw X follows physical left-to-right and raw Y top-to-bottom.
+    // The portrait UI expects the controller's landscape frame, so swap axes
+    // and flip the post-swap Y axis before its 90-degree render transform.
+    // Ranges are in post-swap order: X=raw Y (vertical), Y=raw X (horizontal).
+    {TouchController::Chsc6x, 13, 12, 44, 45, 0x2e, 24, 398, 24, 224, false, 0, true, false,
+     PIN_UNASSIGNED, true, false, true},  // powerEnable, swapXY, flipX, flipY
     {48, 25000, 10, true},
-    // NOTE: the SPI SD pin guess above (39/13/40) predates the OEM firmware
-    // audio recovery and conflicts with the proven I2S pins (39/40/41/42) and
-    // shared I2C (13). Audio is the verified owner of those pins.
     MURPHY_AUDIO,
     NO_LEDS,
     NO_FLIP,
-    NO_SDMMC,
+    {16, 17, 15, 14, 21, 18, 4},
     NO_GAUGE};
 
 // --- Murphy M4 — ESP32-S3R8, SSD1677 (480x800 portrait), FT6336U touch, dual frontlight ---

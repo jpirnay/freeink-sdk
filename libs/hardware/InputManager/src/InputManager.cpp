@@ -423,8 +423,15 @@ uint8_t InputManager::getDigitalState() const {
   if (isDigitalPressed(BoardConfig::ACTIVE.input.right)) state |= (1 << BTN_RIGHT);
   if (isDigitalPressed(BoardConfig::ACTIVE.input.up)) state |= (1 << BTN_UP);
   if (isDigitalPressed(BoardConfig::ACTIVE.input.down)) state |= (1 << BTN_DOWN);
+  // On this M3 profile GPIO0 is temporarily retained as the raw deep-sleep
+  // wake pin, but it is also the bottom Confirm key. Do not turn that ordinary
+  // Confirm press into BTN_POWER; otherwise a bottom-key press starts the
+  // power-button hold-to-sleep path and then only GPIO0 can wake the device.
+  const auto& inputPins = BoardConfig::ACTIVE.input;
+  const bool murphyConfirmWakePin = BoardConfig::ACTIVE.board == BoardConfig::Board::MurphyM3 &&
+                                   inputPins.confirm >= 0 && inputPins.confirm == inputPins.power;
   // Power reads at its declared polarity (isDigitalPressed assumes active-low).
-  if (isPowerButtonPhysicallyPressed() &&
+  if (!murphyConfirmWakePin && isPowerButtonPhysicallyPressed() &&
       BoardConfig::ACTIVE.inputStyle != BoardConfig::InputStyle::DigitalConfirmBackHold &&
       BoardConfig::ACTIVE.inputStyle != BoardConfig::InputStyle::DigitalConfirmPowerHold) {
     state |= (1 << BTN_POWER);
@@ -1357,13 +1364,19 @@ void InputManager::beginTouch() {
 #endif
 #if FREEINK_TOUCH_CHSC6X
   if (t.controller == BoardConfig::TouchController::Chsc6x) {
-    // CHSC6x: I2C bus only. The IRQ is left unconfigured — it's a brief pulse on
-    // this controller, so detection polls I2C and gates on the frame's touch bit
-    // instead (see decodeChsc6xFrame / updateTouchFromIrq).
+    // CHSC6x: I2C polling, with no interrupt handler attached. The IRQ is a
+    // brief pulse, so sample it for diagnostics while detection still polls the
+    // frame's touch bit (see decodeChsc6xFrame / updateTouchFromIrq).
     if (t.sda >= 0 && t.scl >= 0 && t.i2cAddress != 0) {
       Wire.begin(t.sda, t.scl, 100000);
       Wire.setTimeOut(4);
+      if (t.irq >= 0) pinMode(t.irq, INPUT);
       touchDataEnabled = true;
+      Wire.beginTransmission(t.i2cAddress);
+      const uint8_t probeResult = Wire.endTransmission();
+      esp_rom_printf("[touch] CHSC6x bus SDA=%d SCL=%d addr=0x%02X probe=%s (err=%u) read=0x%02X\r\n",
+                     t.sda, t.scl, t.i2cAddress, probeResult == 0 ? "ACK" : "NACK",
+                     static_cast<unsigned>(probeResult), TOUCH_READ_COMMAND);
     }
     return;
   }
@@ -1431,7 +1444,7 @@ uint8_t InputManager::serviceTouch() {
 #endif
 #if FREEINK_TOUCH_CHSC6X
     case BoardConfig::TouchController::Chsc6x:
-      updateTouchFromIrq(now, 0);  // detection polls I2C; the IRQ is unused now
+      updateTouchFromIrq(now, t.irq >= 0 ? digitalRead(t.irq) : HIGH);
       // Synthesized confirm tracks an actually-detected press, not the IRQ line.
       if (touchPressedEvent) touchIrqPulseUntil = now + TOUCH_IRQ_PULSE_MS;
       break;
@@ -1461,38 +1474,98 @@ uint8_t InputManager::serviceTouch() {
 
 #if FREEINK_TOUCH_CHSC6X
 void InputManager::updateTouchFromIrq(const unsigned long now, const int irqRaw) {
-  // Poll the controller over I2C on a fixed cadence, independent of the IRQ.
-  // The CHSC6x IRQ is a brief (~24ms) pulse at touch-down, not a level held for
-  // the contact, so edge/level-gated reads missed quick taps. readChsc6xPoint
-  // only returns true for a real touch (data[3] touch bit), so polling can't
-  // latch the idle phantom frame. A valid read sets the press and refreshes the
-  // release deadline; once reads stop coming, the touch releases after a short
-  // hold-over.
-  (void)irqRaw;
-  if (now >= touchReadAt) {
+  // GPIO44 is a brief active-low event. Latch its falling edge, then read a
+  // candidate protocol. On this Murphy unit, the first response after IRQ can
+  // be stale for any of the supported commands, so retry after the controller's
+  // refresh interval before accepting coordinates.
+  // Once a contact is found, continue polling briefly to collect movement; idle
+  // traffic otherwise reads the controller's non-touch/phantom frames.
+  static int previousIrqRaw = -1;
+  static bool touchReadPending = false;
+  static bool discardFirstIrqFrame = false;
+  static uint8_t pendingReadAttempts = 0;
+  static const uint8_t candidateCommands[] = {0x00, 0xA3, 0xA5};
+  static uint8_t nextCandidate = 0;
+  static uint8_t activeCommand = TOUCH_READ_COMMAND;
+  static uint8_t selectedCommand = 0xFF;
+  if (irqRaw != previousIrqRaw) {
+    esp_rom_printf("[touch] CHSC6x IRQ GPIO%d=%d (%s)\r\n", BoardConfig::ACTIVE.touch.irq, irqRaw,
+                   irqRaw == LOW ? "active" : "idle");
+    if (irqRaw == LOW && previousIrqRaw != LOW) {
+      touchReadPending = true;
+      activeCommand = selectedCommand != 0xFF ? selectedCommand : candidateCommands[nextCandidate++ % 3];
+      // The first frame after IRQ can hold the prior point regardless of which
+      // command is used. Discard it, then sample again after the controller's
+      // observed ~29 ms refresh interval.
+      discardFirstIrqFrame = true;
+      pendingReadAttempts = 0;
+      touchReadAt = now + (discardFirstIrqFrame ? 4 : 0);
+      // The controller can keep returning its last active frame after a read.
+      // Only a fresh IRQ extends contact; replaying the same frame must not
+      // hold the UI's tap open forever.
+      touchReleaseAt = now + TOUCH_IRQ_PULSE_MS;
+      esp_rom_printf("[touch] CHSC6x event read command=0x%02X\r\n", activeCommand);
+    }
+    previousIrqRaw = irqRaw;
+  }
+
+  if ((touchReadPending || touchPressed) && now >= touchReadAt) {
     touchReadAt = now + TOUCH_SAMPLE_DELAY_MS;
     TouchPoint point = {false, 0, 0, 0};
-    if (readChsc6xPoint(point)) {
-      touchPoint = point;
-      if (!touchPressed) {
-        touchPressed = true;
-        touchPressedEvent = true;
-        touchDownPoint = point;  // first contact sample, used for tap routing
-        touchUpPoint = point;
-        touchMovedBeyondTapSlop = false;
-        touchMovedBeyondTapReleaseSlop = false;
-      } else {
-        touchUpPoint = point;
-        const int dx = static_cast<int>(touchUpPoint.x) - static_cast<int>(touchDownPoint.x);
-        const int dy = static_cast<int>(touchUpPoint.y) - static_cast<int>(touchDownPoint.y);
-        if (absInt(dx) > TOUCH_TAP_SLOP_PX || absInt(dy) > TOUCH_TAP_SLOP_PX) {
-          touchMovedBeyondTapSlop = true;
-        }
-        if (absInt(dx) > TOUCH_TAP_RELEASE_SLOP_PX || absInt(dy) > TOUCH_TAP_RELEASE_SLOP_PX) {
-          touchMovedBeyondTapReleaseSlop = true;
+    const char* const diagnosticPhase =
+        touchReadPending ? (discardFirstIrqFrame ? "first_after_irq" : "retry_after_irq") : nullptr;
+    const bool validPoint = readChsc6xPoint(point, activeCommand, diagnosticPhase);
+#if defined(CHSC6X_COMPARE_COMMANDS) && CHSC6X_COMPARE_COMMANDS
+    // Diagnostic-only comparison for Murphy bring-up: the selected command can
+    // keep returning one point on hardware variants with a different report
+    // register. Read the other known candidates immediately after the valid A3
+    // sample and log their full frames; never use these comparison reads for UI
+    // coordinates.
+    if (touchReadPending && !discardFirstIrqFrame && activeCommand == 0xA3 && validPoint) {
+      TouchPoint comparisonPoint = {false, 0, 0, 0};
+      readChsc6xPoint(comparisonPoint, 0xA5, "same-touch-compare");
+      readChsc6xPoint(comparisonPoint, 0x00, "same-touch-compare");
+    }
+#endif
+    if (touchReadPending && discardFirstIrqFrame) {
+      // Murphy probe captures show the first response after IRQ still holds
+      // the prior sample; the updated point followed about 29 ms later, so don't
+      // retry at the normal 8 ms tracking cadence.
+      discardFirstIrqFrame = false;
+      touchReadAt = now + TOUCH_STALE_FRAME_DELAY_MS;
+    } else {
+      if (validPoint) {
+        selectedCommand = activeCommand;
+        touchPoint = point;
+        if (!touchPressed) {
+          touchPressed = true;
+          touchPressedEvent = true;
+          touchDownPoint = point;  // first sample, used for tap routing
+          touchUpPoint = point;
+          touchMovedBeyondTapSlop = false;
+          touchMovedBeyondTapReleaseSlop = false;
+          touchReleaseAt = now + TOUCH_IRQ_PULSE_MS;
+          esp_rom_printf("[touch] CHSC6x contact x=%u y=%u\r\n", static_cast<unsigned>(point.x),
+                         static_cast<unsigned>(point.y));
+        } else {
+          touchUpPoint = point;
+          const int dx = static_cast<int>(touchUpPoint.x) - static_cast<int>(touchDownPoint.x);
+          const int dy = static_cast<int>(touchUpPoint.y) - static_cast<int>(touchDownPoint.y);
+          if (absInt(dx) > TOUCH_TAP_SLOP_PX || absInt(dy) > TOUCH_TAP_SLOP_PX) {
+            touchMovedBeyondTapSlop = true;
+          }
+          if (absInt(dx) > TOUCH_TAP_RELEASE_SLOP_PX || absInt(dy) > TOUCH_TAP_RELEASE_SLOP_PX) {
+            touchMovedBeyondTapReleaseSlop = true;
+          }
         }
       }
-      touchReleaseAt = now + TOUCH_IRQ_PULSE_MS;
+      if (touchReadPending) {
+        if (validPoint) {
+          touchReadPending = false;
+        } else if (++pendingReadAttempts >= 4) {
+          touchReadPending = false;
+        }
+      }
     }
   }
 
@@ -1500,54 +1573,96 @@ void InputManager::updateTouchFromIrq(const unsigned long now, const int irqRaw)
     touchPressed = false;
     touchReleasedEvent = true;
     lastTouchHeldDurationMs = now - touchDownPoint.timestamp;
+    float tapNx = 0.0f;
+    float tapNy = 0.0f;
+    const bool tap = wasTouchTap(tapNx, tapNy);
+    esp_rom_printf("[touch] CHSC6x release held=%lu ms tap=%d x=%u y=%u\r\n", lastTouchHeldDurationMs,
+                   tap ? 1 : 0, static_cast<unsigned>(touchDownPoint.x), static_cast<unsigned>(touchDownPoint.y));
   }
 }
 
-bool InputManager::readChsc6xPoint(TouchPoint& point) {
+bool InputManager::readChsc6xPoint(TouchPoint& point, const uint8_t command, const char* diagnosticPhase) {
   const uint8_t addr = BoardConfig::ACTIVE.touch.i2cAddress;
   Wire.beginTransmission(addr);
-  Wire.write(TOUCH_READ_COMMAND);
+  Wire.write(command);
   if (Wire.endTransmission(false) != 0) {
     return false;
   }
 
   uint8_t data[TOUCH_FRAME_SIZE] = {};
   const uint8_t received = Wire.requestFrom(addr, TOUCH_FRAME_SIZE, static_cast<uint8_t>(true));
-  if (received != TOUCH_FRAME_SIZE) {
+  const uint8_t minimumFrameSize = command == 0x00 ? 5 : 7;
+  if (received < minimumFrameSize) {
     while (Wire.available()) Wire.read();
     return false;
   }
-  for (uint8_t i = 0; i < TOUCH_FRAME_SIZE; ++i) {
+  for (uint8_t i = 0; i < received && i < TOUCH_FRAME_SIZE; ++i) {
     data[i] = Wire.read();
   }
-  return decodeChsc6xFrame(data, TOUCH_FRAME_SIZE, point);
+  while (Wire.available()) Wire.read();
+  // Print one initial frame, each IRQ-triggered sample, and changed frames while
+  // tracking a contact, without flooding the serial log at the 8 ms cadence.
+  static uint8_t diagnosticFramesRemaining = 1;
+  static unsigned long nextDiagnosticFrameAt = 0;
+  static unsigned long nextChangedFrameAt = 0;
+  static uint8_t lastLoggedFrame[7] = {};
+  static bool haveLoggedFrame = false;
+  const unsigned long now = millis();
+  bool frameChanged = !haveLoggedFrame;
+  for (uint8_t i = 0; i < 7 && !frameChanged; ++i) frameChanged = data[i] != lastLoggedFrame[i];
+  const bool logScheduledFrame = diagnosticFramesRemaining > 0 && now >= nextDiagnosticFrameAt;
+  const bool logChangedFrame = frameChanged && now >= nextChangedFrameAt;
+  if (diagnosticPhase != nullptr || logScheduledFrame || logChangedFrame) {
+    esp_rom_printf("[touch] CHSC6x 0x%02X phase=%s len=%u frame:", command,
+                   diagnosticPhase != nullptr ? diagnosticPhase : "idle_or_changed",
+                   static_cast<unsigned>(received));
+    for (uint8_t i = 0; i < received && i < TOUCH_FRAME_SIZE; ++i) esp_rom_printf(" %02X", data[i]);
+    esp_rom_printf("\r\n");
+    for (uint8_t i = 0; i < 7; ++i) lastLoggedFrame[i] = data[i];
+    haveLoggedFrame = true;
+    nextChangedFrameAt = now + 100;
+    if (logScheduledFrame) {
+      --diagnosticFramesRemaining;
+      nextDiagnosticFrameAt = now + 500;
+    }
+  }
+  return decodeChsc6xFrame(data, received < TOUCH_FRAME_SIZE ? received : TOUCH_FRAME_SIZE, command, point);
 }
 
-bool InputManager::decodeChsc6xFrame(const uint8_t* data, const size_t len, TouchPoint& point) const {
+bool InputManager::decodeChsc6xFrame(const uint8_t* data, const size_t len, const uint8_t command,
+                                     TouchPoint& point) const {
   if (len < 7) {
     return false;
   }
-  // data[3] bit 7 is the touch-present flag: 0x80 while a finger is down, 0x00
-  // when idle. The controller keeps returning a stale coordinate frame between
-  // touches, so without this gate every read looks like a phantom touch (which
-  // is why polling reported a fixed point and IRQ-gated reads were needed to
-  // dodge it). Release transitions briefly show 0x40/0xff — both fail this test
-  // or the coordinate sanity check below.
+  // Commands 0x00, 0xA3, and 0xA5 return the same coordinate payload at bytes
+  // 4..6 on this Murphy controller. 0x00 lacks the A3/A5 prefix, but uses the
+  // same byte-3 contact flag. A same-touch probe showed 0x00 advancing to the
+  // current point while A3/A5 repeated the previous point, so decode all three
+  // with this payload and prefer the delayed 0x00 candidate.
+  // Byte 3 is 0x80 during contact; release frames use 0x40/0xff.
   if ((data[3] & 0x80) == 0) {
     return false;
   }
-  const uint16_t rawX = data[4];                                          // X: one byte
-  const uint16_t rawY = (static_cast<uint16_t>(data[5]) << 8) | data[6];  // Y: 16-bit big-endian
+  uint16_t rawX = data[4];                                          // X: one byte
+  uint16_t rawY = (static_cast<uint16_t>(data[5]) << 8) | data[6];  // Y: 16-bit big-endian
   if ((rawX == 0 && rawY == 0) || (rawX == 0xff && rawY == 0xffff)) {
     return false;
   }
+  (void)command;
   const auto& t = BoardConfig::ACTIVE.touch;
+  if (t.swapXY) {
+    const uint16_t tmp = rawX;
+    rawX = rawY;
+    rawY = tmp;
+  }
   point.valid = true;
   // Panel-native coordinates (the calibrated raw range, in the touch panel's
   // own orientation); the app maps to its display/logical frame. See the touch
   // note in the README.
   point.x = mapTouchAxis(rawX, t.rawMinX, t.rawMaxX, t.rawMaxX - t.rawMinX);
   point.y = mapTouchAxis(rawY, t.rawMinY, t.rawMaxY, t.rawMaxY - t.rawMinY);
+  if (t.flipX) point.x = t.rawMaxX - t.rawMinX - point.x;
+  if (t.flipY) point.y = t.rawMaxY - t.rawMinY - point.y;
   point.timestamp = millis();
   return true;
 }
