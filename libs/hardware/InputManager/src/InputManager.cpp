@@ -438,10 +438,10 @@ uint8_t InputManager::getDigitalState() const {
   if (isDigitalPressed(BoardConfig::ACTIVE.input.right)) state |= (1 << BTN_RIGHT);
   if (isDigitalPressed(BoardConfig::ACTIVE.input.up)) state |= (1 << BTN_UP);
   if (isDigitalPressed(BoardConfig::ACTIVE.input.down)) state |= (1 << BTN_DOWN);
-  // On this M3 profile GPIO0 is temporarily retained as the raw deep-sleep
-  // wake pin, but it is also the bottom Confirm key. Do not turn that ordinary
-  // Confirm press into BTN_POWER; otherwise a bottom-key press starts the
-  // power-button hold-to-sleep path and then only GPIO0 can wake the device.
+  // On this M3 profile GPIO0 is both the bottom Confirm key and the
+  // deep-sleep wake source. ButtonEventManager maps Confirm's short/double/long
+  // events; exposing the same press as raw BTN_POWER would make a normal
+  // Confirm press look like Power too.
   const auto& inputPins = BoardConfig::ACTIVE.input;
   const bool murphyConfirmWakePin = BoardConfig::ACTIVE.board == BoardConfig::Board::MurphyM3 &&
                                    inputPins.confirm >= 0 && inputPins.confirm == inputPins.power;

@@ -1312,10 +1312,9 @@ constexpr BoardProfile MURPHY_M3 = {
     {4, 3, 5, 6, 7, 8, PIN_UNASSIGNED},
     0,  // displaySpiHz: 0 -> Murphy UC8253 driver default (4 MHz)
     {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 10, true, 0, false},
-    // The three confirmed side keys are GPIO1 (top), GPIO2 (middle), and
-    // GPIO0 (bottom). GPIO0 is retained as a temporary raw wake pin until the
-    // separate left-side wake key reported on this unit is identified; its
-    // Confirm press is not exposed as a logical BTN_POWER event.
+    // The schematic shows three active-low keys on GPIO1/2/0; GPIO0 is the
+    // bottom Confirm key and also the deep-sleep wake source. The separate
+    // left key is wired directly to CHIP_PU (reset), not a GPIO.
     {PIN_UNASSIGNED, 0, PIN_UNASSIGNED, PIN_UNASSIGNED, 1, 2, 0, false},
     9,               // batteryAdc: stock firmware samples analogRead(9) for battery voltage
     PIN_UNASSIGNED,  // batteryChargeStatus: not identified
