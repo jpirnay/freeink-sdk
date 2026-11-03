@@ -1319,20 +1319,25 @@ constexpr BoardProfile MURPHY_M3 = {
     {PIN_UNASSIGNED, 0, PIN_UNASSIGNED, PIN_UNASSIGNED, 1, 2, 0, false},
     9,               // batteryAdc: stock firmware samples analogRead(9) for battery voltage
     PIN_UNASSIGNED,  // batteryChargeStatus: not identified
-    3.030303f,       // stock firmware scales ADC by 0.0016 / 0.33, implying a 1:0.33 divider
+    2.0f,            // measured 680k/680k battery divider on the M3
     PIN_UNASSIGNED,
     // CHSC6x raw X follows physical left-to-right and raw Y top-to-bottom.
     // The portrait UI expects the controller's landscape frame, so swap axes
     // and flip the post-swap Y axis before its 90-degree render transform.
     // Ranges are in post-swap order: X=raw Y (vertical), Y=raw X (horizontal).
-    {TouchController::Chsc6x, 13, 12, 44, 45, 0x2e, 24, 398, 24, 224, false, 0, true, false,
-     PIN_UNASSIGNED, true, false, true},  // powerEnable, swapXY, flipX, flipY
+    {TouchController::Chsc6x, 13, 12, 44, PIN_UNASSIGNED, 0x2e, 24, 398, 24, 224, false, 0, true, false,
+     45, true, false, true, false, false, false},  // powerEnable=45 active-low, swapXY, flipX, flipY
     {48, 25000, 10, true},
     MURPHY_AUDIO,
     NO_LEDS,
     NO_FLIP,
     {16, 17, 15, 14, 21, 18, 4},
-    NO_GAUGE};
+    NO_GAUGE,
+    NO_MIC,
+    NO_SENSORS,
+    1.0f,           // uiScale
+    PowerConfig{43} // GPIO43 enables the shared I2C rail used by touch and audio
+};
 
 // --- Murphy M4 — ESP32-S3R8, SSD1677 (480x800 portrait), FT6336U touch, dual frontlight ---
 // Touch wiring below follows the CrossPoint-derived Murphy Reader v1.2.16

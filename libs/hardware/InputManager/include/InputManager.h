@@ -484,7 +484,6 @@ class InputManager {
   static constexpr unsigned long TOUCH_STALE_FRAME_DELAY_MS = 24;  // delayed retry after stale first frame
   static constexpr int TOUCH_TAP_SLOP_PX = 28;
   static constexpr int TOUCH_SWIPE_MIN_PX = 60;
-  static constexpr int TOUCH_TAP_RELEASE_SLOP_PX = TOUCH_SWIPE_MIN_PX - 1;
   static constexpr unsigned long TOUCH_SWIPE_MAX_MS = 700;
   static constexpr unsigned long TOUCH_MULTI_SWIPE_MAX_MS = 2000;
   static constexpr int TOUCH_MULTI_CONTACT_SEPARATION_SLOP_PX = 45;
@@ -495,6 +494,7 @@ class InputManager {
   // and command 0xA5 until it finds a frame that decodes as a real contact.
   static constexpr uint8_t TOUCH_READ_COMMAND = 0xA3;
   static constexpr uint8_t TOUCH_FRAME_SIZE = 16;
+  static int touchThresholdPx(int basePx);
 
   static const char* BUTTON_NAMES[];
   static bool s_sharedConfirmPowerShortPressEmitsPower;
