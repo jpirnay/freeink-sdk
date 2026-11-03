@@ -124,6 +124,9 @@ struct KeyboardProps {
   // letters, numbers, or symbols use the narrowest unit that fits any such
   // row, while control-only rows continue to fill their available width.
   bool uniformKeyWidth = true;
+  // Space between a key's edge and its label. Narrow keys need less than a button's default, or
+  // a wide letter does not fit and is drawn as an ellipsis.
+  Insets keyPadding{2, 4, 2, 4};
 };
 
 // Preferred total height for touch entry. Match the height of a character key
@@ -658,6 +661,7 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
     bp.minTouchSize = props.minTouchSize;
     bp.hitPadding.bottom = rowHitOverflow;
     bp.radius = props.keyRadius;
+    bp.padding = props.keyPadding;
     bp.enabled = key.enabled && key.kind != KeyKind::Disabled;
     int16_t altHintTopInset = 0;
     if (hasAltHint) {
