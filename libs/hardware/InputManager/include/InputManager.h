@@ -348,8 +348,8 @@ class InputManager {
   void pollFt5x06(unsigned long now);
   bool ft5x06WriteReg(uint8_t reg, uint8_t value);
   bool ft5x06ReadReg(uint8_t reg, uint8_t* buf, uint8_t len);
-  bool readChsc6xPoint(TouchPoint& point, uint8_t command, const char* diagnosticPhase = nullptr);
-  bool decodeChsc6xFrame(const uint8_t* data, size_t len, uint8_t command, TouchPoint& point) const;
+  bool readChsc6xPoint(TouchPoint& point, const char* diagnosticPhase = nullptr);
+  bool decodeChsc6xFrame(const uint8_t* data, size_t len, TouchPoint& point) const;
   uint16_t mapTouchAxis(uint16_t raw, uint16_t rawMin, uint16_t rawMax, uint16_t outMax) const;
   void beginGt911();
   bool gt911ReadReg(uint16_t reg, uint8_t* buf, uint8_t len);
@@ -479,9 +479,10 @@ class InputManager {
 
   // Touch timing / protocol constants (ported from the Murphy M3 CHSC6x
   // driver).
-  static constexpr unsigned long TOUCH_IRQ_PULSE_MS = 120;   // release hold-over after last valid read
-  static constexpr unsigned long TOUCH_SAMPLE_DELAY_MS = 8;  // I2C poll cadence
-  static constexpr unsigned long TOUCH_STALE_FRAME_DELAY_MS = 24;  // delayed retry after stale first frame
+  static constexpr unsigned long TOUCH_IRQ_PULSE_MS = 120;     // release hold-over after last valid read
+  static constexpr unsigned long TOUCH_IRQ_SILENCE_MS = 3000;  // contact frames with no IRQ this long are replays
+  static constexpr unsigned long TOUCH_SAMPLE_DELAY_MS = 8;    // I2C poll cadence
+  static constexpr uint8_t TOUCH_READ_ATTEMPTS = 5;            // spans the controller's ~29 ms report interval
   static constexpr int TOUCH_TAP_SLOP_PX = 28;
   static constexpr int TOUCH_SWIPE_MIN_PX = 60;
   static constexpr unsigned long TOUCH_SWIPE_MAX_MS = 700;
@@ -490,9 +491,8 @@ class InputManager {
   static constexpr int64_t TOUCH_CONTACT_ASSIGNMENT_AMBIGUITY_PX_SQ = 64;
   static constexpr unsigned long TOUCH_LONG_PRESS_MS = 500;  // shorter than HOME_KEY_LONG_PRESS_MS: a screen hold has
                                                              // no button travel to absorb
-  // Known Murphy M3 probe candidate. InputManager also tests register 0x00
-  // and command 0xA5 until it finds a frame that decodes as a real contact.
-  static constexpr uint8_t TOUCH_READ_COMMAND = 0xA3;
+  // The Murphy M3's live report register.
+  static constexpr uint8_t TOUCH_READ_COMMAND = 0x00;
   static constexpr uint8_t TOUCH_FRAME_SIZE = 16;
   static int touchThresholdPx(int basePx);
 

@@ -8,21 +8,23 @@ struct WireStub {
   // What the controller answers with. A read takes real time on the wire: 16 bytes at the
   // driver's 100 kHz is about 1.7 ms, and the classifiers have to survive that.
   std::vector<uint8_t> frame;
+  // On a Murphy M3, 0xA3 and 0xA5 answer with an old lift frame whatever the finger is doing.
+  std::vector<uint8_t> staleFrame = {0x36, 0x02, 0x00, 0x40, 0x7C, 0x01, 0x47, 0x0D, 0x10};
   unsigned long readMs = 2;
   std::vector<uint8_t> rx;
-  uint8_t address = 0;
+  uint8_t address = 0, command = 0;
   unsigned offset = 0;
   bool begin(int, int, uint32_t) { return true; }
   void setTimeOut(int) {}
   void beginTransmission(uint8_t a) { address = a; }
-  void write(uint8_t) {}
+  void write(uint8_t v) { command = v; }
   int endTransmission(bool = true) { return address == 0x2E ? 0 : 2; }
   int requestFrom(uint8_t a, uint8_t n, uint8_t) {
     rx.clear();
     offset = 0;
     if (a != 0x2E) return 0;
     fakeNow += readMs;
-    rx = frame;
+    rx = command == 0x00 ? frame : staleFrame;
     rx.resize(n, 0xFF);
     return rx.size();
   }
