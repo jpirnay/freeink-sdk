@@ -10,6 +10,9 @@ namespace {
 constexpr int kIrqPin = 44;
 constexpr unsigned long kSampleMs = 10;  // the firmware's input sampler cadence
 
+std::vector<uint8_t> downAt(uint8_t b4, uint8_t b5, uint8_t b6) {
+  return {0x00, 0x00, 0x01, 0x00, b4, b5, b6, 0x0D, 0x10};
+}
 std::vector<uint8_t> contactAt(uint8_t b4, uint8_t b5, uint8_t b6) {
   return {0x00, 0x00, 0x01, 0x80, b4, b5, b6, 0x0D, 0x10};
 }
@@ -35,11 +38,14 @@ void sample() {
   if (in.wasTouchReleased()) releases++;
 }
 
-// One IRQ pulse, sampled the way the firmware samples it: low for a pass, then idle.
-void pulseIrq() {
+// One report: the frame, and an IRQ pulse that starts and ends between two sampler passes. On the
+// device it is 0.4 ms wide, about every 7 ms from press to lift.
+void report(const std::vector<uint8_t>& frame) {
+  Wire.frame = frame;
   gpioLevels[kIrqPin] = LOW;
-  sample();
+  if (touchIsr) touchIsr();
   gpioLevels[kIrqPin] = HIGH;
+  sample();
 }
 
 void idle(int passes = 10) {
@@ -60,83 +66,87 @@ int main() {
   gpioLevels[0] = gpioLevels[1] = gpioLevels[2] = HIGH;
   gpioLevels[kIrqPin] = HIGH;
   in.begin();
+  assert(touchIsr != nullptr && "the IRQ is latched, a pulse can be shorter than a sample");
   assert(in.hasTouch());
 
-  // The quickest tap with a contact frame, and the very first touch since boot: the contact is
-  // readable for one sample, and it is gone by the time a delayed retry would look.
-  Wire.frame = contactAt(0x64, 0x01, 0x8B);
-  pulseIrq();
+  // A quick tap, 20 ms from press to lift, is the whole of what the controller says about it.
+  report(downAt(0x64, 0x01, 0x8B));
   assert(in.isTouchPressed());
   const auto point = in.getTouchPoint();
   assert(point.valid && point.x == 371 && point.y == 124);
-  Wire.frame = liftAt(0x64, 0x01, 0x8B);
-  sample();
+  report(contactAt(0x64, 0x01, 0x8B));
+  report(liftAt(0x64, 0x01, 0x8B));
   assert(!in.isTouchPressed() && "the lift frame ends the contact, not a timer");
   assert(taps == 1 && releases == 1);
   assert(longPressAt == 0 && "a tap is not a long press");
 
-  // Tapping again keeps reading the live register: the two others hold old data.
+  // The report that follows every lift is no touch of its own.
+  report(liftAt(0x64, 0x01, 0x8B));
   idle();
+  assert(taps == 1 && releases == 1);
+
+  // The next tap reads the live register too: the two others would hold the last one.
   resetCounts();
-  Wire.frame = contactAt(0x7C, 0x01, 0x47);
-  pulseIrq();
+  report(contactAt(0x7C, 0x01, 0x47));
   assert(in.isTouchPressed());
-  Wire.frame = liftAt(0x7C, 0x01, 0x47);
-  sample();
+  report(liftAt(0x7C, 0x01, 0x47));
   assert(taps == 1);
 
-  // A touch over before the read: the IRQ fired and only its lift frame is left, but that frame
-  // has coordinates nothing has seen yet.
+  // Press down opens a contact, it does not end one: the start of a swipe is no tap.
   idle();
   resetCounts();
-  Wire.frame = liftAt(0x8C, 0x01, 0x2C);
-  pulseIrq();
-  idle();
-  assert(taps == 1 && releases == 1 && !in.isTouchPressed());
-  assert(longPressAt == 0);
+  report(downAt(0x38, 0x00, 0x9D));
+  assert(in.isTouchPressed() && taps == 0 && releases == 0);
+  report(contactAt(0x38, 0x00, 0x9D));
+  report(contactAt(0x36, 0x01, 0x48));
+  report(liftAt(0x36, 0x01, 0x48));
+  assert(!in.isTouchPressed() && taps == 0 && releases == 1);
 
-  // An IRQ over the lift frame already handled is no touch of its own...
+  // A finger brushing the glass just before it lands leaves a lift frame with coordinates of its
+  // own, then the real press 60 ms on: that is one tap, not two.
+  idle();
   resetCounts();
-  pulseIrq();
-  idle();
-  assert(taps == 0 && releases == 0 && !in.isTouchPressed());
-
-  // ...but the contact it announces can still arrive while the driver retries.
-  pulseIrq();
-  Wire.frame = contactAt(0x70, 0x01, 0x40);
-  sample();
-  assert(in.isTouchPressed());
-  Wire.frame = liftAt(0x70, 0x01, 0x40);
-  sample();
+  report(liftAt(0xA9, 0x01, 0x8C));
+  idle(6);
+  assert(!in.isTouchPressed() && taps == 0 && releases == 0);
+  report(contactAt(0xAC, 0x01, 0x70));
+  report(liftAt(0xAC, 0x01, 0x70));
   assert(taps == 1);
 
-  // A hold with the controller's IRQs further apart than the hold-over: frames carry the contact,
-  // and the long press waits for the full threshold.
+  // A report caught in mid-write is skipped, not taken for the end of the touch.
   idle();
   resetCounts();
-  Wire.frame = contactAt(0x6C, 0x01, 0x72);
-  pulseIrq();
-  const unsigned long downAt = fakeNow;
-  while (fakeNow - downAt < 700) {
-    if ((fakeNow - downAt) % 150 < kSampleMs) {
-      pulseIrq();
-    } else {
-      sample();
-    }
+  report(contactAt(0x33, 0x01, 0x8A));
+  report({0x00, 0x00, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF});
+  assert(in.isTouchPressed() && releases == 0);
+  report(liftAt(0x33, 0x01, 0x8A));
+  assert(taps == 1);
+
+  // What sits in the register with no IRQ behind it is not read, so it cannot start a touch.
+  idle();
+  resetCounts();
+  Wire.frame = contactAt(0xA0, 0x00, 0x80);
+  idle();
+  assert(!in.isTouchPressed() && releases == 0);
+
+  // A hold is one contact, and the long press waits for the full threshold.
+  resetCounts();
+  report(contactAt(0x6C, 0x01, 0x72));
+  const unsigned long downAtMs = fakeNow;
+  while (fakeNow - downAtMs < 700) {
+    report(contactAt(0x6C, 0x01, 0x72));
     assert(in.isTouchPressed() && "a resting finger stays one contact");
   }
   assert(longPressAt != 0 && "a real hold long-presses");
-  assert(longPressAt - downAt >= 490 && "not before it has been held");
-  Wire.frame = liftAt(0x6C, 0x01, 0x72);
-  sample();
+  assert(longPressAt - downAtMs >= 490 && "not before it has been held");
+  report(liftAt(0x6C, 0x01, 0x72));
   assert(!in.isTouchPressed() && releases == 1);
 
-  // A controller replaying its contact frame with no IRQ behind it must not hold a touch forever.
+  // If the lift frame is lost, the silence after it ends the touch.
   idle();
   resetCounts();
-  Wire.frame = contactAt(0x60, 0x01, 0x60);
-  pulseIrq();
-  idle(400);
+  report(contactAt(0x60, 0x01, 0x60));
+  idle(20);
   assert(!in.isTouchPressed() && releases == 1);
 
   std::puts("CHSC6x touch passed");

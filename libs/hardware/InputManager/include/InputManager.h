@@ -337,8 +337,7 @@ class InputManager {
   // Each driver's definitions exist only when its FREEINK_TOUCH_* flag is set.
   void beginTouch();
   uint8_t serviceTouch();  // runs the machine; returns synthesized button mask
-  void updateTouchFromIrq(unsigned long now,
-                          int irqRaw);  // CHSC6x I2C poll + touch-bit gate
+  void updateTouchFromIrq(unsigned long now);  // CHSC6x: reads each latched report
   void pollGt911(unsigned long now);    // GT911 polled read
   void beginCst816s();
   void pollCst816s(unsigned long now);
@@ -348,7 +347,7 @@ class InputManager {
   void pollFt5x06(unsigned long now);
   bool ft5x06WriteReg(uint8_t reg, uint8_t value);
   bool ft5x06ReadReg(uint8_t reg, uint8_t* buf, uint8_t len);
-  bool readChsc6xPoint(TouchPoint& point, const char* diagnosticPhase = nullptr);
+  bool readChsc6xPoint(TouchPoint& point);
   bool decodeChsc6xFrame(const uint8_t* data, size_t len, TouchPoint& point) const;
   uint16_t mapTouchAxis(uint16_t raw, uint16_t rawMin, uint16_t rawMax, uint16_t outMax) const;
   void beginGt911();
@@ -479,10 +478,8 @@ class InputManager {
 
   // Touch timing / protocol constants (ported from the Murphy M3 CHSC6x
   // driver).
-  static constexpr unsigned long TOUCH_IRQ_PULSE_MS = 120;     // release hold-over after last valid read
-  static constexpr unsigned long TOUCH_IRQ_SILENCE_MS = 3000;  // contact frames with no IRQ this long are replays
-  static constexpr unsigned long TOUCH_SAMPLE_DELAY_MS = 8;    // I2C poll cadence
-  static constexpr uint8_t TOUCH_READ_ATTEMPTS = 5;            // spans the controller's ~29 ms report interval
+  static constexpr unsigned long TOUCH_IRQ_PULSE_MS = 120;   // release hold-over after last valid read
+  static constexpr unsigned long TOUCH_SAMPLE_DELAY_MS = 8;  // I2C poll cadence
   static constexpr int TOUCH_TAP_SLOP_PX = 28;
   static constexpr int TOUCH_SWIPE_MIN_PX = 60;
   static constexpr unsigned long TOUCH_SWIPE_MAX_MS = 700;
