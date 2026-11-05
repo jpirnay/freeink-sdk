@@ -1540,6 +1540,11 @@ void InputManager::updateTouchFromIrq(const unsigned long now, const int irqRaw)
     const char* const diagnosticPhase =
         touchReadPending ? (discardFirstIrqFrame ? "first_after_irq" : "retry_after_irq") : nullptr;
     const bool validPoint = readChsc6xPoint(point, activeCommand, diagnosticPhase);
+    // This pass's `now`, as every other backend stamps, and never a millis() taken after the read:
+    // serviceTouch() compares against `now`, and a stamp ahead of it wraps the unsigned difference,
+    // so the 500 ms long-press test passes on a contact's first sample. A 16-byte read takes about
+    // 1.7 ms at 100 kHz, so that was every contact.
+    point.timestamp = now;
 #if defined(CHSC6X_COMPARE_COMMANDS) && CHSC6X_COMPARE_COMMANDS
     // Diagnostic-only comparison for Murphy bring-up: the selected command can
     // keep returning one point on hardware variants with a different report
@@ -1695,7 +1700,6 @@ bool InputManager::decodeChsc6xFrame(const uint8_t* data, const size_t len, cons
   point.y = mapTouchAxis(rawY, t.rawMinY, t.rawMaxY, t.rawMaxY - t.rawMinY);
   if (t.flipX) point.x = t.rawMaxX - t.rawMinX - point.x;
   if (t.flipY) point.y = t.rawMaxY - t.rawMinY - point.y;
-  point.timestamp = millis();
   return true;
 }
 #endif  // FREEINK_TOUCH_CHSC6X
