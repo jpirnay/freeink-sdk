@@ -1,5 +1,6 @@
 // CHSC6x (Murphy M3): every touch registers, however short, and a contact only reads as a long
-// press once it has been held that long. Frames and timings are from device logs.
+// press once it has been held that long. Frames and timings are from device logs. The corner and
+// gesture checks follow test_murphy_touch.cpp in Free-Ink/freeink-sdk#25 by mr-tbot.
 #include <cassert>
 #include <cstdio>
 
@@ -19,10 +20,17 @@ std::vector<uint8_t> contactAt(uint8_t b4, uint8_t b5, uint8_t b6) {
 std::vector<uint8_t> liftAt(uint8_t b4, uint8_t b5, uint8_t b6) {
   return {0x00, 0x00, 0x00, 0x40, b4, b5, b6, 0x0D, 0x10};
 }
+std::vector<uint8_t> contactRaw(uint8_t rawX, uint16_t rawY) {
+  return contactAt(rawX, static_cast<uint8_t>(rawY >> 8), static_cast<uint8_t>(rawY));
+}
+std::vector<uint8_t> liftRaw(uint8_t rawX, uint16_t rawY) {
+  return liftAt(rawX, static_cast<uint8_t>(rawY >> 8), static_cast<uint8_t>(rawY));
+}
 
 InputManager in;
 unsigned long longPressAt = 0;  // when the classifier fired, 0 = not yet
 int taps = 0;
+int swipes = 0;
 int releases = 0;
 
 void sample() {
@@ -35,6 +43,9 @@ void sample() {
     longPressAt = fakeNow;
   }
   if (in.wasTouchTap(nx, ny)) taps++;
+  float endX = 0.0f;
+  float endY = 0.0f;
+  if (in.wasSwipe(nx, ny, endX, endY)) swipes++;
   if (in.wasTouchReleased()) releases++;
 }
 
@@ -55,7 +66,17 @@ void idle(int passes = 10) {
 void resetCounts() {
   longPressAt = 0;
   taps = 0;
+  swipes = 0;
   releases = 0;
+}
+
+// A contact that moves `px` mapped pixels along X, which raw Y follows one to one, and lifts.
+void drag(unsigned px) {
+  idle();
+  resetCounts();
+  report(contactRaw(124, 100));
+  report(contactRaw(124, static_cast<uint16_t>(100 + px)));
+  report(liftRaw(124, static_cast<uint16_t>(100 + px)));
 }
 }  // namespace
 
@@ -148,6 +169,54 @@ int main() {
   report(contactAt(0x60, 0x01, 0x60));
   idle(20);
   assert(!in.isTouchPressed() && releases == 1);
+
+  // The mount: raw X runs along the panel's short axis and raw Y along its long one. swapXY puts
+  // mapped X on the long axis, then flipY turns the other.
+  struct Corner {
+    uint8_t rawX;
+    uint16_t rawY;
+    uint16_t x;
+    uint16_t y;
+  };
+  for (const Corner& c : {Corner{24, 24, 0, 200}, Corner{24, 398, 374, 200}, Corner{224, 24, 0, 0},
+                          Corner{224, 398, 374, 0}}) {
+    idle();
+    report(contactRaw(c.rawX, c.rawY));
+    const auto corner = in.getTouchPoint();
+    assert(corner.valid && corner.x == c.x && corner.y == c.y);
+    report(liftRaw(c.rawX, c.rawY));
+  }
+
+  // The thresholds are tuned on 800x480 digitizers: scaled to this one, a swipe starts at 26 px. A
+  // pixel either side of that, a move is a tap or a swipe, never both and never neither.
+  drag(5);
+  assert(taps == 1 && swipes == 0);
+  drag(25);
+  assert(taps == 1 && swipes == 0);
+  drag(26);
+  assert(taps == 0 && swipes == 1);
+  drag(30);
+  assert(taps == 0 && swipes == 1);
+
+  // Two fast taps stay two: the lift frame ends the first, so the second is a contact of its own
+  // inside the hold-over that only covers a lost lift. On a device, 91 ms apart.
+  idle();
+  resetCounts();
+  report(contactRaw(124, 100));
+  report(liftRaw(124, 100));
+  idle(9);
+  report(contactRaw(124, 100));
+  report(liftRaw(124, 100));
+  assert(taps == 2 && releases == 2);
+
+  // GPIO0 is the Confirm key and the wake pin, and the profile names it as both. A press is Confirm.
+  idle();
+  gpioLevels[0] = LOW;
+  idle(5);
+  assert(in.isPressed(InputManager::BTN_CONFIRM));
+  assert(!in.isPressed(InputManager::BTN_POWER));
+  gpioLevels[0] = HIGH;
+  idle(5);
 
   std::puts("CHSC6x touch passed");
 }

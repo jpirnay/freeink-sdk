@@ -1321,7 +1321,7 @@ constexpr BoardProfile MURPHY_M3 = {
     // left key is wired directly to CHIP_PU (reset), not a GPIO.
     {PIN_UNASSIGNED, 0, PIN_UNASSIGNED, PIN_UNASSIGNED, 1, 2, 0, false},
     9,               // batteryAdc: stock firmware samples analogRead(9) for battery voltage
-    PIN_UNASSIGNED,  // batteryChargeStatus: not identified
+    PIN_UNASSIGNED,  // batteryChargeStatus: none, the TP4054's CHRG output drives only its LED
     2.0f,            // measured 680k/680k battery divider on the M3
     PIN_UNASSIGNED,
     // CHSC6x raw X follows physical left-to-right and raw Y top-to-bottom.
