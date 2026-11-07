@@ -5,10 +5,12 @@
 #include <driver/gpio.h>  // gpio_hold_dis (Picco panel probe)
 #endif
 
+#include <array>
 #include <cstring>
 #include <vector>
 
 #include "../lut/Ssd1677Luts.h"
+#include "../lut/X4ProTextAaLuts.h"
 
 namespace freeink {
 namespace {
@@ -43,19 +45,21 @@ constexpr uint8_t CMD_DEEP_SLEEP = 0x10;
 constexpr uint8_t DRIVER_OUTPUT_SCAN = 0x02;  // SM=1 interlaced, TB=0 (base)
 constexpr uint8_t SCAN_TB_FLIP = 0x01;        // OR into the scan byte for mirrorY
 
-// One-pass text: Free-Ink fix-display-updates' kX4ProTextSsd1677 (Justin Mitchell, from X4 Pro firmware
-// 26110201), with LUT rows 1 and 3 exchanged for the host's composition. The row is RED * 2 + BW, and
-// RED says rest or gray, BW the page: row 0 black (VSH1 17), row 1 to white (VSL 24), row 2 gray (VSL 6,
-// VSH1 4), row 3 white that stays white (a VSL 2 nudge, as the X4 Pro's hold).
-constexpr uint8_t kTextOnePass[110] = {
-    0x15, 0x54, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0A, 0xAA, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0xA9, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x03, 0x01, 0x02, 0x02, 0x00, 0x02, 0x08, 0x02, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x33, 0x33, 0x33, 0x33, 0x33, 0x17, 0x41, 0xA8, 0x32, 0x14,
-};
+// One-pass text composed by the host: kX4ProTextSsd1677 (from the X4 Pro's firmware) with LUT rows 1 and 3
+// exchanged. The row is RED * 2 + BW, and here RED says rest or gray, BW the page: row 0 black (VSH1 17),
+// row 1 to white (VSL 24), row 2 gray (VSL 6, VSH1 4), row 3 white that stays white (a VSL 2 nudge, as the
+// X4 Pro's hold).
+constexpr std::array<uint8_t, sizeof(kX4ProTextSsd1677)> textOnePassLut() {
+  std::array<uint8_t, sizeof(kX4ProTextSsd1677)> lut{};
+  for (size_t i = 0; i < lut.size(); i++) lut[i] = kX4ProTextSsd1677[i];
+  constexpr size_t kRowBytes = 10;  // one voltage-select row
+  for (size_t i = 0; i < kRowBytes; i++) {
+    lut[1 * kRowBytes + i] = kX4ProTextSsd1677[3 * kRowBytes + i];
+    lut[3 * kRowBytes + i] = kX4ProTextSsd1677[1 * kRowBytes + i];
+  }
+  return lut;
+}
+constexpr auto kTextOnePass = textOnePassLut();
 
 }  // namespace
 
@@ -616,7 +620,7 @@ bool Ssd1677Driver::displayOnePassStart(EpdBus& bus, const uint8_t* oldPlane, co
   setRamArea(bus, 0, 0, _w, _h);
   writeRam(bus, CMD_WRITE_RAM_BW, page, _bufferSize);
   writeRam(bus, CMD_WRITE_RAM_RED, oldPlane, _bufferSize);
-  setCustomLut(bus, true, kTextOnePass);
+  setCustomLut(bus, true, kTextOnePass.data());
   refresh(bus, RefreshMode::Fast, turnOff, /*async=*/true);  // the 0xCC external-LUT sequence
   setCustomLut(bus, false, nullptr);
   _pendingFrameSync = true;  // displayFinish() puts the page in both planes: gray counts as black
