@@ -322,6 +322,116 @@ void testAFullRefreshClearsGrayWithoutMarks() {
 }
 }  // namespace
 
+Uc8253MurphyConfig withText() {
+  Uc8253MurphyConfig cfg = withGray();
+  cfg.text = {MURPHY_LUT_20_TEXT, MURPHY_LUT_21_TEXT, MURPHY_LUT_22_TEXT, MURPHY_LUT_23_TEXT, MURPHY_LUT_24_TEXT};
+  return cfg;
+}
+
+bool uniformPlane(const EpdBus& bus, uint8_t command, uint8_t fill) {
+  const auto* write = last(bus, command);
+  if (!write || write->bytes.size() != static_cast<size_t>(CTRL_WB) * CTRL_H) return false;
+  for (uint8_t byte : write->bytes) {
+    if (byte != fill) return false;
+  }
+  return true;
+}
+
+void testTextBankIsAsLongAsFastAndGrayNetsToZero() {
+  for (const uint8_t* table : {MURPHY_LUT_20_TEXT, MURPHY_LUT_21_TEXT, MURPHY_LUT_22_TEXT}) assert(totalFrames(table) == 20);
+  assert(totalFrames(MURPHY_LUT_23_TEXT) <= 20 && totalFrames(MURPHY_LUT_24_TEXT) <= 20);
+  assert(netDrive(MURPHY_LUT_20_TEXT) == 0 && netDrive(MURPHY_LUT_21_TEXT) == 0);  // VCOM and rest
+  assert(netDrive(MURPHY_LUT_23_TEXT) == 0);
+  assert(netDrive(MURPHY_LUT_22_TEXT) == netDrive(MURPHY_LUT_22_FAST));  // FAST's drives to white
+  assert(netDrive(MURPHY_LUT_24_TEXT) == 15);                            // and to black
+}
+
+void testOnePassPicksEachPixelsDrive() {
+  const auto cfg = withText();
+  const Bits white = blank(0xFF), black = blank(0x00);
+  struct Case {
+    const Bits* shown;
+    bool shownGray;  // the glass holds one-pass gray over `shown`
+    const Bits* page;
+    const Bits* mask;
+    uint8_t dtm1, dtm2;
+  } cases[] = {
+      {&white, false, &white, &black, 0xFF, 0xFF},  // stays white: rests
+      {&black, false, &black, &black, 0xFF, 0xFF},  // stays black: rests
+      {&black, false, &white, &black, 0x00, 0xFF},  // to white
+      {&white, false, &black, &black, 0x00, 0x00},  // to black
+      {&white, false, &black, &white, 0xFF, 0x00},  // gray, from anything
+      {&black, true, &black, &black, 0x00, 0x00},   // gray on the glass is not black: driven
+      {&black, true, &white, &black, 0x00, 0xFF},   // and to white
+  };
+  for (const auto& c : cases) {
+    Uc8253MurphyDriver driver(cfg);
+    EpdBus bus;
+    driver.begin(bus);
+    assert(driver.supportsOnePassText() && !driver.supportsGrayFrame());
+    driver.setReaderRefresh(true);
+    assert(driver.supportsGrayFrame());
+    driver.display(bus, c.shown->data(), nullptr, RefreshMode::Half, false);
+    if (c.shownGray) {
+      driver.copyGrayscaleLsb(bus, white.data());  // the previous page: all gray
+      driver.copyGrayscaleMsb(bus, black.data());
+      driver.displayGrayFrame(bus, c.shown->data(), RefreshMode::Fast, false);
+    }
+    driver.copyGrayscaleLsb(bus, c.mask->data());
+    driver.copyGrayscaleMsb(bus, black.data());
+    bus.clear();
+    driver.displayGrayFrame(bus, c.page->data(), RefreshMode::Fast, false);
+    assert(count(bus, 0x12) == 1);  // one refresh, no nudge after it
+    assert(uniformPlane(bus, 0x10, c.dtm1) && uniformPlane(bus, 0x13, c.dtm2));
+    assert(last(bus, 0x23)->bytes == std::vector<uint8_t>(MURPHY_LUT_23_TEXT, MURPHY_LUT_23_TEXT + MURPHY_LUT_LEN_WB));
+  }
+}
+
+void testOnePassKeepsTwoPassesWhereItMust() {
+  const auto cfg = withText();
+  const Bits white = blank(0xFF), black = blank(0x00);
+  Uc8253MurphyDriver driver(cfg);
+  EpdBus bus;
+  driver.begin(bus);
+  driver.setReaderRefresh(true);
+  // Straight after begin() nothing of ours is on the glass: a HALF and the nudge, never a blind FAST.
+  driver.copyGrayscaleLsb(bus, white.data());
+  driver.copyGrayscaleMsb(bus, black.data());
+  bus.clear();
+  driver.displayGrayFrame(bus, black.data(), RefreshMode::Fast, false);
+  assert(count(bus, 0x12) == 2);
+  assert(last(bus, 0x21)->bytes == std::vector<uint8_t>(MURPHY_LUT_21_GRAY, MURPHY_LUT_21_GRAY + MURPHY_LUT_LEN_WW));
+  // A clean refresh keeps its two passes too.
+  driver.display(bus, white.data(), nullptr, RefreshMode::Half, false);
+  driver.copyGrayscaleLsb(bus, white.data());
+  driver.copyGrayscaleMsb(bus, black.data());
+  bus.clear();
+  driver.displayGrayFrame(bus, black.data(), RefreshMode::Half, false);
+  assert(count(bus, 0x12) == 2);
+  // Nothing staged: the page alone.
+  bus.clear();
+  driver.displayGrayFrame(bus, white.data(), RefreshMode::Fast, false);
+  assert(count(bus, 0x12) == 1);
+}
+
+void testAFastAfterOnePassDrivesItsGrayAway() {
+  const auto cfg = withText();
+  const Bits white = blank(0xFF), black = blank(0x00);
+  Uc8253MurphyDriver driver(cfg);
+  EpdBus bus;
+  driver.begin(bus);
+  driver.setReaderRefresh(true);
+  driver.display(bus, white.data(), nullptr, RefreshMode::Half, false);
+  driver.copyGrayscaleLsb(bus, white.data());
+  driver.copyGrayscaleMsb(bus, black.data());
+  driver.displayGrayFrame(bus, black.data(), RefreshMode::Fast, false);  // a page of gray
+  driver.setReaderRefresh(false);
+  assert(!driver.supportsGrayFrame());
+  bus.clear();
+  driver.display(bus, black.data(), black.data(), RefreshMode::Fast, false);
+  assert(uniformPlane(bus, 0x10, 0xFF));  // gray told it was white, so it takes the drive to black
+}
+
 int main() {
   BoardConfig::ACTIVE.displayWidth = FB_W;
   BoardConfig::ACTIVE.displayHeight = FB_H;
@@ -339,5 +449,9 @@ int main() {
   testASleepEndsTheWarmPath();
   testAnAbandonedPassShowsNothing();
   testAFullRefreshClearsGrayWithoutMarks();
+  testTextBankIsAsLongAsFastAndGrayNetsToZero();
+  testOnePassPicksEachPixelsDrive();
+  testOnePassKeepsTwoPassesWhereItMust();
+  testAFastAfterOnePassDrivesItsGrayAway();
   std::cout << "PASS: UC8253 Murphy gray nudge and gray-aware FAST\n";
 }
