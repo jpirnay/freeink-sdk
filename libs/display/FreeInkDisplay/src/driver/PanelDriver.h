@@ -190,6 +190,16 @@ class PanelDriver {
   // it will send through displayGrayFrame() and clears it for anything else.
   virtual bool supportsOnePassText() const { return false; }
   virtual void setReaderRefresh(bool reading) { (void)reading; }
+  // One-pass text where the host composes the planes, for a board with no memory to stage them:
+  // `oldPlane` is 1 where a pixel rests (white before and after) or turns gray, `page` is the B/W page
+  // with gray drawn black. (1,1) rests, (0,1) goes white, (1,0) gray, (0,0) black, in one waveform.
+  // Same deferral contract as displayStart(). See FreeInkDisplay::beginOnePassMask().
+  virtual bool composesOnePassText() const { return false; }
+  virtual bool displayOnePassStart(EpdBus& bus, const uint8_t* oldPlane, const uint8_t* page, RefreshMode mode,
+                                   bool turnOff) {
+    (void)oldPlane;
+    return displayStart(bus, page, nullptr, mode, turnOff);
+  }
   // Deferred form of displayGrayFrame(): queue the frame and return while the
   // waveform runs, so the caller can spend it on its own work. Returns true when
   // it actually deferred, in which case displayFinish() must run before the host

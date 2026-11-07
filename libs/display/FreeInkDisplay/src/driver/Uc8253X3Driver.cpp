@@ -35,6 +35,16 @@ constexpr uint8_t CMD_PARTIAL_WINDOW = 0x90;
 constexpr uint8_t CMD_PARTIAL_IN = 0x91;
 constexpr uint8_t CMD_PARTIAL_OUT = 0x92;
 
+// One-pass text: a page and its gray in one refresh of 24 frames, measured with the firmware repo's
+// tools/murphy-gray-lab on an X3 (Test 9, 2026-11-07). Each pixel rests, goes white or black with FAST's
+// 18 frames, or turns gray: VSL 9, VSH 12, VSL 3. VSH 12 takes white to 9 % and the last VSL 3 lands
+// about 46 %; from black the first page lands up to 7 points darker. The X3's layout: groups of 6, a
+// level byte for four phases (phase 1 in bits 7:6), four frame counts, a repeat.
+constexpr uint8_t kOnePassRest[42] = {0x00, 24, 0, 0, 0, 1};
+constexpr uint8_t kOnePassWhite[42] = {0x80, 18, 0, 0, 0, 1};
+constexpr uint8_t kOnePassGray[42] = {0x98, 9, 12, 3, 0, 1};
+constexpr uint8_t kOnePassBlack[42] = {0x40, 18, 0, 0, 0, 1};
+constexpr Uc8253LutBank kOnePassBank = {kOnePassRest, kOnePassRest, kOnePassWhite, kOnePassGray, kOnePassBlack};
 }  // namespace
 
 const Uc8253X3Config& uc8253X3DefaultConfig() {
@@ -264,9 +274,45 @@ bool Uc8253X3Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t*
   return true;
 }
 
+bool Uc8253X3Driver::displayOnePassStart(EpdBus& bus, const uint8_t* oldPlane, const uint8_t* page,
+                                         RefreshMode mode, bool turnOff) {
+  // A page this driver would promote, a clean refresh, the first after boot or a wake, keeps its B/W path.
+  if (mode != RefreshMode::Fast || !_redRamSynced || _initialFullSyncsRemaining > 0 || _forceFullSyncNext ||
+      (!_isScreenOn && !turnOff) || _directGrayOnPanel || _inGrayscaleMode) {
+    return displayStart(bus, page, nullptr, mode, turnOff);
+  }
+  _absoluteInput = false;
+  _directGrayPass = false;
+  _grayState.lastBaseWasPartial = true;
+  loadBankCdi(bus, 0x29, 0x07, kOnePassBank);
+  bus.sendPlaneFlipped(CMD_DTM1, oldPlane, _h, _wb);
+  bus.cmd(CMD_DATA_STOP);
+  bus.sendPlaneFlipped(CMD_DTM2, page, _h, _wb);
+  bus.cmd(CMD_DATA_STOP);
+  if (!_isScreenOn) {
+    bus.cmd(CMD_POWER_ON);
+    bus.waitBusy(" X3_PON");
+    _isScreenOn = true;
+  }
+  bus.cmd(CMD_DISPLAY_REFRESH);
+  {
+    const int8_t busyPin = bus.pins().busy;
+    const unsigned long t0 = millis();
+    while (digitalRead(busyPin) == HIGH && millis() - t0 < 50) delay(1);
+  }
+  _pendingTurnOff = turnOff;
+  _pendingDoFullSync = false;
+  _pendingFastMode = true;
+  _pendingOnePass = true;
+  _pendingRefresh = true;
+  return true;
+}
+
 void Uc8253X3Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
   if (!_pendingRefresh) return;
   _pendingRefresh = false;
+  const bool onePass = _pendingOnePass;
+  _pendingOnePass = false;
   const bool turnOff = _pendingTurnOff;
   const bool doFullSync = _pendingDoFullSync;
   const bool fastMode = _pendingFastMode;
@@ -278,7 +324,7 @@ void Uc8253X3Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
   // refresh took is decided from four flags inside displayStart() and is otherwise invisible
   // from a serial log -- and "was that a real scrub or a single-pass drive?" is the first
   // question any ghosting report needs answered.
-  bus.waitRefreshComplete(doFullSync ? " X3_DRF_full" : fastMode ? " X3_DRF_fast" : " X3_DRF_half");
+  bus.waitRefreshComplete(doFullSync ? " X3_DRF_full" : onePass ? " X3_DRF_onepass" : fastMode ? " X3_DRF_fast" : " X3_DRF_half");
   if (turnOff) {
     bus.cmd(CMD_POWER_OFF);
     bus.waitBusy(" X3_POF");
@@ -333,6 +379,7 @@ void Uc8253X3Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
   }
   _forceFullSyncNext = false;
   _forcedConditionPassesNext = 0;
+  if (onePass) _grayOnGlass = true;  // the DTM1 sync above counts it as black, as the page drew it
 }
 
 void Uc8253X3Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback,

@@ -53,6 +53,12 @@ class Uc8253X3Driver : public PanelDriver {
   void begin(EpdBus& bus) override;
   void deepSleep(EpdBus& bus) override;
 
+  // One-pass text, composed by the host (see PanelDriver::composesOnePassText()).
+  bool supportsOnePassText() const override { return true; }
+  bool composesOnePassText() const override { return true; }
+  bool displayOnePassStart(EpdBus& bus, const uint8_t* oldPlane, const uint8_t* page, RefreshMode mode,
+                           bool turnOff) override;
+
   void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
   // Refresh split: displayStart fires the waveform and returns while the ~130-770 ms
   // X3 waveform runs (so the render task can overlap non-SPI work); displayFinish
@@ -145,6 +151,7 @@ private:
   bool _pendingTurnOff = false;
   bool _pendingDoFullSync = false;
   bool _pendingFastMode = false;
+  bool _pendingOnePass = false;
 };
 
 PanelDriver& uc8253X3Driver();
