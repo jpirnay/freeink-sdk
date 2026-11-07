@@ -1,5 +1,13 @@
 #pragma once
 
+// One-pass text needs PSRAM, so a board without it does not carry the code.
+#if defined(BOARD_HAS_PSRAM)
+#define FREEINK_ONE_PASS_TEXT_AA 1
+#include "X4ProTextAa.h"
+#else
+#define FREEINK_ONE_PASS_TEXT_AA 0
+#endif
+
 // UC8179 panel driver — Xteink X4 / X4 Pro, newer production run (800x480 B/W).
 // UltraChip UC8179 driven in KW mode (PSR KW/R=1): 1-bpp, DTM1 = OLD plane,
 // DTM2 = NEW plane, differential refresh — the same KW paradigm and command set
@@ -101,6 +109,15 @@ class Uc8179Driver : public PanelDriver {
   void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;
   void cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) override;
 
+#if FREEINK_ONE_PASS_TEXT_AA
+  // --- One-pass text AA: see X4ProTextAa.h and PanelDriver::setReaderRefresh() ---
+  bool supportsOnePassText() const override;
+  void setReaderRefresh(bool reading) override;
+  bool supportsGrayFrame() const override { return _readerRefresh && _textAa.ready(); }
+  bool displayGrayFrameStart(EpdBus& bus, const uint8_t* fb, RefreshMode mode, bool turnOff) override;
+  void displayGrayFrame(EpdBus& bus, const uint8_t* fb, RefreshMode mode, bool turnOff) override;
+#endif
+
  private:
   void initController(EpdBus& bus);
   void startBwRefresh(EpdBus& bus, bool fast);
@@ -168,6 +185,18 @@ class Uc8179Driver : public PanelDriver {
   bool _pendingRefresh = false;
   bool _pendingTurnOff = false;
   bool _pendingPartial = false;  // this refresh used the PTIN/PTOUT partial path
+
+  void dropTextHistory() {
+#if FREEINK_ONE_PASS_TEXT_AA
+    _textAa.dropHistory();
+#endif
+  }
+#if FREEINK_ONE_PASS_TEXT_AA
+  void finishTextFrame(EpdBus& bus);
+  X4ProTextAa _textAa;
+  bool _readerRefresh = false;
+  bool _pendingTextFrame = false;  // the refresh in flight is a one-pass frame
+#endif
 };
 
 PanelDriver& uc8179Driver();

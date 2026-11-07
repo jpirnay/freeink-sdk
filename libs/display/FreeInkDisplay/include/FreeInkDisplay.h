@@ -297,6 +297,8 @@ class FreeInkDisplay {
   // B/W displayBuffer() when the driver cannot (or the output is inverted --
   // the planes' meaning does not survive inversion).
   bool supportsGrayFrame() const;
+  bool supportsOnePassText() const;
+  void setReaderRefresh(bool reading);
   void displayGrayscaleFrame(RefreshMode mode, bool turnOffScreen = false);
   // Deferred displayGrayscaleFrame(): returns while the waveform runs where the
   // driver can. The caller owes a completeDisplay()/finishDisplayAsync() before it

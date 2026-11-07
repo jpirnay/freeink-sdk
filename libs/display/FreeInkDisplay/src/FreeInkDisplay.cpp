@@ -897,6 +897,12 @@ void FreeInkDisplay::displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t 
 
 bool FreeInkDisplay::supportsGrayFrame() const { return !_inverted && _driver && _driver->supportsGrayFrame(); }
 
+bool FreeInkDisplay::supportsOnePassText() const { return _driver && _driver->supportsOnePassText(); }
+
+void FreeInkDisplay::setReaderRefresh(const bool reading) {
+  if (_driver) _driver->setReaderRefresh(reading);
+}
+
 void FreeInkDisplay::triggerGrayscaleFrame(RefreshMode mode, bool turnOffScreen) {
   if (_inverted || _inversionDirty || !_driver || !_driver->supportsGrayFrame()) {
     displayBuffer(mode, turnOffScreen);

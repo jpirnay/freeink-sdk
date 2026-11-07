@@ -184,6 +184,12 @@ class PanelDriver {
   // state -- a driver advertises that with supportsGrayFrame(). Everyone else
   // keeps the two-push base + displayGray() flow.
   virtual bool supportsGrayFrame() const { return false; }
+  // One-pass text: this panel can put a text page and its grays up in one waveform. Only the
+  // host decides when: setReaderRefresh(true) makes supportsGrayFrame() answer for the frames
+  // that follow, and copyGrayscale* stage instead of upload, so a host sets it around a page
+  // it will send through displayGrayFrame() and clears it for anything else.
+  virtual bool supportsOnePassText() const { return false; }
+  virtual void setReaderRefresh(bool reading) { (void)reading; }
   // Deferred form of displayGrayFrame(): queue the frame and return while the
   // waveform runs, so the caller can spend it on its own work. Returns true when
   // it actually deferred, in which case displayFinish() must run before the host

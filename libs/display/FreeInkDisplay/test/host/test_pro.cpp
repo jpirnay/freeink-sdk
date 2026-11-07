@@ -12,6 +12,7 @@
 #include "src/driver/Uc8179Driver.h"
 #include "src/driver/Uc8279X4Driver.h"
 #undef private
+#include "src/lut/X4ProTextAaLuts.h"
 
 using namespace freeink;
 using Bytes = std::vector<uint8_t>;
@@ -665,6 +666,154 @@ static void testMetalio() {
   assert(lastRegister(bus, 0x10) == 0x03);
 }
 
+// Waveform dose and charge tests ported from Free-Ink/freeink-sdk fix-display-updates (Justin Mitchell).
+// finish() books each pixel's net drive, so its doses have to be the table's own.
+static void testTextWaveformDoses() {
+  auto polarity = [](unsigned level) { return level == 1 ? 1 : level == 2 ? -1 : 0; };
+  const int ucDose[] = {-22, -1, -1, 20};
+  for (unsigned row = 1; row <= 4; ++row) {
+    int dose = 0;
+    for (unsigned group = 0; group < 7; ++group)
+      for (unsigned phase = 0; phase < 4; ++phase)
+        dose += polarity((kX4ProTextUc8179[row * 42 + group * 6] >> (6 - phase * 2)) & 3) *
+                kX4ProTextUc8179[row * 42 + group * 6 + phase + 1] *
+                kX4ProTextUc8179[row * 42 + group * 6 + 5];
+    assert(dose == ucDose[row - 1]);
+  }
+}
+
+static void testTextAaCharge() {
+  X4ProTextAa aa;
+  aa.allocate(true);
+  assert(aa.ready());
+  Bytes base(48000, 0xff), zero(48000, 0);
+  base[0] = 0x7f;
+  auto compose = [&] {
+    aa.begin(base.data());
+    aa.stage(0, zero.data(), 0, 480);
+    aa.stage(1, zero.data(), 0, 480);
+    assert(aa.compose());
+  };
+  compose();
+  assert(aa.high()[0] == 0x7f && aa.low()[0] == 0x7f);
+  aa.finish(17, -2, -2, -24);
+  assert(aa._median == -24);
+  compose();
+  assert(aa.high()[1] == 0xff && aa.low()[1] == 0);  // unchanged white holds
+  aa.finish(17, -2, -2, -24);
+  base[0] = 0xff;
+  compose();
+  assert(aa.low()[0] == 0x80);  // old black must receive the white drive
+  aa.finish(17, -2, -2, -24);
+  compose();
+  assert(aa.low()[0] == 0x80);  // accumulated positive charge needs another pulse
+  aa.finish(17, -2, -2, -24);
+  for (int i = 0; i < 200; ++i) {
+    compose();
+    aa.finish(17, -2, -2, -24);
+  }
+  assert(aa.low()[0] == 0);  // white eventually settles back to hold
+  aa.begin(base.data());
+  aa.stage(0, zero.data(), 80, 80);
+  assert(!aa.compose());
+  aa.invalidate();
+  assert(!aa.onPanel() && !aa._chargeValid);
+
+  // Planes staged ahead of their frame outlive what a B/W refresh drops.
+  aa.stage(0, zero.data(), 0, 480);
+  aa.stage(1, zero.data(), 0, 480);
+  aa.dropHistory();
+  aa.beginStaged(base.data());
+  assert(aa.compose());
+
+  fakeHeapCapsFail = true;
+  X4ProTextAa failed;
+  failed.allocate(true);
+  assert(!failed.ready());
+  fakeHeapCapsFail = false;
+}
+
+static unsigned writesOf(const EpdBus& bus, uint8_t command) {
+  unsigned count = 0;
+  for (const auto& w : bus.writes) count += w.command == command;
+  return count;
+}
+
+static void testOnePassFrame() {
+  Uc8179Driver d;
+  EpdBus bus;
+  d.begin(bus);
+  Bytes base(48000, 0xff), lsb(48000, 0), msb(48000, 0);
+  base[0] = 0x7f;
+  lsb[0] = 0x40;
+  msb[0] = 0x20;
+  const auto stage = [&] {
+    d.copyGrayscaleLsb(bus, lsb.data());
+    d.copyGrayscaleMsb(bus, msb.data());
+  };
+  d.display(bus, base.data(), nullptr, RefreshMode::Full, false);
+  assert(d.supportsOnePassText());
+  assert(!d.supportsGrayFrame() && !d._textAa.ready());  // no block until a host asks
+  d.setReaderRefresh(true);
+  assert(d.supportsGrayFrame());
+
+  bus.clear();
+  stage();
+  assert(bus.writes.empty());  // staged for the frame, not uploaded
+  assert(d.displayGrayFrameStart(bus, base.data(), RefreshMode::Fast, false));
+  assert(writesOf(bus, 0x12) == 1 && bus.writes.back().command == 0x12);  // one waveform, left running
+  assert(d._pendingRefresh && d._textAa.onPanel() && !d._textAa.active());
+  assert(d._textAa.high()[0] == 0x1f && (d._textAa.low()[0] & 0xe0) == 0x60);  // black + both gray masks
+  assert(lastPlane(bus, 0x10)[479 * 100] == d._textAa.low()[0]);
+  assert(lastPlane(bus, 0x13)[479 * 100] == d._textAa.high()[0]);
+
+  bus.clear();
+  d.displayFinish(bus, base.data());
+  assert(!d._pendingRefresh && writesOf(bus, 0x12) == 0);
+  assert(lastPlane(bus, 0x10) == lastPlane(bus, 0x13));  // the next diff starts from the B/W frame
+  assert(lastPlane(bus, 0x10)[479 * 100] == d._textAa.high()[0]);
+  assert(d._oldPlaneValid && !d._needFullClear && d._redriveAfterGray);
+
+  stage();
+  d.displayGrayFrame(bus, base.data(), RefreshMode::Fast, false);
+  assert(!d._pendingRefresh);
+  assert(d._textAa.high()[1] == 0xff && d._textAa.low()[1] == 0);  // unchanged white holds
+
+  // A B/W frame between staging and the page turn ends the history, not the planes.
+  stage();
+  d.display(bus, base.data(), nullptr, RefreshMode::Fast, false);
+  assert(!d._textAa.onPanel());
+  assert(d.displayGrayFrameStart(bus, base.data(), RefreshMode::Fast, false));
+  d.displayFinish(bus, base.data());
+
+  // A clean refresh goes first and keeps the planes too.
+  stage();
+  bus.clear();
+  assert(d.displayGrayFrameStart(bus, base.data(), RefreshMode::Half, false));
+  assert(writesOf(bus, 0x12) == 2);
+  d.displayFinish(bus, base.data());
+
+  // Planes that never completed still get the page up, in B/W.
+  d.copyGrayscaleLsb(bus, lsb.data());
+  bus.clear();
+  assert(!d.displayGrayFrameStart(bus, base.data(), RefreshMode::Fast, false));
+  assert(writesOf(bus, 0x12) == 1 && !d._pendingRefresh);
+
+  // Outside a book page the planes go to the controller as they always did.
+  d.setReaderRefresh(false);
+  assert(!d.supportsGrayFrame());
+  bus.clear();
+  d.copyGrayscaleLsb(bus, lsb.data());
+  assert(writesOf(bus, 0x10) == 1);
+
+  fakeHeapCapsFail = true;
+  Uc8179Driver noMemory;
+  noMemory.begin(bus);
+  noMemory.setReaderRefresh(true);
+  assert(!noMemory.supportsGrayFrame());
+  fakeHeapCapsFail = false;
+}
+
 int main(int argc, char** argv) {
   if (argc > 1 && std::strcmp(argv[1], "metalio") == 0) {
     testMetalio();
@@ -677,6 +826,9 @@ int main(int argc, char** argv) {
     return 0;
   }
   testUc8179GrayShadeSplit();
+  testTextWaveformDoses();
+  testTextAaCharge();
+  testOnePassFrame();
   testUc8279X4WaveformSelection();
   testDirectSleep<Uc8179Driver>();
   testDirectSleep<Uc8279X4Driver>();

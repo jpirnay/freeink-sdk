@@ -2,6 +2,9 @@
 
 
 #include "../lut/UltraChipDirectGrayLuts.h"
+#if FREEINK_ONE_PASS_TEXT_AA
+#include "../lut/X4ProTextAaLuts.h"
+#endif
 
 #include <Arduino.h>
 
@@ -247,6 +250,7 @@ void Uc8179Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, 
 }
 
 void Uc8179Driver::transitionGrayscaleBase(EpdBus& bus, const uint8_t* fb, bool turnOff) {
+  dropTextHistory();
   if (!fb) return;
   _grayBaseValid = false;
   _absoluteGrayPlanes = false;
@@ -341,6 +345,7 @@ void Uc8179Driver::streamPlaneXor(EpdBus& bus, uint8_t ramCmd, const uint8_t* lh
 }
 
 bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
+  dropTextHistory();
   const bool paintDestination = _directGrayOnPanel;
   _directGrayOnPanel = false;
   restoreBwConfiguration(bus);
@@ -450,6 +455,13 @@ void Uc8179Driver::startBwRefresh(EpdBus& bus, bool fast) {
 void Uc8179Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
   if (!_pendingRefresh) return;
   _pendingRefresh = false;
+#if FREEINK_ONE_PASS_TEXT_AA
+  if (_pendingTextFrame) {
+    _pendingTextFrame = false;
+    finishTextFrame(bus);
+    return;
+  }
+#endif
 
   bus.waitRefreshComplete(" 8179_DRF");
   if (_pendingPartial) bus.cmd(CMD_PARTIAL_OUT);  // PTOUT closes the partial window
@@ -474,6 +486,7 @@ void Uc8179Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
 }
 
 void Uc8179Driver::requestResync(uint8_t settlePasses) {
+  dropTextHistory();
   _absoluteInput = false;
   _directGrayPass = false;
   _directGrayPlanes = 0;
@@ -484,6 +497,9 @@ void Uc8179Driver::requestResync(uint8_t settlePasses) {
 void Uc8179Driver::skipInitialResync() { _needFullClear = false; }
 
 void Uc8179Driver::deepSleep(EpdBus& bus) {
+#if FREEINK_ONE_PASS_TEXT_AA
+  _textAa.invalidate();
+#endif
   _directGrayOnPanel = false;
   _absoluteInput = false;
   _directGrayPass = false;
@@ -596,6 +612,12 @@ void Uc8179Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode 
 }
 
 void Uc8179Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
+#if FREEINK_ONE_PASS_TEXT_AA
+  if (supportsGrayFrame()) {
+    _textAa.stage(0, lsb, 0, _h);
+    return;
+  }
+#endif
   if (!lsb) return;
   if (_absoluteInput) {
     bus.waitBusy(" absolute plane");
@@ -629,6 +651,12 @@ void Uc8179Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
 }
 
 void Uc8179Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
+#if FREEINK_ONE_PASS_TEXT_AA
+  if (supportsGrayFrame()) {
+    _textAa.stage(1, msb, 0, _h);
+    return;
+  }
+#endif
   if (!msb) return;
   if (_absoluteInput) {
     bus.waitBusy(" absolute plane");
@@ -761,6 +789,90 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
     _isScreenOn = false;
   }
 }
+
+#if FREEINK_ONE_PASS_TEXT_AA
+bool Uc8179Driver::supportsOnePassText() const {
+  return BoardConfig::ACTIVE.board == BoardConfig::Board::XteinkX4Pro && _w == 800 && _h == 480;
+}
+
+void Uc8179Driver::setReaderRefresh(const bool reading) {
+  // First use pays for the block, so a reader who leaves the option off never does.
+  if (reading && !_textAa.ready() && supportsOnePassText()) _textAa.allocate(true);
+  _readerRefresh = reading;
+}
+
+// Branch fix-display-updates sends the frame from displayGray() and blocks on the waveform.
+// Here it goes through the single-push hook, and the charge bookkeeping runs in the waveform
+// window: it only reads the composed planes, and staging drains this refresh first.
+bool Uc8179Driver::displayGrayFrameStart(EpdBus& bus, const uint8_t* fb, const RefreshMode mode, const bool turnOff) {
+  restoreBwConfiguration(bus);
+  _directGrayPass = false;
+  _directGrayPlanes = 0;
+  _absoluteInput = false;
+  if (mode != RefreshMode::Fast || _needFullClear) display(bus, fb, nullptr, mode, false);
+  _textAa.beginStaged(fb);
+  if (!_textAa.compose()) {
+    _textAa.invalidate();
+    display(bus, fb, nullptr, RefreshMode::Half, turnOff);  // the page still goes up, in B/W
+    return false;
+  }
+  bus.waitBusy(" 8179_text_ready");
+  streamPlane(bus, CMD_DTM1, _textAa.low());
+  streamPlane(bus, CMD_DTM2, _textAa.high());
+  bus.cmd(CMD_PANEL_SETTING);
+  bus.data(_cfg.psr0);
+  bus.data(_cfg.psr1);
+  bus.cmd(CMD_PFS);
+  bus.data(0x20);
+  bus.cmd(CMD_GATE_SCAN);
+  bus.data(2);
+  for (unsigned i = 0; i < 5; ++i) {
+    bus.cmd(0x20 + i);
+    bus.data(kX4ProTextUc8179 + i * GRAY_LUT_LEN, GRAY_LUT_LEN);
+  }
+  bus.cmd(CMD_VCOM_DATA_INTERVAL);
+  bus.data(0x29);
+  bus.data(CDI_INTERVAL);
+  if (!_isScreenOn) {
+    bus.cmd(CMD_POWER_ON);
+    bus.waitBusy(" 8179_text_PON");
+    _isScreenOn = true;
+  }
+  bus.cmd(CMD_DISPLAY_REFRESH);
+  _textAa.finish(20, -1, -1, -22);
+  _pendingTextFrame = true;
+  _pendingPartial = false;
+  _pendingTurnOff = turnOff;
+  _pendingRefresh = true;
+  return true;
+}
+
+void Uc8179Driver::displayGrayFrame(EpdBus& bus, const uint8_t* fb, const RefreshMode mode, const bool turnOff) {
+  if (displayGrayFrameStart(bus, fb, mode, turnOff)) displayFinish(bus, fb);
+}
+
+void Uc8179Driver::finishTextFrame(EpdBus& bus) {
+  bus.waitRefreshComplete(" 8179_text_DRF");
+  if (bus.isBusy()) {
+    _textAa.invalidate();
+    _needFullClear = true;
+    return;
+  }
+  _grayRefreshedOnce = true;
+  _needFullClear = false;
+  _bwPlanesSynced = false;
+  _redriveAfterGray = true;
+  if (_pendingTurnOff) {
+    bus.cmd(CMD_POWER_OFF);
+    bus.waitBusy(" 8179_text_POF");
+    _isScreenOn = false;
+  }
+  // Grays count as black in the B/W frame the next differential refresh starts from.
+  streamPlane(bus, CMD_DTM1, _textAa.high());
+  streamPlane(bus, CMD_DTM2, _textAa.high());
+  _oldPlaneValid = true;
+}
+#endif
 
 void Uc8179Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
   bus.waitBusy(" 8179_gray_cleanup");
