@@ -299,7 +299,7 @@ class FreeInkDisplay {
   bool supportsGrayFrame() const;
   bool supportsOnePassText() const;
   void setReaderRefresh(bool reading);
-  // One-pass text with no memory beyond the two frame buffers (the X3). The buffer that holds the
+  // One-pass text with no memory beyond the two frame buffers (the X3, the X4). The buffer that holds the
   // frame on screen becomes the old plane: it keeps what was white and stays white, and the write
   // buffer pointer moves to it so the host draws the page's gray into it (set bits only). Then
   // displayOnePassFrame() puts page and gray up in one refresh and makes the page the frame on
