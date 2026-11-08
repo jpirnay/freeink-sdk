@@ -441,11 +441,11 @@ void Uc8253X3Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, Refres
   // pixel shows what its black arrived from: a _half gives every pixel the same 24
   // frames whatever it held, the page's black text is pushed deeper than the white
   // around it, and the text shows through the light gray of a sleep cover (X3,
-  // 2026-11-08, reader -> sleep in both AA modes; Home -> sleep was clean, because
-  // its revert above already scrubs to white). Scrub to white first, as the revert
-  // does, then run the differential from that white: every black pixel of the base
-  // now arrives from white. Same cost as the _half + settle it replaces: one _half
-  // and one _aa_pre_bw_mid.
+  // 2026-11-08, reader -> sleep in both AA modes; Home -> sleep was clean, with no
+  // gray on the glass and so the plain differential below). Scrub to white first,
+  // as the revert does, then run the differential from that white: every black
+  // pixel of the base now arrives from white. Same cost as the _half + settle it
+  // replaces: one _half and one _aa_pre_bw_mid.
   if (_grayOnGlass) scrubToWhite(bus, " X3_GRAYBASE_scrub");
   bus.sendPlaneFlipped(CMD_DTM2, fb, _h, _wb);
   loadBankCdi(bus, 0xA9, 0x07, _cfg.preBwMid);
