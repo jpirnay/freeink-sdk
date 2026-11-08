@@ -308,6 +308,9 @@ class FreeInkDisplay {
   bool composesOnePassText() const;
   uint8_t* beginOnePassMask();
   void displayOnePassFrame(RefreshMode mode, bool turnOffScreen = false);
+  // Development builds only: both RAM planes and an external LUT as given, one blocking refresh (see
+  // PanelDriver::displayLabFrame()). False where the driver has no such path.
+  bool displayLabFrame(const uint8_t* bw, const uint8_t* red, const uint8_t* lut);
   void displayGrayscaleFrame(RefreshMode mode, bool turnOffScreen = false);
   // Deferred displayGrayscaleFrame(): returns while the waveform runs where the
   // driver can. The caller owes a completeDisplay()/finishDisplayAsync() before it

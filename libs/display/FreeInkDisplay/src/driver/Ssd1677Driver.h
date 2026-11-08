@@ -101,6 +101,7 @@ class Ssd1677Driver : public PanelDriver {
   // waveform is the X4 Pro's, and the X4 is the SSD1677 board it has been looked at on.
   bool supportsOnePassText() const override;
   bool composesOnePassText() const override { return supportsOnePassText(); }
+  bool displayLabFrame(EpdBus& bus, const uint8_t* bw, const uint8_t* red, const uint8_t* lut) override;
   bool displayOnePassStart(EpdBus& bus, const uint8_t* oldPlane, const uint8_t* page, RefreshMode mode,
                            bool turnOff) override;
   bool supportsAsyncDisplay() const override { return true; }

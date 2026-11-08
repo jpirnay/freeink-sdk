@@ -608,6 +608,18 @@ bool Ssd1677Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* 
 
 bool Ssd1677Driver::supportsOnePassText() const { return BoardConfig::ACTIVE.board == BoardConfig::Board::XteinkX4; }
 
+bool Ssd1677Driver::displayLabFrame(EpdBus& bus, const uint8_t* bw, const uint8_t* red, const uint8_t* lut) {
+  if (_cfg.grayPowerUpFirst) powerOn(bus);
+  setRamArea(bus, 0, 0, _w, _h);
+  writeRam(bus, CMD_WRITE_RAM_BW, bw, _bufferSize);
+  writeRam(bus, CMD_WRITE_RAM_RED, red, _bufferSize);
+  setCustomLut(bus, true, lut);
+  refresh(bus, RefreshMode::Fast, /*turnOff=*/false, /*async=*/false);  // the 0xCC external-LUT sequence
+  setCustomLut(bus, false, nullptr);
+  _needsInitialFull = true;  // the RAM holds a lab's planes, not a page
+  return true;
+}
+
 bool Ssd1677Driver::displayOnePassStart(EpdBus& bus, const uint8_t* oldPlane, const uint8_t* page, RefreshMode mode,
                                         bool turnOff) {
   // A page this driver would promote (a clean refresh, the first after boot or a wake, gray left by a

@@ -244,6 +244,24 @@ class ComposingDriver : public Uc8279X4Driver {
 
 // The X4's composed one-pass: page in BW, the old plane in RED, the exchanged X4 Pro table, one 0xCC
 // activation, then both planes become the page. A HALF keeps the B/W path.
+// A lab's frame (development builds): both planes and the LUT exactly as given, one 0xCC activation, and the
+// next display starts clean.
+static void testSsdLabFrame() {
+  Ssd1677Driver d;
+  EpdBus bus;
+  d.begin(bus);
+  Bytes page(48000, 0xF0), red(48000, 0x3C), lut(110, 0x00);
+  lut[0] = 0x15;
+  lut[1] = 0x54;
+  d.display(bus, page.data(), nullptr, RefreshMode::Full, false);
+  bus.clear();
+  assert(d.displayLabFrame(bus, page.data(), red.data(), lut.data()));
+  assert(lastPlane(bus, 0x24) == page && lastPlane(bus, 0x26) == red);
+  const Bytes& sent = lastPlane(bus, 0x32);
+  assert(sent.size() == 105 && sent[0] == 0x15 && sent[1] == 0x54);
+  assert(lastRegister(bus, 0x22) == 0xCC);
+}
+
 static void testSsdComposedOnePass() {
   const auto board = BoardConfig::ACTIVE.board;
   BoardConfig::ACTIVE.board = BoardConfig::Board::XteinkX4;
@@ -934,6 +952,7 @@ int main(int argc, char** argv) {
   testGrayCleanupBaseline();
   testComposedOnePass();
   testSsdComposedOnePass();
+  testSsdLabFrame();
 #endif
   std::puts("Pro plane bytes, transaction counts, clean refreshes, power state and async frame ownership passed");
 }

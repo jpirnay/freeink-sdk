@@ -943,6 +943,16 @@ uint8_t* FreeInkDisplay::beginOnePassMask() {
 #endif
 }
 
+bool FreeInkDisplay::displayLabFrame(const uint8_t* bw, const uint8_t* red, const uint8_t* lut) {
+  if (!_driver || !bw || !red || !lut) return false;
+  cancelGrayscalePass();
+  DisplayPmLock pmLock;
+  syncPendingAsync();
+  _activeMatchesGlass = false;
+  _shadowValid = false;
+  return _driver->displayLabFrame(_bus, bw, red, lut);
+}
+
 void FreeInkDisplay::displayOnePassFrame(RefreshMode mode, bool turnOffScreen) {
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
   if (_onePassMask) {

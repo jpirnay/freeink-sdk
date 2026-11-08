@@ -200,6 +200,16 @@ class PanelDriver {
     (void)oldPlane;
     return displayStart(bus, page, nullptr, mode, turnOff);
   }
+  // A lab's frame, for development builds only: both RAM planes as given and one blocking refresh with the
+  // given external LUT, in the driver's own LUT layout. False where the driver has no such path. The RAM then
+  // holds the lab's planes, so the next display starts clean.
+  virtual bool displayLabFrame(EpdBus& bus, const uint8_t* bw, const uint8_t* red, const uint8_t* lut) {
+    (void)bus;
+    (void)bw;
+    (void)red;
+    (void)lut;
+    return false;
+  }
   // Deferred form of displayGrayFrame(): queue the frame and return while the
   // waveform runs, so the caller can spend it on its own work. Returns true when
   // it actually deferred, in which case displayFinish() must run before the host
