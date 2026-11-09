@@ -446,6 +446,17 @@ class FreeInkDisplay {
   // already lent. *size receives the block size.
   uint8_t* borrowSecondaryBuffer(size_t* size);
 
+  // borrowSecondaryBuffer() for a host that works while the refresh it just
+  // started is still painting. Where that refresh's finish reads only the frame
+  // it displays (asyncRefreshHoldsFrameBuffer(): the X3, whose displayStart()
+  // ignores prev and whose displayFinish() re-syncs DTM1 from that frame), the
+  // block lent is the one the host would have drawn into next, and the displayed
+  // frame becomes the single framebuffer, so nothing waits for the waveform.
+  // getFrameBuffer() then returns another pointer, and the caller owes
+  // finishDisplayAsync() before it next writes the framebuffer. With no refresh
+  // pending, or on any other panel, it is borrowSecondaryBuffer().
+  uint8_t* borrowSecondaryBufferDuringRefresh(size_t* size);
+
   // Take the lent block back and restore dual-buffer mode. Seeds the buffer
   // from the live framebuffer and arms the one-shot RED-baseline handling,
   // identical to reallocSecondaryBuffer() (the build clobbered the contents).

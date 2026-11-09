@@ -918,6 +918,57 @@ static void testOnePassFrame() {
   fakeHeapCapsFail = false;
 }
 
+#ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
+// A deferred refresh whose finish re-reads the frame it painted (the X3's DTM1 sync): a host can take
+// the other buffer while the panel paints, and the finish still gets the painted frame.
+class DeferredDriver : public BwOnlyDriver {
+ public:
+  bool displayStart(EpdBus&, const uint8_t* fb, const uint8_t*, RefreshMode, bool) override {
+    started.assign(fb, fb + 48000);
+    return true;
+  }
+  void displayFinish(EpdBus&, const uint8_t* fb) override {
+    finished.assign(fb, fb + 48000);
+    ++finishes;
+  }
+  Bytes started, finished;
+  int finishes = 0;
+};
+
+static void testLendDuringRefresh() {
+  DeferredDriver driver;
+  FreeInkDisplay display(12, 11, 13, 18, 14, 6);
+  display._driver = &driver;
+  display.begin();
+  display._panelSel = FreeInkDisplay::PanelSel::X3;
+  const auto popup = frame(5);
+  std::memcpy(display.getFrameBuffer(), popup.data(), popup.size());
+  display.triggerDisplay(FreeInkDisplay::FAST_REFRESH, false);
+  assert(display.isRefreshPending());
+  uint8_t* const shown = display.frameBufferActive;
+  size_t size = 0;
+  uint8_t* const lent = display.borrowSecondaryBufferDuringRefresh(&size);
+  assert(lent != nullptr && lent != shown && size == 48000);
+  assert(display.isRefreshPending() && driver.finishes == 0);  // nothing waited for the waveform
+  assert(display.getFrameBuffer() == shown && !display.hasSecondaryBuffer());
+  assert(display.borrowSecondaryBufferDuringRefresh(nullptr) == nullptr);  // one borrower at a time
+  std::memset(lent, 0x55, size);  // the borrower writes its arena
+  display.finishDisplayAsync();
+  assert(driver.finishes == 1 && driver.finished == popup);  // the finish synced the painted frame
+  assert(std::equal(popup.begin(), popup.end(), display.getFrameBuffer()));
+  assert(display.returnSecondaryBuffer());
+  assert(std::equal(popup.begin(), popup.end(), display.frameBufferActive));  // seeded from the live frame
+  // Elsewhere it is borrowSecondaryBuffer(): the refresh is drained first.
+  display._panelSel = FreeInkDisplay::PanelSel::X4;
+  display.triggerDisplay(FreeInkDisplay::FAST_REFRESH, false);
+  assert(display.isRefreshPending());
+  assert(display.borrowSecondaryBufferDuringRefresh(nullptr) != nullptr);
+  assert(!display.isRefreshPending() && driver.finishes == 2);
+  assert(display.returnSecondaryBuffer());
+  display.releaseBuffers();
+}
+#endif
+
 int main(int argc, char** argv) {
   if (argc > 1 && std::strcmp(argv[1], "metalio") == 0) {
     testMetalio();
@@ -953,6 +1004,7 @@ int main(int argc, char** argv) {
   testComposedOnePass();
   testSsdComposedOnePass();
   testSsdLabFrame();
+  testLendDuringRefresh();
 #endif
   std::puts("Pro plane bytes, transaction counts, clean refreshes, power state and async frame ownership passed");
 }

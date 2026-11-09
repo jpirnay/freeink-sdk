@@ -628,6 +628,22 @@ uint8_t* FreeInkDisplay::borrowSecondaryBuffer(size_t* size) {
   return _secondaryLent;
 }
 
+uint8_t* FreeInkDisplay::borrowSecondaryBufferDuringRefresh(size_t* size) {
+  if (!_refreshPending || !asyncRefreshHoldsFrameBuffer()) return borrowSecondaryBuffer(size);
+  _activeMatchesGlass = false;
+  if (!frameBufferActive || !frameBuffer || _secondaryLent) return nullptr;
+  // triggerDisplay() swapped the frame being painted into frameBufferActive, and
+  // the pending finish re-reads that frame alone. frameBuffer holds an older one,
+  // read by nothing: lend it, and keep the painted frame as the single buffer.
+  // syncPendingAsync() then hands the driver frameBuffer (frameBufferActive is
+  // null), which is the same frame, and a framebuffer that matches the glass.
+  _secondaryLent = frameBuffer;
+  frameBuffer = frameBufferActive;
+  frameBufferActive = nullptr;
+  if (size) *size = bufferSize;
+  return _secondaryLent;
+}
+
 bool FreeInkDisplay::returnSecondaryBuffer() {
   _activeMatchesGlass = false;
   if (!_secondaryLent) return false;
