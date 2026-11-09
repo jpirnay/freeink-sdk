@@ -55,6 +55,7 @@ class FakeDrawTarget : public DrawTarget {
     FontId font = 0;
     TextAlign align = TextAlign::Left;
     const uint8_t* bitmapData = nullptr;
+    char text[16] = {};  // a Text op's string, cut to fit
   };
 
   Op ops[256]{};
@@ -64,11 +65,14 @@ class FakeDrawTarget : public DrawTarget {
   int16_t charWidth = 6;
   int16_t lineH = 12;
   int16_t fontLineH[DisplayTarget::FONT_SLOTS]{};
+  int16_t fontCharWidth[DisplayTarget::FONT_SLOTS]{};  // per byte, in place of charWidth where set
 
   Size measureText(FontId font, const char* text, TextStyle) const override {
     if (text != nullptr && std::strcmp(text, "must-not-measure") == 0)
       measuredForbiddenLabel = true;
-    return Size{static_cast<int16_t>(charWidth * static_cast<int16_t>(std::strlen(text))), lineHeight(font)};
+    const int16_t perByte =
+        font < DisplayTarget::FONT_SLOTS && fontCharWidth[font] > 0 ? fontCharWidth[font] : charWidth;
+    return Size{static_cast<int16_t>(perByte * static_cast<int16_t>(std::strlen(text))), lineHeight(font)};
   }
   int16_t lineHeight(FontId font) const override {
     return font < DisplayTarget::FONT_SLOTS && fontLineH[font] > 0 ? fontLineH[font] : lineH;
@@ -94,6 +98,7 @@ class FakeDrawTarget : public DrawTarget {
     if (opCount) {
       ops[opCount - 1].font = style.font;
       ops[opCount - 1].align = style.align;
+      if (text) std::strncpy(ops[opCount - 1].text, text, sizeof(ops[opCount - 1].text) - 1);
     }
   }
   void bitmap(Rect rect, BitmapRef bitmap, BitmapMode, Paint foreground, Rotation rotation) override {
@@ -3864,6 +3869,77 @@ void testGreekLetters() {
   }
 }
 
+// A key labelled with its character draws it whole: a letter wider than the key takes the alternates' face, and one
+// wider than that is drawn past the key's edges, centred on it. A target cuts a string wider than its rect to an
+// ellipsis, so "whole" is: the label's own text, in a rect at least as wide as the label measures.
+void testKeyboardCharacterLabelsAreNeverCut() {
+  for (const bool narrowSmallFace : {true, false}) {
+    for (const KeyboardLayoutId id : {KeyboardLayoutId::ArabicAr, KeyboardLayoutId::CyrillicKk, KeyboardLayoutId::GreekEl}) {
+      for (const bool numbers : {false, true}) {
+        FakeDrawTarget draw;
+        draw.fontCharWidth[FONT_SLOT_BODY] = 8;  // two bytes of a letter: 16 px, wider than a 240 px row's keys
+        draw.fontCharWidth[FONT_SLOT_SMALL] = narrowSmallFace ? 3 : 8;
+        DeviceContext device = makeDevice(240, 300);
+        InputSnapshot input;
+        InteractionBuffer<64> interactions;
+        Frame<64> frame(draw, device, input, interactions);
+        KeyboardLayoutBuffer buffer;
+        const KeyboardLayout& layout = buildKeyboardLayout(buffer, id, false, false, numbers);
+        KeyboardProps props;
+        props.layout = &layout;
+        props.keyAction = 1;
+        props.altText.font = FONT_SLOT_SMALL;
+        keyboard(frame, Rect{0, 0, 240, 300}, props);
+
+        size_t index = 0;
+        size_t wide = 0;
+        for (uint8_t r = 0; r < layout.rowCount; ++r) {
+          for (uint8_t c = 0; c < layout.rows[r].count; ++c, ++index) {
+            const KeyboardKey& key = layout.rows[r].keys[c];
+            if (key.kind != KeyKind::Normal || !keyboardSingleCharacter(key.label)) continue;
+            const Rect hitRect = interactions.data()[index].rect;
+            for (const char* character : {key.label, key.alt}) {
+              if (!character) continue;
+              // The key's text op, and the key itself: the outline its button stroked before it.
+              const FakeDrawTarget::Op* drawn = nullptr;
+              Rect keyRect{};
+              for (size_t i = 0; i < draw.opCount; ++i) {
+                const auto& op = draw.ops[i];
+                if (op.kind != FakeDrawTarget::Op::Text || std::strcmp(op.text, character) != 0) continue;
+                for (size_t k = i; k-- > 0;) {
+                  if (draw.ops[k].kind != FakeDrawTarget::Op::Stroke) continue;
+                  if (hitRect.contains(draw.ops[k].rect.x, draw.ops[k].rect.y)) {
+                    drawn = &op;
+                    keyRect = draw.ops[k].rect;
+                  }
+                  break;
+                }
+              }
+              CHECK(drawn != nullptr);
+              if (!drawn) continue;
+              CHECK(drawn->rect.width >= draw.measureText(drawn->font, character, TextStyle{}).width);
+              if (character == key.label && draw.measureText(FONT_SLOT_BODY, character, TextStyle{}).width >
+                                                keyRect.width - props.keyPadding.left - props.keyPadding.right) {
+                ++wide;
+                // The narrower face when there is one; else the body face, centred on the key.
+                CHECK_EQ(drawn->font, narrowSmallFace ? FONT_SLOT_SMALL : FONT_SLOT_BODY);
+                const int center = keyRect.x + keyRect.width / 2;
+                const int drawnCenter = drawn->rect.x + drawn->rect.width / 2;
+                CHECK(drawnCenter - center <= 1 && center - drawnCenter <= 1);
+              }
+            }
+          }
+        }
+        CHECK(wide > 0);  // the case under test happened
+      }
+    }
+  }
+  CHECK(keyboardSingleCharacter("\xd8\xb6"));  // ض
+  CHECK(!keyboardSingleCharacter("https://"));
+  CHECK(!keyboardSingleCharacter(""));
+  CHECK(!keyboardSingleCharacter(nullptr));
+}
+
 void testCompactLayoutsMatchBuiltin() {
   // buildKeyboardLayout() must be builtinKeyboardLayout() without the tables:
   // every layer of every layout, one id past the last as the unknown-id path,
@@ -6253,6 +6329,7 @@ int main() {
   testLocalizedKeyboardLayout();
   testGermanAndFrenchLetters();
   testGreekLetters();
+  testKeyboardCharacterLabelsAreNeverCut();
   testCompactLayoutsMatchBuiltin();
   testKeyboardUniformRowWidths();
   testKeyboardOuterControlAlignment();
