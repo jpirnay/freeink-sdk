@@ -3756,6 +3756,114 @@ void testGermanAndFrenchLetters() {
   CHECK(std::strcmp(buf, "\xc3\xaatre") == 0);  // être
 }
 
+void testGreekLetters() {
+  const auto same = [](const char* got, const char* want) { return got && std::strcmp(got, want) == 0; };
+  const auto count = [](const KeyboardLayout& layout, int16_t value) {
+    int n = 0;
+    for (uint8_t r = 0; r < layout.rowCount; ++r) {
+      for (uint8_t c = 0; c < layout.rows[r].count; ++c) n += layout.rows[r].keys[c].value == value;
+    }
+    return n;
+  };
+
+  // Every variant: ; ς ε ρ τ υ θ ι ο π over α σ δ φ γ η ξ κ λ ϊ ϋ over
+  // Shift ζ χ ψ ω β ν μ Delete, and the globe key whatever langKey says.
+  for (const bool shifted : {false, true}) {
+    for (const bool numbers : {false, true}) {
+      for (const bool lang : {false, true}) {
+        const KeyboardLayout& el = builtinKeyboardLayout(KeyboardLayoutId::GreekEl, shifted, false, numbers, lang);
+        const uint8_t top = numbers ? 1 : 0;
+        CHECK_EQ(el.rowCount, numbers ? 5 : 4);
+        if (el.rowCount != (numbers ? 5 : 4)) continue;
+        CHECK_EQ(el.rows[top].count, 10);
+        CHECK_EQ(el.rows[top + 1].count, 11);
+        CHECK_EQ(el.rows[top + 2].count, 9);
+        if (el.rows[top].count < 10 || el.rows[top + 1].count < 11 || el.rows[top + 2].count < 9) continue;
+        CHECK_EQ(el.rows[top].keys[0].value, shifted ? ':' : ';');
+        CHECK_EQ(el.rows[top].keys[1].value, 0x3C2);                       // ς has no capital
+        CHECK_EQ(el.rows[top + 1].keys[9].value, shifted ? 0x3AA : 0x3CA);   // ϊ / Ϊ
+        CHECK_EQ(el.rows[top + 1].keys[10].value, shifted ? 0x3AB : 0x3CB);  // ϋ / Ϋ
+        CHECK(el.rows[top + 2].keys[0].kind == KeyKind::Shift);
+        CHECK(el.rows[top + 2].keys[8].kind == KeyKind::Delete);
+        CHECK_EQ(keyboardActivationFor(el, QWERTY_KEY_LANG).kind, KeyboardActivationKind::Language);
+        if (numbers) CHECK(el.rows[0].independentKeyWidth);
+        // All 24 letters, once each, in the layer's case.
+        for (uint32_t cp = 0x3B1; cp <= 0x3C9; ++cp) {
+          if (cp == 0x3C2) continue;
+          CHECK_EQ(count(el, static_cast<int16_t>(shifted ? cp - 0x20 : cp)), 1);
+        }
+        CHECK_EQ(count(el, 0x3C2), 1);
+      }
+    }
+  }
+
+  // The tonos vowels ride their base letter, in both cases, and the diaeresis
+  // keys long-press to the form with both marks.
+  const KeyboardLayout& el = builtinKeyboardLayout(KeyboardLayoutId::GreekEl);
+  const KeyboardLayout& elShift = builtinKeyboardLayout(KeyboardLayoutId::GreekEl, true);
+  const struct {
+    int16_t lower, upper;
+    const char *alt, *altUpper;
+  } tonos[] = {
+      {0x3B1, 0x391, "ά", "Ά"}, {0x3B5, 0x395, "έ", "Έ"}, {0x3B7, 0x397, "ή", "Ή"}, {0x3B9, 0x399, "ί", "Ί"},
+      {0x3BF, 0x39F, "ό", "Ό"}, {0x3C5, 0x3A5, "ύ", "Ύ"}, {0x3C9, 0x3A9, "ώ", "Ώ"},
+  };
+  for (const auto& t : tonos) {
+    CHECK(same(keyboardAltOutputFor(el, t.lower), t.alt));
+    CHECK(same(keyboardAltOutputFor(elShift, t.upper), t.altUpper));
+  }
+  CHECK(same(keyboardOutputFor(el, 0x3CA), "ϊ"));
+  CHECK(same(keyboardAltOutputFor(el, 0x3CA), "ΐ"));
+  CHECK(same(keyboardOutputFor(el, 0x3CB), "ϋ"));
+  CHECK(same(keyboardAltOutputFor(el, 0x3CB), "ΰ"));
+  // The other letters flip case on long-press; final sigma has nothing to flip to.
+  CHECK(same(keyboardAltOutputFor(el, 0x3C3), "Σ"));
+  CHECK(same(keyboardAltOutputFor(elShift, 0x3A3), "σ"));
+  CHECK(same(keyboardAltOutputFor(el, 0x3BC), "Μ"));
+  CHECK(same(keyboardAltOutputFor(elShift, 0x3AA), "ϊ"));
+  CHECK(keyboardAltOutputFor(el, 0x3C2) == nullptr);
+  CHECK(keyboardAltOutputFor(elShift, 0x3C2) == nullptr);
+  CHECK(keyboardAltOutputFor(el, ';') == nullptr);
+  CHECK(same(keyboardOutputFor(elShift, ':'), ":"));
+
+  // Through KeyboardEntry: "Ευρωπαϊκή καλημέρα;".
+  char buf[64] = "";
+  KeyboardEntry kb;
+  kb.layout = KeyboardLayoutId::GreekEl;
+  kb.attach(buf, sizeof buf);
+  kb.shift();
+  for (const int16_t key : {0x395, 0x3C5, 0x3C1, 0x3C9, 0x3C0, 0x3B1, 0x3CA, 0x3BA}) CHECK(kb.key(key));
+  CHECK(kb.key(0x3B7, /*longPress=*/true));
+  CHECK(kb.key(QWERTY_KEY_SPACE));
+  for (const int16_t key : {0x3BA, 0x3B1, 0x3BB, 0x3B7, 0x3BC}) CHECK(kb.key(key));
+  CHECK(kb.key(0x3B5, /*longPress=*/true));
+  for (const int16_t key : {0x3C1, 0x3B1, int{';'}}) CHECK(kb.key(key));
+  CHECK(std::strcmp(buf, "Ευρωπαϊκή καλημέρα;") == 0);
+
+  // An eleven-key home row, as in German: the digit row keeps full-size keys
+  // and the letters narrow to the same 36 px.
+  {
+    DeviceContext device = makeDevice(480, 300);
+    InputSnapshot input;
+    FakeDrawTarget draw;
+    InteractionBuffer<64> interactions;
+    Frame<64> frame(draw, device, input, interactions);
+    KeyboardProps props;
+    props.layout = &builtinKeyboardLayout(KeyboardLayoutId::GreekEl, false, false, true);
+    props.keyAction = 1;
+    props.padding = Insets{4, 4, 4, 4};
+    props.gap = 6;
+    props.uniformKeyWidth = true;
+    keyboard(frame, Rect{0, 0, 480, 300}, props);
+    CHECK_EQ(interactions.data()[0].rect.width, 40);   // digits
+    CHECK_EQ(interactions.data()[9].rect.width, 40);
+    CHECK_EQ(interactions.data()[10].rect.width, 36);  // ;
+    CHECK_EQ(interactions.data()[20].rect.width, 36);  // α
+    CHECK_EQ(interactions.data()[30].rect.width, 36);  // ϋ
+    CHECK(interactions.data()[30].rect.right() <= 476);
+  }
+}
+
 void testCompactLayoutsMatchBuiltin() {
   // buildKeyboardLayout() must be builtinKeyboardLayout() without the tables:
   // every layer of every layout, one id past the last as the unknown-id path,
@@ -3766,7 +3874,7 @@ void testCompactLayoutsMatchBuiltin() {
   };
   KeyboardLayoutBuffer buffer;
   size_t keysCompared = 0;
-  for (uint8_t raw = 0; raw <= static_cast<uint8_t>(KeyboardLayoutId::ArabicAr) + 1; ++raw) {
+  for (uint8_t raw = 0; raw <= static_cast<uint8_t>(KeyboardLayoutId::GreekEl) + 1; ++raw) {
     const auto id = static_cast<KeyboardLayoutId>(raw);
     for (uint8_t flags = 0; flags < 16; ++flags) {
       const bool shifted = flags & 1, symbols = flags & 2, numbers = flags & 4, lang = flags & 8;
@@ -4032,12 +4140,12 @@ void testSymbolKeyboardPages() {
 }
 
 void testKeyboardLayoutVariants() {
-  for (int id = 0; id <= static_cast<int>(KeyboardLayoutId::ArabicAr); ++id) {
+  for (int id = 0; id <= static_cast<int>(KeyboardLayoutId::GreekEl); ++id) {
     for (int flags = 0; flags < 16; ++flags) {
       const auto layoutId = static_cast<KeyboardLayoutId>(id);
       const bool shifted = flags & 1, symbols = flags & 2, numbers = flags & 4, lang = flags & 8;
       const KeyboardLayout& layout = builtinKeyboardLayout(layoutId, shifted, symbols, numbers, lang);
-      const bool hasCase = id < static_cast<int>(KeyboardLayoutId::HebrewIl);
+      const bool hasCase = layoutId != KeyboardLayoutId::HebrewIl && layoutId != KeyboardLayoutId::ArabicAr;
       const bool hasLang = lang || id >= static_cast<int>(KeyboardLayoutId::CyrillicRu);
       CHECK_EQ(layout.rowCount, numbers && !symbols ? 5 : 4);
       CHECK_EQ(keyboardActivationFor(layout, QWERTY_KEY_BACKSPACE).kind, KeyboardActivationKind::Delete);
@@ -4717,7 +4825,7 @@ void testResponsiveKeyboardSizing() {
   CHECK_EQ(keyboardPreferredHeight(480, 5), 312);
   CHECK_EQ(keyboardPreferredHeight(800, 5), 312);
   CHECK_EQ(keyboardPreferredHeight(480, 5, Insets{4, 4, 4, 4}, 6, 28, 10), 287);
-  for (int id = 0; id <= static_cast<int>(KeyboardLayoutId::ArabicAr); ++id) {
+  for (int id = 0; id <= static_cast<int>(KeyboardLayoutId::GreekEl); ++id) {
     for (int flags = 0; flags < 8; ++flags) {
       FakeDrawTarget draw;
       DeviceContext device = makeDevice(480, 800);
@@ -6144,6 +6252,7 @@ int main() {
   testQwertyKeyboardComponent();
   testLocalizedKeyboardLayout();
   testGermanAndFrenchLetters();
+  testGreekLetters();
   testCompactLayoutsMatchBuiltin();
   testKeyboardUniformRowWidths();
   testKeyboardOuterControlAlignment();

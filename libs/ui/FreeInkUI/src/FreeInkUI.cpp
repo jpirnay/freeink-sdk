@@ -678,6 +678,56 @@ static const KeyboardKey AR_ROW3[] = {K("ذ", "ذ", 0x630),  K("ئ", "ئ", 0x626
                                       K("ة", "ة", 0x629),  K("و", "و", 0x648), K("ز", "ز", 0x632),
                                       K("ظ", "ظ", 0x638),  KA("أ", "أ", 0x623, "آ"), K("إ", "إ", 0x625)};
 
+// Greek, the standard arrangement: ; ς ε ρ τ υ θ ι ο π / α σ δ φ γ η ξ κ λ /
+// ζ χ ψ ω β ν μ. Key ids are the letters' code points (U+0386..U+03CE), clear
+// of the ASCII ids, of the Latin locale ids above 1000 and of Cyrillic.
+//
+// Each vowel long-presses to its tonos form (ά έ ή ί ό ύ ώ), the accent
+// monotonic Greek writes on nearly every word of two syllables or more. A key
+// carries a single alternate, so the diaeresis forms get keys of their own at
+// the end of the home row, where the physical keyboard has its accent dead
+// key: ϊ and ϋ, each long-pressing to the form with both marks (ΐ ΰ). The row
+// then runs eleven keys, as German's does.
+//
+// Final sigma has no capital: like ß in the German layers it stays as it is
+// when shifted (Σ is already on σ's key, and a layer cannot hold two keys with
+// one id). ";" is the Greek question mark; shifted, its key gives ":", as on
+// the physical keyboard. Long-press flips case like the Latin and Cyrillic
+// letters (keyboardAltOutputFor).
+static const KeyboardKey EL_ROW1[] = {K(";", ";", ';'),          K("ς", "ς", 0x3C2), KA("ε", "ε", 0x3B5, "έ"),
+                                      K("ρ", "ρ", 0x3C1),        K("τ", "τ", 0x3C4), KA("υ", "υ", 0x3C5, "ύ"),
+                                      K("θ", "θ", 0x3B8),        KA("ι", "ι", 0x3B9, "ί"), KA("ο", "ο", 0x3BF, "ό"),
+                                      K("π", "π", 0x3C0)};
+static const KeyboardKey EL_ROW2[] = {KA("α", "α", 0x3B1, "ά"), K("σ", "σ", 0x3C3), K("δ", "δ", 0x3B4),
+                                      K("φ", "φ", 0x3C6),        K("γ", "γ", 0x3B3), KA("η", "η", 0x3B7, "ή"),
+                                      K("ξ", "ξ", 0x3BE),        K("κ", "κ", 0x3BA), K("λ", "λ", 0x3BB),
+                                      KA("ϊ", "ϊ", 0x3CA, "ΐ"), KA("ϋ", "ϋ", 0x3CB, "ΰ")};
+static const KeyboardKey EL_ROW3[] = {K15(nullptr, KeyKind::Shift, QWERTY_KEY_SHIFT), K("ζ", "ζ", 0x3B6),
+                                      K("χ", "χ", 0x3C7),
+                                      K("ψ", "ψ", 0x3C8),
+                                      KA("ω", "ω", 0x3C9, "ώ"),
+                                      K("β", "β", 0x3B2),
+                                      K("ν", "ν", 0x3BD),
+                                      K("μ", "μ", 0x3BC),
+                                      K15("Del", KeyKind::Delete, QWERTY_KEY_BACKSPACE)};
+
+static const KeyboardKey EL_SHIFT_ROW1[] = {K(":", ":", ':'),          K("ς", "ς", 0x3C2), KA("Ε", "Ε", 0x395, "Έ"),
+                                            K("Ρ", "Ρ", 0x3A1),        K("Τ", "Τ", 0x3A4), KA("Υ", "Υ", 0x3A5, "Ύ"),
+                                            K("Θ", "Θ", 0x398),        KA("Ι", "Ι", 0x399, "Ί"), KA("Ο", "Ο", 0x39F, "Ό"),
+                                            K("Π", "Π", 0x3A0)};
+static const KeyboardKey EL_SHIFT_ROW2[] = {KA("Α", "Α", 0x391, "Ά"), K("Σ", "Σ", 0x3A3), K("Δ", "Δ", 0x394),
+                                            K("Φ", "Φ", 0x3A6),        K("Γ", "Γ", 0x393), KA("Η", "Η", 0x397, "Ή"),
+                                            K("Ξ", "Ξ", 0x39E),        K("Κ", "Κ", 0x39A), K("Λ", "Λ", 0x39B),
+                                            K("Ϊ", "Ϊ", 0x3AA),        K("Ϋ", "Ϋ", 0x3AB)};
+static const KeyboardKey EL_SHIFT_ROW3[] = {K15(nullptr, KeyKind::Shift, QWERTY_KEY_SHIFT), K("Ζ", "Ζ", 0x396),
+                                            K("Χ", "Χ", 0x3A7),
+                                            K("Ψ", "Ψ", 0x3A8),
+                                            KA("Ω", "Ω", 0x3A9, "Ώ"),
+                                            K("Β", "Β", 0x392),
+                                            K("Ν", "Ν", 0x39D),
+                                            K("Μ", "Μ", 0x39C),
+                                            K15("Del", KeyKind::Delete, QWERTY_KEY_BACKSPACE)};
+
 static const KeyboardRow HE_ROWS[] = {
     {HE_ROW1, 10, 0}, {HE_ROW2, 9, 0}, {HE_ROW3, 10, 0}, {HE_ROW4, 4, 0}};
 static const KeyboardRow HE_NUM_ROWS[] = {{NUM_ROW, 10, 0},
@@ -694,6 +744,24 @@ static const KeyboardRow AR_NUM_ROWS[] = {{NUM_ROW, 10, 0, true},
                                           {AR_ROW2, 11, 0},
                                           {AR_ROW3, 12, 0},
                                           {AR_ROW4, 5, 0}};
+
+// Greek is a script of its own, so like Cyrillic it ships only with the globe
+// key, and its eleven-key home row gives the digit row a width of its own.
+static const KeyboardRow EL_ROWS[] = {{EL_ROW1, 10, 0}, {EL_ROW2, 11, 0}, {EL_ROW3, 9, 0}, {LANG_ROW4, 4, 0}};
+static const KeyboardRow EL_SHIFT_ROWS[] = {{EL_SHIFT_ROW1, 10, 0},
+                                            {EL_SHIFT_ROW2, 11, 0},
+                                            {EL_SHIFT_ROW3, 9, 0},
+                                            {LANG_ROW4, 4, 0}};
+static const KeyboardRow EL_NUM_ROWS[] = {{NUM_ROW, 10, 0, true},
+                                          {EL_ROW1, 10, 0},
+                                          {EL_ROW2, 11, 0},
+                                          {EL_ROW3, 9, 0},
+                                          {LANG_ROW4, 4, 0}};
+static const KeyboardRow EL_SHIFT_NUM_ROWS[] = {{NUM_SHIFT_ROW, 10, 0, true},
+                                                {EL_SHIFT_ROW1, 10, 0},
+                                                {EL_SHIFT_ROW2, 11, 0},
+                                                {EL_SHIFT_ROW3, 9, 0},
+                                                {LANG_ROW4, 4, 0}};
 
 static const KeyboardRow FR_LANG_ROWS[] = {{FR_ROW1, 10, 0}, {FR_ROW2, 10, 0}, {FR_ROW3, 9, 0}, {LANG_ROW4, 4, 0}};
 static const KeyboardRow FR_LANG_NUM_ROWS[] = {{NUM_ROW, 10, 0}, {FR_ROW1, 10, 0}, {FR_ROW2, 10, 0}, {FR_ROW3, 9, 0}, {LANG_ROW4, 4, 0}};
@@ -751,6 +819,10 @@ static const KeyboardLayout KK_NUM_LAYOUT{KK_NUM_ROWS, 5};
 static const KeyboardLayout KK_SHIFT_NUM_LAYOUT{KK_SHIFT_NUM_ROWS, 5};
 static const KeyboardLayout AR_LAYOUT{AR_ROWS, 4};
 static const KeyboardLayout AR_NUM_LAYOUT{AR_NUM_ROWS, 5};
+static const KeyboardLayout EL_LAYOUT{EL_ROWS, 4};
+static const KeyboardLayout EL_SHIFT_LAYOUT{EL_SHIFT_ROWS, 4};
+static const KeyboardLayout EL_NUM_LAYOUT{EL_NUM_ROWS, 5};
+static const KeyboardLayout EL_SHIFT_NUM_LAYOUT{EL_SHIFT_NUM_ROWS, 5};
 static const KeyboardLayout HE_LAYOUT{HE_ROWS, 4};
 static const KeyboardLayout HE_NUM_LAYOUT{HE_NUM_ROWS, 5};
 static const KeyboardLayout FR_LANG_LAYOUT{FR_LANG_ROWS, 4};
@@ -849,9 +921,13 @@ constexpr CompactLayout COMPACT_LAYOUTS[] = {
     {{"ض ص ث ق ف غ ع ه خ ح ج د", "ش س ي ب ل ا ت ن م ك ط", "ذ ئ ء ؤ ر ى ة و ز ظ أآ إ"},
      {nullptr, nullptr, nullptr},
      COMPACT_ALWAYS_LANG | COMPACT_CASELESS | COMPACT_WIDE_DIGITS | COMPACT_FOOTER_DELETE},
+    // GreekEl
+    {{"; ς εέ ρ τ υύ θ ιί οό π", "αά σ δ φ γ ηή ξ κ λ ϊΐ ϋΰ", "ζ χ ψ ωώ β ν μ"},
+     {": ς ΕΈ Ρ Τ ΥΎ Θ ΙΊ ΟΌ Π", "ΑΆ Σ Δ Φ Γ ΗΉ Ξ Κ Λ Ϊ Ϋ", "Ζ Χ Ψ ΩΏ Β Ν Μ"},
+     COMPACT_ALWAYS_LANG | COMPACT_WIDE_DIGITS},
 };
 static_assert(sizeof(COMPACT_LAYOUTS) / sizeof(COMPACT_LAYOUTS[0]) ==
-                  static_cast<size_t>(KeyboardLayoutId::ArabicAr) + 1,
+                  static_cast<size_t>(KeyboardLayoutId::GreekEl) + 1,
               "one compact layout per KeyboardLayoutId, in enum order");
 
 constexpr const char* COMPACT_DIGITS = "1! 2@ 3# 4$ 5% 6^ 7& 8* 9( 0)";
@@ -902,14 +978,17 @@ uint32_t utf8Decode(const char* s, uint8_t len) {
 }
 
 // The other case of a letter the layouts type, or 0 for anything without
-// one. ASCII, Latin-1 and Cyrillic А-я are each one block per case at a fixed
-// offset; × and ÷ sit between the Latin-1 letters and ß has no capital here.
-// The Cyrillic letters outside А-я (ё, ї, і, є, ў) mirror theirs 0x50 apart.
+// one. ASCII, Latin-1, Greek and Cyrillic А-я are each one block per case at a
+// fixed offset; × and ÷ sit between the Latin-1 letters and ß has no capital
+// here, nor has Greek final sigma (U+03C2; U+03A2 is unassigned). The Cyrillic
+// letters outside А-я (ё, ї, і, є, ў) mirror theirs 0x50 apart.
 uint32_t caseFlipped(const uint32_t cp) {
-  if ((cp >= 'a' && cp <= 'z') || (cp >= 0xE0 && cp <= 0xFE && cp != 0xF7) || (cp >= 0x430 && cp <= 0x44F)) {
+  if ((cp >= 'a' && cp <= 'z') || (cp >= 0xE0 && cp <= 0xFE && cp != 0xF7) ||
+      (cp >= 0x3B1 && cp <= 0x3CB && cp != 0x3C2) || (cp >= 0x430 && cp <= 0x44F)) {
     return cp - 0x20;
   }
-  if ((cp >= 'A' && cp <= 'Z') || (cp >= 0xC0 && cp <= 0xDE && cp != 0xD7) || (cp >= 0x410 && cp <= 0x42F)) {
+  if ((cp >= 'A' && cp <= 'Z') || (cp >= 0xC0 && cp <= 0xDE && cp != 0xD7) ||
+      (cp >= 0x391 && cp <= 0x3AB && cp != 0x3A2) || (cp >= 0x410 && cp <= 0x42F)) {
     return cp + 0x20;
   }
   if (cp >= 0x450 && cp <= 0x45F) return cp - 0x50;
@@ -1020,6 +1099,10 @@ const KeyboardLayout& builtinKeyboardLayout(KeyboardLayoutId id, bool shifted, b
   if (id == KeyboardLayoutId::HebrewIl) return numberRow ? HE_NUM_LAYOUT : HE_LAYOUT;
   // Arabic has no case either, so shift is ignored here too.
   if (id == KeyboardLayoutId::ArabicAr) return numberRow ? AR_NUM_LAYOUT : AR_LAYOUT;
+  if (id == KeyboardLayoutId::GreekEl) {
+    if (shifted) return numberRow ? EL_SHIFT_NUM_LAYOUT : EL_SHIFT_LAYOUT;
+    return numberRow ? EL_NUM_LAYOUT : EL_LAYOUT;
+  }
   if (id == KeyboardLayoutId::QwertyEn && langKey) {
     if (shifted) return numberRow ? EN_SHIFT_LANG_NUM_LAYOUT : EN_SHIFT_LANG_LAYOUT;
     return numberRow ? EN_LANG_NUM_LAYOUT : EN_LANG_LAYOUT;

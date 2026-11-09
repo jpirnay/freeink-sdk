@@ -41,6 +41,10 @@ enum class KeyboardLayoutId : uint8_t {
   // Arabic: same shape as Hebrew -- no case, one layer, no shift, RTL left to
   // the renderer. Standard 101 arrangement; alef madda long-presses off أ.
   ArabicAr,
+  // Greek: the standard arrangement, with an uppercase layer as the Latin and
+  // Cyrillic layouts have. Last rather than grouped by script, so the ids above
+  // keep their numbers.
+  GreekEl,
 };
 
 struct KeyboardKey {
@@ -152,8 +156,8 @@ inline int16_t keyboardPreferredHeight(int16_t width, uint8_t rowCount, Insets p
 // long-press) to the letter layers — for entry fields where digits must stay
 // one tap away (passwords, hosts, ports). The symbol layers already carry
 // digits, so they ignore the flag. Shift swaps the row to symbols-primary on
-// Latin and Cyrillic layouts and picks their uppercase letter layer. Hebrew
-// and Arabic have no case and keep the digit row unchanged.
+// Latin, Cyrillic and Greek layouts and picks their uppercase letter layer.
+// Hebrew and Arabic have no case and keep the digit row unchanged.
 //
 // `langKey` puts a KeyKind::Lang key in the bottom row, for apps that let the
 // user reach more than one script. It costs a slot in that row, so it is off by
@@ -210,9 +214,10 @@ const char* keyboardOutputFor(const KeyboardLayout& layout, int16_t value);
 // The UTF-8 alternate a key id inserts on long-press. Explicit KeyboardKey::alt
 // wins; letter keys without one fall back to the opposite case of the letter
 // they type (the phone-keyboard hold-for-capital convention) — ASCII, Latin-1
-// (but not ß) and Cyrillic U+0400..U+045F. Returns nullptr when the key has no
-// alternate. The case-flip result lives in a static buffer — call from one
-// task (the UI loop), and consume before the next call.
+// (but not ß), Cyrillic U+0400..U+045F and Greek (but not final sigma).
+// Returns nullptr when the key has no alternate. The case-flip result lives in
+// a static buffer — call from one task (the UI loop), and consume before the
+// next call.
 const char* keyboardAltOutputFor(const KeyboardLayout& layout, int16_t value);
 
 enum class KeyboardActivationKind : uint8_t {

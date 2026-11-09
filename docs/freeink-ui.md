@@ -840,7 +840,8 @@ freeink::ui::keyboard(ui, keyboardRect, keyboard);
 ```
 
 Built-in layout IDs are `QwertyEn`, `AzertyFr`, `QwertzDe`, `SpanishEs`,
-`CyrillicRu`, `CyrillicUk`, `CyrillicBe`, `CyrillicKk`, and `HebrewIl`.
+`CyrillicRu`, `CyrillicUk`, `CyrillicBe`, `CyrillicKk`, `HebrewIl`, `ArabicAr`
+and `GreekEl`.
 Normal ASCII keys report their code point in `ActionEvent::value`; localized
 keys use stable non-ASCII values so firmware can map the selected key back to
 the active layout's UTF-8 output string. Visible glyph coverage depends on the
