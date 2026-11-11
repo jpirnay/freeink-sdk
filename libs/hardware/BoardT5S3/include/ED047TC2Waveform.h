@@ -31,7 +31,7 @@ struct TempRange {
 extern const TempRange kTempRanges[kTempRangeCount];
 
 // The bank Panel_EPD's differential modes (epd_fast / epd_fastest) run: the
-// vendor DU waveform for the two rails, plus a nudge column for each of the two
+// vendor DU waveform for the two rails, plus a column for each of the two
 // anti-aliasing greys. One bank carries both because Panel_EPD folds the bank
 // offset into its per-pixel progress value -- pushing the B/W base and the greys
 // under different epd_modes makes every pixel compare unequal and re-drives the
@@ -39,12 +39,21 @@ extern const TempRange kTempRanges[kTempRangeCount];
 extern const uint32_t* const kFastLut[kTempRangeCount];
 extern const size_t kFastLutStep[kTempRangeCount];
 
-// The two canvas levels the grey columns above are cut for, per range. The grey
-// nudge is from-black and destination-indexed, so a canvas that writes any other
-// level lands on a column the LUT leaves undriven and the pixel stays black.
-// LilyGoT5S3LgfxConfig turns these into the canvas bytes the driver writes.
+// The two canvas levels the grey columns above are cut for, per range. A grey
+// column is destination-indexed: it drives the pixel kGrayWhiteFrames toward
+// white, which takes it there from whatever it showed before, and then
+// kGrayFrames* frames toward black. A canvas that writes any other level lands on
+// a column the fast bank leaves undriven. LilyGoT5S3LgfxConfig turns these into
+// the canvas bytes the driver writes.
 extern const uint8_t kGrayLevelDark[kTempRangeCount];
 extern const uint8_t kGrayLevelLight[kTempRangeCount];
+
+// The grey columns' run toward white and their frames toward black after it, per
+// range. Picked by the generator from the panel's measured response; here for
+// logging.
+extern const uint8_t kGrayWhiteFrames[kTempRangeCount];
+extern const uint8_t kGrayFramesDark[kTempRangeCount];
+extern const uint8_t kGrayFramesLight[kTempRangeCount];
 
 // The clean refresh, for epd_text / epd_quality. Those modes re-drive every
 // non-white pixel whether or not it changed, so this one is charge neutral: it
