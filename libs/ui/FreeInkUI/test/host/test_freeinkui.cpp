@@ -3959,6 +3959,7 @@ void testGreekLayout() {
   CHECK(keyboardAltOutputFor(lower, 0x3C2) == nullptr);                // ς has no capital
   CHECK(std::strcmp(keyboardAltOutputFor(upper, 0x3AA), "ϊ") == 0);   // Ϊ (no alt) flips too
   CHECK(std::strcmp(keyboardOutputFor(upper, ';'), ";") == 0);
+  CHECK(std::strcmp(keyboardAltOutputFor(upper, ';'), ":") == 0);     // held, ";" gives ":"
 }
 
 // A key labelled with its character draws it whole: a letter wider than the key takes the alternates' face, and one
