@@ -8,10 +8,12 @@
 // feed, the resolved-once API, and malformed-input robustness
 // deterministically; the DejaVuSans fixture then proves the FtFont plumbing
 // end-to-end, including that stripping the legacy 'kern' table leaves kerning
-// working through GPOS alone, and checks the resolved reader against the
-// stateless one and the kern table reader against FreeType.
+// working through GPOS alone and that GDEF reaches resident and streamed
+// faces, and checks the resolved reader against the stateless one and the
+// kern table reader against FreeType.
 //
-// The lookup-flag cases and syntheticGdef() are ported from Free-Ink/freeink-sdk (PR #197,
+// The lookup-flag cases, syntheticGdef(), setPairLookupFlags() and the
+// resident/streamed GDEF checks are ported from Free-Ink/freeink-sdk (PR #197,
 // d2e6f09, by Georg Kaindl), with this reader's answers where it follows
 // HarfBuzz instead (reserved bits, unknown classes, an unreadable GDEF).
 #include <chrono>
@@ -551,6 +553,28 @@ bool stripTable(std::vector<uint8_t>& font, const char* tag) {
   return false;
 }
 
+unsigned long readMemory(void* ctx, unsigned long offset, unsigned char* buffer, unsigned long count) {
+  const auto& bytes = *static_cast<const std::vector<uint8_t>*>(ctx);
+  if (offset > bytes.size() || count > bytes.size() - offset) return 0;
+  if (count) memcpy(buffer, bytes.data() + offset, count);
+  return count;
+}
+
+// Sets every pair adjustment lookup's LookupFlag, as a font such as Caecilia
+// LT ships them (0x000E: skip base glyphs, ligatures and marks).
+void setPairLookupFlags(std::vector<uint8_t>& font, uint16_t flags) {
+  size_t offset = 0, length = 0;
+  if (!findTable(font, "GPOS", offset, length)) return;
+  auto u16 = [&](size_t at) { return unsigned(font[at]) * 256 + font[at + 1]; };
+  const size_t lookups = offset + u16(offset + 8);
+  for (unsigned i = 0; i < u16(lookups); ++i) {
+    const size_t lookup = lookups + u16(lookups + 2 + i * 2);
+    if (u16(lookup) != 2 && u16(lookup) != 9) continue;
+    font[lookup + 2] = uint8_t(flags >> 8);
+    font[lookup + 3] = uint8_t(flags);
+  }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -742,6 +766,39 @@ int main(int argc, char** argv) {
           ftGposOnly.kerningGlyphs26_6(ftGposOnly.glyphId('A'), ftGposOnly.glyphId('V'), 32u * 64u);
       expect(viaGpos < 0, "A/V still kerns with legacy kern stripped (GPOS path)");
       printf("info: A/V 26.6 kerning: combined %d, GPOS-only %d\n", int(kern), int(viaGpos));
+
+      // With Caecilia LT's lookup flags (0x000E), the fixture's GDEF classes
+      // A and V as base glyphs, so its kern lookups skip them, as HarfBuzz
+      // does: A/V kerns 0, resident or streamed. Without its GDEF the same
+      // flags skip nothing.
+      size_t gdefOffset = 0, gdefLength = 0;
+      expect(findTable(font, "GDEF", gdefOffset, gdefLength), "fixture has GDEF glyph classifications");
+      auto filtered = gposOnly;
+      setPairLookupFlags(filtered, 0x000E);
+      FtFont resident;
+      expect(resident.init(filtered.data(), uint32_t(filtered.size()), 32), "filtered resident font parses");
+      expect(resident.kerning26_6('A', 'V', 32u * 64u) == 0, "resident GDEF filters base-pair lookup");
+      printf("info: A/V at 32 px: %.2f px kerned, 0 with Caecilia's lookup flags\n", viaGpos / 64.0);
+      expect(resident.init(gposOnly.data(), uint32_t(gposOnly.size()), 32), "resident face reinitializes");
+      expect(resident.kerning26_6('A', 'V', 32u * 64u) == viaGpos, "reinit restores unfiltered kerning");
+      auto filteredNoGdef = filtered;
+      expect(stripTable(filteredNoGdef, "GDEF"), "fixture's GDEF stripped");
+      expect(resident.init(filteredNoGdef.data(), uint32_t(filteredNoGdef.size()), 32), "GDEF-stripped font parses");
+      expect(resident.kerning26_6('A', 'V', 32u * 64u) == viaGpos, "without GDEF the flags skip nothing");
+
+      FtFont stream;
+      expect(stream.initStream(readMemory, &filtered, filtered.size(), 32), "filtered streamed font parses");
+      expect(stream.kerning26_6('A', 'V', 32u * 64u) == 0, "streamed GDEF filters base-pair lookup");
+      stream.setGposByteBudget(gposLength + gdefLength);
+      expect(stream.initStream(readMemory, &gposOnly, gposOnly.size(), 32), "streamed face reinitializes");
+      expect(stream.kerning26_6('A', 'V', 32u * 64u) == viaGpos, "combined table budget allows streamed kerning");
+      stream.setGposByteBudget(gposLength + gdefLength - 1);
+      expect(stream.kerning26_6('A', 'V', 32u * 64u) == 0, "lowered combined budget releases both tables");
+      expect(stream.initStream(readMemory, &gposOnly, gposOnly.size(), 32), "budget-limited streamed face parses");
+      expect(stream.kerning26_6('A', 'V', 32u * 64u) == 0, "combined allocation cannot exceed table budget");
+      stream.setGposByteBudget(0);
+      expect(stream.initStream(readMemory, &gposOnly, gposOnly.size(), 32), "zero-budget streamed face parses");
+      expect(stream.kerning26_6('A', 'V', 32u * 64u) == 0, "zero budget disables streamed GPOS");
 
       // releaseKerningTable(): queries return 0 afterwards, without a reload.
       ftGposOnly.releaseKerningTable();

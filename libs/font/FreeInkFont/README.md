@@ -250,7 +250,8 @@ as HarfBuzz does: a lookup that skips either glyph of the pair (a base glyph,
 ligature or mark by its GDEF class, or a mark outside the lookup's mark
 attachment class or mark glyph set) does not kern it. With adjacent pairs
 only, a skipped glyph is not looked past, as a shaper would. Without `GDEF`
-every glyph is unclassified and no lookup skips it.
+every glyph is unclassified and no lookup skips it. FtFont loads `GDEF` with
+`GPOS`, a streamed face's copy counting against the same budget.
 `PairKernAdjustment(gpos, size, left, right, gdef, gdefSize)` walks the
 script, feature and lookup lists on every call. A caller kerning many pairs
 resolves them once with `ResolveKernSubtables()` (each lookup, then its
@@ -265,7 +266,7 @@ for sorted subtables, but skips cross-stream subtables, which FreeType adds in.
 All three are bounds-checked and keep their work bounded on hostile counts.
 `run_gpos.sh` checks the resolved reader against the per-call one, and the
 kern table reader against FreeType, on DejaVuSans, and the lookup flags on
-synthetic tables.
+synthetic tables and on DejaVuSans given Caecilia LT's flags (0x000E).
 
 ### FtFont integration APIs
 

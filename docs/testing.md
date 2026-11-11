@@ -122,7 +122,8 @@ formats, the `kern` feature under any script, lookups adding up, the
 LookupFlag filtering GDEF feeds (glyph classes, mark attachment classes and
 mark glyph sets), the resolved-once API against the per-call walk,
 malformed-table robustness, and on DejaVuSans the resolved reader against the
-per-call one and the kern table reader against `FT_Get_Kerning`.
+per-call one, the kern table reader against `FT_Get_Kerning`, and GDEF in
+resident and streamed faces under the combined GPOS + GDEF stream budget.
 
 ## BLE HID host
 
