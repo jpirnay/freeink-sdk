@@ -337,8 +337,8 @@ class Accumulator {
   Mode mode_ = Mode::Unread;
 };
 
-// The glyphs GDEF classes as marks, as a few ranges where they lie together, as fonts put them; past kMaxRanges of
-// them, each glyph is looked up in GDEF itself.
+// The glyphs GDEF classes as marks, as ranges where they lie together (Bookerly and Noto Sans: 45 and 43 runs), held
+// in RAM and binary-searched; past kMaxRanges of them, each glyph is looked up in GDEF itself.
 class MarkGlyphs {
  public:
   explicit MarkGlyphs(const Gdef& gdef) : gdef_(gdef) {
@@ -364,17 +364,29 @@ class MarkGlyphs {
   bool any() const { return count_ != 0 || overflow_; }
   bool isMark(unsigned glyph) const {
     if (overflow_) return gdef_.glyphClass(glyph) == GlyphClass::Mark;
-    for (unsigned i = 0; i < count_; ++i) {
-      if (glyph >= first_[i] && glyph <= last_[i]) return true;
+    // GDEF lists its ranges in glyph order, so these are sorted: the last range starting at or before the glyph.
+    unsigned low = 0;
+    unsigned high = count_;
+    while (low < high) {
+      const unsigned middle = (low + high) / 2;
+      if (first_[middle] <= glyph)
+        low = middle + 1;
+      else
+        high = middle;
     }
-    return false;
+    return low != 0 && glyph <= last_[low - 1];
   }
 
  private:
-  static constexpr unsigned kMaxRanges = 32;
+  static constexpr unsigned kMaxRanges = 128;
 
   void add(unsigned first, unsigned last) {
+    // An unsorted (malformed) list cannot be searched: look each glyph up in GDEF instead.
     if (overflow_ || last < first) return;
+    if (count_ != 0 && first <= last_[count_ - 1]) {
+      overflow_ = true;
+      return;
+    }
     if (count_ != 0 && first == last_[count_ - 1] + 1u) {
       last_[count_ - 1] = uint16_t(last);
     } else if (count_ == kMaxRanges) {
