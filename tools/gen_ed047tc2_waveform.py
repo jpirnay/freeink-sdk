@@ -39,11 +39,20 @@ The emitted banks turn that vector into a single-push architecture:
 epd_fast/epd_fastest get the DU rails plus two SELF-NORMALIZING grey columns.
 A LUT column is indexed by destination alone and cannot see where a pixel came
 from, so a column that must land on a mid level from an arbitrary source first
-saturates at a rail and then walks to its target: L[15] frames toward white
-(any source becomes white -- the rail clamps), then L[15]-L[g] frames toward
-black. One column, correct from every source state. This is what lets a page
-carry its greys in the same push as its text: no separate B/W base pass exists
-to pre-position the fringe, and none is needed.
+saturates at a rail and then walks to its target: a run toward white long
+enough to take any source there (the rail clamps), then k frames toward black.
+One column, correct from every source state. This is what lets a page carry its
+greys in the same push as its text: no separate B/W base pass exists to
+pre-position the fringe, and none is needed.
+
+k does NOT come from the impulse vector. L counts NET frames, and the vendor
+lands a grey with a long mixed sequence (GC16 24..27 C, white to level 14: 15
+frames toward black, then 14 toward white, then one toward black), while a grey
+column here is one run toward black. Run that way, at Panel_EPD's frame rate,
+this panel moves most of the way to black in the first three or four frames, so
+the L[15]-L[g] frames the impulse model asks for land every grey on black. k, and
+the run toward white before it, are picked from the panel's measured response
+instead; see WALKDOWN_AFTER_RUN.
 
 epd_text/epd_quality become a true GC16-style refresh: every one of the 16
 columns rail-normalizes (dark half to white, light half to black) and then
@@ -174,10 +183,37 @@ def check(tables, intervals):
     return impulses
 
 
-# Optical targets for the two AA greys, as a fraction of the impulse it takes to
-# cross from black to white. The font buckets a glyph edge at 25-50% ink (its
-# light grey) and 50-75% ink (its dark grey); these are those buckets' midpoints,
-# so the panel reproduces the coverage the font quantiser measured.
+# How the panel answers one run of drive, measured rather than derived: a LilyGo
+# T5 S3 Pro at 24 C (range 24..27 C, so L[15] = 21), 100x100 px patches through
+# the fast bank, a 4K camera, each patch against the black patch and the white
+# background of the same frame (lightness 0 = black, 1 = white). Means of a white
+# and a black start, two pushes each.
+#
+# Other ranges are scaled by their drive length: n frames at L[15] = D land where
+# n * WALKDOWN_DRIVE / D frames did here. That is the vendor's own temperature
+# compensation (a colder panel gets a longer DU drive for the same transition),
+# assumed to hold for a partial drive too; only 24..27 C was measured.
+WALKDOWN_DRIVE = 21
+
+# m frames toward white after L[15] toward black, m = 0, 1, 2, ...: a black pixel
+# is white after GRAY_WHITE_RUN frames, well inside L[15]. (The dip at m = 8 is
+# within the 0.02 of camera noise check_response() allows.)
+WALKUP_LIGHTNESS = [0.00, 0.08, 0.42, 0.74, 0.87, 0.93, 0.96, 0.97, 0.95, 0.96, 0.98, 0.99, 1.00]
+GRAY_WHITE_RUN = 12
+
+# k frames toward black after GRAY_WHITE_RUN toward white: where a grey column
+# lands. A white and a black start agree within 0.05. From k = 10 on it is black.
+WALKDOWN_AFTER_RUN = [1.00, 0.85, 0.59, 0.37, 0.20, 0.12, 0.07, 0.09, 0.04, 0.01, 0.00]
+
+# The same after the full L[15] toward white: where a clean-bank column lands (its
+# last phase walks L[15]-L[g] frames down from the white rail). At 24 C the clean
+# bank's level 13 (5 frames) read 0.10 and level 14 (2 frames) 0.55 on their own.
+WALKDOWN_AFTER_RAIL = [1.00, 0.82, 0.56, 0.34, 0.19, 0.11, 0.07, 0.08, 0.04, 0.01, 0.00]
+
+# Optical targets for the two AA greys, as lightness on the scale above. The font
+# buckets a glyph edge at 25-50% ink (its light grey) and 50-75% ink (its dark
+# grey); these are those buckets' midpoints, so the panel reproduces the coverage
+# the font quantiser measured.
 #
 # Do not reach for these to make text heavier or lighter -- that is what the
 # reader's stroke weight setting is for, and it works by remapping which bucket
@@ -186,9 +222,11 @@ def check(tables, intervals):
 GRAY_TARGET_DARK = 0.375
 GRAY_TARGET_LIGHT = 0.625
 
-# A grey is only usable if it stays clear of white and clear of the other grey.
-GRAY_MAX_FRACTION = 0.95
-GRAY_MIN_SEPARATION = 0.08
+# A grey is only usable if it stays clear of white, clear of black and clear of
+# the other grey.
+GRAY_MAX_LIGHTNESS = 0.95
+GRAY_MIN_LIGHTNESS = 0.05
+GRAY_MIN_SEPARATION = 0.15
 
 # All five banks (eraser + quality + text + fast + fastest) are laid out
 # consecutively in one expanded table, and NO BLOCK INDEX MAY EVER REACH 128.
@@ -217,63 +255,120 @@ ERASER_ROWS = 4
 UNUSED_SLOT_ROWS = 1  # the board config stubs epd_quality/epd_fastest (see there)
 
 
-def pick_gray_levels(impulse):
-    """Pick the (dark, light) canvas levels that best hit the targets in one range.
+def check_response():
+    """The measured responses must run rail to rail, and only one way.
 
-    The vendor impulse vector is not evenly spaced and its spacing changes with
-    temperature -- at 33..38 C levels 12..15 are all the same optical white, so a
-    level that reads as a good light grey when cold is no grey at all when warm.
-    Choosing per range is what keeps both greys real across the whole table.
-
-    Runs of equal impulse make exact ties common (at 24..27 C levels 8 through 11
-    are one optical step), so separation breaks them: of two pairs that score the
-    same, the one whose greys are further apart is the one you can actually tell
-    apart on the panel.
+    A step back of up to 0.02 is camera noise (k = 7 reads 0.01 above k = 6 after
+    the rail) and is levelled by lightness(); anything larger means a table is not
+    a one-way response and nothing picked from it can be trusted.
     """
-    white = impulse[15]
-    frac = [impulse[lv] / white for lv in range(16)]
+    for name, table, sign in (("WALKDOWN_AFTER_RUN", WALKDOWN_AFTER_RUN, -1),
+                              ("WALKDOWN_AFTER_RAIL", WALKDOWN_AFTER_RAIL, -1),
+                              ("WALKUP_LIGHTNESS", WALKUP_LIGHTNESS, 1)):
+        first, last = (1.0, 0.0) if sign < 0 else (0.0, 1.0)
+        if table[0] != first or abs(table[-1] - last) > GRAY_MIN_LIGHTNESS:
+            raise SystemExit("%s must run from %.0f to %.0f: %s" % (name, first, last, table))
+        for k in range(1, len(table)):
+            if (table[k] - table[k - 1]) * sign < -0.02 - 1e-9:
+                raise SystemExit("%s turns back at %d: %s" % (name, k, table))
+    if WALKUP_LIGHTNESS[min(GRAY_WHITE_RUN, len(WALKUP_LIGHTNESS) - 1)] < 1.0 - 0.01:
+        raise SystemExit("GRAY_WHITE_RUN = %d does not reach white" % GRAY_WHITE_RUN)
+
+
+def lightness(table, frames, drive):
+    """Lightness after `frames` of one run, read off a walk-down `table`, in a
+    range with a DU drive of `drive` frames."""
+    levelled = []
+    for v in table:
+        levelled.append(min(v, levelled[-1]) if levelled else v)  # level the noise
+    x = frames * WALKDOWN_DRIVE / drive
+    if x >= len(levelled) - 1:
+        return levelled[-1]
+    i = int(x)
+    return levelled[i] + (levelled[i + 1] - levelled[i]) * (x - i)
+
+
+def white_run(drive):
+    """Frames toward white a grey column starts with in a range of `drive`
+    frames: GRAY_WHITE_RUN scaled, rounded up."""
+    return -(-GRAY_WHITE_RUN * drive // WALKDOWN_DRIVE)
+
+
+def pick_gray_frames(drive):
+    """Pick the walk-down lengths (k_dark, k_light) of the two grey columns.
+
+    Each is the length that lands nearest its target in this range, the dark one
+    strictly longer than the light one. Ties go to the shorter walk, which is the
+    shorter waveform.
+    """
+    def land(k):
+        return lightness(WALKDOWN_AFTER_RUN, k, drive)
+
+    def nearest(target, shortest):
+        return min(range(shortest, drive + 1), key=lambda k: (abs(land(k) - target), k))
+
+    k_light = nearest(GRAY_TARGET_LIGHT, 1)
+    k_dark = nearest(GRAY_TARGET_DARK, k_light + 1)
+    light, dark = land(k_light), land(k_dark)
+    if light > GRAY_MAX_LIGHTNESS or dark < GRAY_MIN_LIGHTNESS or light - dark < GRAY_MIN_SEPARATION:
+        raise SystemExit(
+            "drive %d: greys at k=%d/%d land at %.2f/%.2f, not two usable greys" % (drive, k_dark, k_light, dark, light)
+        )
+    return k_dark, k_light
+
+
+def pick_gray_levels(impulse, k_dark, k_light):
+    """Pick the (dark, light) canvas levels that carry the two grey columns.
+
+    In the fast bank any level could carry them: the column is cut for it. The
+    choice matters for the OTHER bank. A Half or Full refresh pushes the same
+    canvas through the clean bank, whose column for level g walks L[15]-L[g]
+    frames down from the white rail, and that lands where WALKDOWN_AFTER_RAIL
+    says. So the pair is the one whose clean landings come nearest the fast bank's
+    greys, the dark level below the light one, and the periodic clean page shows
+    the same text as the page turns as far as the vendor columns allow. Ties go to
+    the lower levels.
+    """
+    drive = impulse[15]
+    clean = [lightness(WALKDOWN_AFTER_RAIL, drive - impulse[lv], drive) for lv in range(16)]
+    want_dark = lightness(WALKDOWN_AFTER_RUN, k_dark, drive)
+    want_light = lightness(WALKDOWN_AFTER_RUN, k_light, drive)
 
     best = None
     for dark in range(1, 15):
         for light in range(dark + 1, 15):
-            if frac[light] > GRAY_MAX_FRACTION:
-                continue
-            sep = frac[light] - frac[dark]
-            if sep < GRAY_MIN_SEPARATION:
-                continue
-            err = (frac[dark] - GRAY_TARGET_DARK) ** 2 + (frac[light] - GRAY_TARGET_LIGHT) ** 2
-            key = (round(err, 9), -sep)
-            if best is None or key < best[0]:
-                best = (key, dark, light)
-    if best is None:
-        raise SystemExit("no usable grey pair for impulse %s" % impulse)
+            err = (clean[dark] - want_dark) ** 2 + (clean[light] - want_light) ** 2
+            key = (round(err, 9), dark, light)
+            if best is None or key < best:
+                best = key
     return best[1], best[2]
 
 
-def fast_rows(l15, dark, l_dark, light, l_light):
+def fast_rows(l15, run, dark, k_dark, light, k_light):
     """The differential bank: DU rails plus two self-normalizing grey columns.
 
     Rails run the vendor DU verbatim: L[15] frames of full drive, then park.
-    Each grey column saturates at the white rail for the same L[15] frames --
-    which erases whatever state the pixel arrived in, rail clamp doing the work
-    a source index would otherwise have to -- and then walks back down toward
-    black for L[15]-L[g] frames to land on its level. The walk-down phases park
-    the rails at no-op, so the bank is L[15] + max walk-down rows long.
+    Each grey column first drives `run` frames toward white, which takes any
+    source to white -- erasing whatever state the pixel arrived in, the rail clamp
+    doing the work a source index would otherwise have to -- and then walks back
+    down toward black for its k frames to land on its grey. Not the rails' L[15]:
+    every frame past white is drive the pixel never gets back. Measured at 24 C,
+    100 px grey patches over four page turns and then a turn to white: with a run
+    of L[15] they stayed ~5% darker than the white around them, with a run of 12
+    ~1.5% (the old near-black greys ~0.6%). The bank is as long as the longer of
+    the two, which is L[15] in every range.
     """
-    back_dark, back_light = l15 - l_dark, l15 - l_light
     rows = []
-    for f in range(l15 + max(back_dark, back_light)):
+    for f in range(max(l15, run + max(k_dark, k_light))):
         codes = [3] * 16
         if f < l15:
             codes[0] = 1
             codes[15] = 2
-            codes[dark] = 2
-            codes[light] = 2
-        else:
-            if f - l15 < back_dark:
-                codes[dark] = 1
-            if f - l15 < back_light:
-                codes[light] = 1
+        for level, k in ((dark, k_dark), (light, k_light)):
+            if f < run:
+                codes[level] = 2
+            elif f < run + k:
+                codes[level] = 1
         rows.append("    LUT_MAKE(%s)," % ", ".join(str(c) for c in codes))
     return rows
 
@@ -332,13 +427,15 @@ HEADER = '''// GENERATED FILE -- DO NOT EDIT BY HAND.
 // pass to pre-position the fringe.
 //
 // kFastLut (epd_fast / epd_fastest): the vendor DU rails verbatim, plus a grey
-// column per AA tone that spends L[15] frames at the white rail and then
-// descends L[15]-L[g] frames to its level. Panel_EPD\'s per-pixel diff means a
-// pixel is only driven when its target changes, so a fringe pixel that stays
+// column per AA tone that drives toward white long enough to take any source
+// there and then descends k frames toward black. Both lengths come from the
+// panel\'s measured response (WALKUP_LIGHTNESS, WALKDOWN_AFTER_RUN in the
+// generator), not from L: run as one burst at this driver\'s frame rate,
+// L[15]-L[g] frames land every grey on black. Panel_EPD\'s per-pixel diff means
+// a pixel is only driven when its target changes, so a fringe pixel that stays
 // the same grey across a page turn is not driven at all -- which is also the
-// charge story: drives happen on content changes only, each one begins with a
-// saturating rail visit, and the rail visit resets whatever DC bias the pixel
-// had accumulated.
+// charge story: drives happen on content changes only, and each grey drive
+// begins with a saturating visit to the white rail.
 //
 // kCleanLut (epd_text / epd_quality): a GC16-style refresh. Every one of the 16
 // columns rail-normalizes (dark half to white, light half to black) and then
@@ -347,11 +444,16 @@ HEADER = '''// GENERATED FILE -- DO NOT EDIT BY HAND.
 // symmetrically back, which is only a correct landing for the two rails; any
 // grey pushed through it ended on a rail.
 //
-// Which levels carry the greys is decided per temperature range, because the
-// vendor vector is not evenly spaced and its spacing moves with temperature: at
-// 33..38 C levels 12 through 15 are all the same optical white. The board config
-// reads kGrayLevelDark/kGrayLevelLight for the range it selected the LUT for and
-// writes the matching canvas bytes, so the two cannot drift apart.
+// The greys are decided per temperature range: the run up and the walk-down k
+// from the measured response scaled by the range\'s drive length, and the canvas
+// level that carries each one as the level whose clean-bank column lands nearest
+// it, so a Half or Full refresh shows the same greys as far as the vendor columns
+// allow (at 33..38 C levels 12 through 15 are all the same optical white there).
+// The board config reads kGrayLevelDark/kGrayLevelLight for the range it selected
+// the LUT for and writes the matching canvas bytes, so the two cannot drift apart.
+// Frames up toward white, k frames down toward black, and the lightness the
+// measured response predicts for each grey in the fast bank and for its level in
+// the clean bank (0 = black, 1 = white):
 //
 {gray_comment}
 //
@@ -397,6 +499,14 @@ const uint8_t kGrayLevelDark[kTempRangeCount] = {{{gray_dark_levels}}};
 
 const uint8_t kGrayLevelLight[kTempRangeCount] = {{{gray_light_levels}}};
 
+// Each grey column drives kGrayWhiteFrames toward white, which takes any source
+// to white, then its kGrayFrames* toward black, per temperature range.
+const uint8_t kGrayWhiteFrames[kTempRangeCount] = {{{gray_white_frames}}};
+
+const uint8_t kGrayFramesDark[kTempRangeCount] = {{{gray_dark_frames}}};
+
+const uint8_t kGrayFramesLight[kTempRangeCount] = {{{gray_light_frames}}};
+
 const uint32_t* const kFastLut[kTempRangeCount] = {{
 {fast_ptrs}
 }};
@@ -432,10 +542,13 @@ def main():
         raise SystemExit(__doc__)
     tables, intervals = parse(sys.argv[1])
     impulses = check(tables, intervals)
+    check_response()
 
     ranges = list(range(FIRST_RANGE, FIRST_RANGE + RANGE_COUNT))
     drives = [impulses[r][15] for r in ranges]
-    grays = {r: pick_gray_levels(impulses[r]) for r in ranges}
+    frames = {r: pick_gray_frames(impulses[r][15]) for r in ranges}
+    runs = {r: white_run(impulses[r][15]) for r in ranges}
+    grays = {r: pick_gray_levels(impulses[r], *frames[r]) for r in ranges}
 
     impulse_comment = "\n".join(
         "//   {:>2}..{:<2} C  L = [{}]".format(
@@ -443,15 +556,23 @@ def main():
         )
         for r in ranges
     )
+    def landing(r, k, level):
+        drive = impulses[r][15]
+        return (lightness(WALKDOWN_AFTER_RUN, k, drive),
+                lightness(WALKDOWN_AFTER_RAIL, drive - impulses[r][level], drive))
+
     gray_comment = "\n".join(
-        "//   {:>2}..{:<2} C  dark  = level {:>2} ({:>3.0f}% to white)"
-        "   light = level {:>2} ({:>3.0f}% to white)".format(
+        "//   {:>2}..{:<2} C  up {:>2}  dark = level {:>2}, k={} ({:.2f}; clean {:.2f})"
+        "   light = level {:>2}, k={} ({:.2f}; clean {:.2f})".format(
             intervals[r][0],
             intervals[r][1],
+            runs[r],
             grays[r][0],
-            100.0 * impulses[r][grays[r][0]] / impulses[r][15],
+            frames[r][0],
+            *landing(r, frames[r][0], grays[r][0]),
             grays[r][1],
-            100.0 * impulses[r][grays[r][1]] / impulses[r][15],
+            frames[r][1],
+            *landing(r, frames[r][1], grays[r][1]),
         )
         for r in ranges
     )
@@ -465,7 +586,7 @@ def main():
     for idx, r in enumerate(ranges):
         L = impulses[r]
         d, l = grays[r]
-        fr = tuple(fast_rows(L[15], d, L[d], l, L[l]))
+        fr = tuple(fast_rows(L[15], runs[r], d, frames[r][0], l, frames[r][1]))
         cr = tuple(clean_rows(L))
         fast_of[r] = fast_banks.setdefault(fr, "kFastR%d" % idx)
         clean_of[r] = clean_banks.setdefault(cr, "kCleanR%d" % idx)
@@ -503,6 +624,9 @@ def main():
         ),
         gray_dark_levels=", ".join(str(grays[r][0]) for r in ranges),
         gray_light_levels=", ".join(str(grays[r][1]) for r in ranges),
+        gray_white_frames=", ".join(str(runs[r]) for r in ranges),
+        gray_dark_frames=", ".join(str(frames[r][0]) for r in ranges),
+        gray_light_frames=", ".join(str(frames[r][1]) for r in ranges),
         fast_ptrs="\n".join("    %s," % fast_of[r] for r in ranges),
         fast_steps="\n".join(
             "    sizeof(%s) / sizeof(%s[0])," % (fast_of[r], fast_of[r]) for r in ranges
@@ -524,11 +648,12 @@ def main():
         L = impulses[r]
         d, l = grays[r]
         print(
-            "  range %2d  %2d..%-2d C  drive=%2d  fast=%s(%d rows)  clean=%s(%d rows)  greys=lvl %d/%d"
+            "  range %2d  %2d..%-2d C  drive=%2d  fast=%s(%d rows)  clean=%s(%d rows)"
+            "  greys=lvl %d/%d, up %d down %d/%d"
             % (
                 r, intervals[r][0], intervals[r][1], L[15],
-                fast_of[r], len(fast_rows(L[15], d, L[d], l, L[l])),
-                clean_of[r], len(clean_rows(L)), d, l,
+                fast_of[r], len(fast_rows(L[15], runs[r], d, frames[r][0], l, frames[r][1])),
+                clean_of[r], len(clean_rows(L)), d, l, runs[r], frames[r][0], frames[r][1],
             )
         )
 

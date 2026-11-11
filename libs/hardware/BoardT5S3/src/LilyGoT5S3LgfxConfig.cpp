@@ -232,11 +232,14 @@ freeink::LgfxEpdConfig buildConfig() {
   // decides how the panel looks, it is chosen once and never revisited, and a
   // thermistor that reads high silently under-drives every transition. Without
   // this there is no way to tell a waveform problem from a wrong temperature.
-  Serial.printf("[epd] panel %d C%s -> waveform range %u (%u..%u C), %u drive frames, AA greys at level %u/%u\n", tempC,
-                measuredOk ? "" : " (assumed, thermistor read failed)", static_cast<unsigned>(range),
-                freeink::ed047tc2::kTempRanges[range].minC, freeink::ed047tc2::kTempRanges[range].maxC,
-                freeink::ed047tc2::kDriveFrames[range], freeink::ed047tc2::kGrayLevelDark[range],
-                freeink::ed047tc2::kGrayLevelLight[range]);
+  Serial.printf(
+      "[epd] panel %d C%s -> waveform range %u (%u..%u C), %u drive frames, AA greys at level %u/%u (%u frames up, "
+      "%u/%u down)\n",
+      tempC, measuredOk ? "" : " (assumed, thermistor read failed)", static_cast<unsigned>(range),
+      freeink::ed047tc2::kTempRanges[range].minC, freeink::ed047tc2::kTempRanges[range].maxC,
+      freeink::ed047tc2::kDriveFrames[range], freeink::ed047tc2::kGrayLevelDark[range],
+      freeink::ed047tc2::kGrayLevelLight[range], freeink::ed047tc2::kGrayWhiteFrames[range],
+      freeink::ed047tc2::kGrayFramesDark[range], freeink::ed047tc2::kGrayFramesLight[range]);
 
   // Each slot gets the waveform that matches how Panel_EPD drives it: the
   // differential modes get the vendor DU table extended with the two AA grey
