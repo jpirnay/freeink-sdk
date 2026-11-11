@@ -46,26 +46,27 @@ unsigned xAdvanceOffset(unsigned valueFormat) {
   return offset;
 }
 
-// A PairPos subtable's adjustment for (left, right). `found` distinguishes a
-// genuine record (even a zero-valued one — format 2 matrices are dense, and a
-// matched pair must stop the lookup's subtables exactly as a shaper's would) from
-// "this subtable does not cover the pair". `covered` is set when the subtable
-// covers `left`, whatever the right glyph. Without `matchRight` only that is
-// looked at: the lookup skips the right glyph.
-int32_t pairAdjustment(View subtable, unsigned left, unsigned right, bool matchRight, bool& found, bool& covered) {
+// Where a PairPos subtable lists `left` among the first glyphs it kerns (its
+// coverage index), or -1: also for a subtable of another format, or one with
+// no X-advance data to kern with. Format 2 resolves every covered left glyph
+// to a (possibly zero) record through its class matrix.
+int leftCoverage(View subtable, unsigned left) {
+  const unsigned format = subtable.u16(0);
+  if (format != 1 && format != 2) return -1;
+  if ((subtable.u16(4) & kXAdvanceBit) == 0) return -1;
+  return otl::coverageIndex(subtable.sub(subtable.u16(2)), left);
+}
+
+// A PairPos subtable's adjustment for (left, right), `left` at `coverage`
+// (leftCoverage()). `found` distinguishes a genuine record (even a zero-valued
+// one — format 2 matrices are dense, and a matched pair must stop the lookup's
+// subtables exactly as a shaper's would) from "this subtable does not kern
+// the pair".
+int32_t pairAdjustment(View subtable, int coverage, unsigned left, unsigned right, bool& found) {
   found = false;
   const unsigned format = subtable.u16(0);
   const unsigned valueFormat1 = subtable.u16(4);
   const unsigned valueFormat2 = subtable.u16(6);
-  if (format != 1 && format != 2) return 0;
-  if ((valueFormat1 & kXAdvanceBit) == 0) return 0;  // no X-advance data → nothing to kern with
-  // Both formats list their first glyphs in the coverage table; format 2
-  // resolves every covered left glyph to a (possibly zero) record through its
-  // class matrix.
-  const int coverage = otl::coverageIndex(subtable.sub(subtable.u16(2)), left);
-  if (coverage < 0) return 0;
-  covered = true;
-  if (!matchRight) return 0;
   const unsigned len1 = valueRecordSize(valueFormat1);
   const unsigned len2 = valueRecordSize(valueFormat2);
   const unsigned advanceAt = xAdvanceOffset(valueFormat1);
@@ -268,7 +269,8 @@ void forEachKernLookup(View gpos, const unsigned budget, VisitLookup visitLookup
 
 // What a shaper does with the kern feature's lookups for one pair: each lookup
 // that skips neither glyph adds the adjustment of its first subtable that
-// matches the pair.
+// matches the pair. `covered` is whether a subtable of a lookup that does not
+// skip the left glyph covers it.
 class Accumulator {
  public:
   Accumulator(unsigned left, unsigned right, const uint8_t* gdefBytes, size_t gdefSize)
@@ -278,16 +280,25 @@ class Accumulator {
   bool covered() const { return covered_; }
 
   // A lookup starts: its subtables' matches start afresh, and its flags decide
-  // which of them the pair is looked up in.
+  // what is looked up in them, once one covers the left glyph.
   void startLookup(View lookup) {
+    lookup_ = lookup;
     matched_ = false;
-    mode_ = modeFor(lookup);
+    mode_ = Mode::Unread;
   }
 
   void apply(View subtable) {
     if (matched_ || mode_ == Mode::Skip || (mode_ == Mode::CoverOnly && covered_)) return;
+    const int coverage = leftCoverage(subtable, left_.glyph);
+    if (coverage < 0) return;
+    // Only now are the flags needed: a pair whose left glyph no subtable
+    // covers never reads GDEF.
+    if (mode_ == Mode::Unread) mode_ = modeFor(lookup_);
+    if (mode_ == Mode::Skip) return;
+    covered_ = true;
+    if (mode_ == Mode::CoverOnly) return;
     bool found = false;
-    const int32_t value = pairAdjustment(subtable, left_.glyph, right_.glyph, mode_ == Mode::Match, found, covered_);
+    const int32_t value = pairAdjustment(subtable, coverage, left_.glyph, right_.glyph, found);
     if (found) {
       total_ += value;
       matched_ = true;
@@ -297,8 +308,9 @@ class Accumulator {
  private:
   // What a lookup does with the pair: kern it, skip it (it skips the left
   // glyph: no right glyph kerns with it), or only find whether it covers the
-  // left glyph (it skips just the right one).
-  enum class Mode : uint8_t { Match, CoverOnly, Skip };
+  // left glyph (it skips just the right one). Unread until a subtable covers
+  // the left glyph.
+  enum class Mode : uint8_t { Unread, Match, CoverOnly, Skip };
 
   Mode modeFor(View lookup) {
     const unsigned flags = lookup.u16(2);
@@ -317,10 +329,11 @@ class Accumulator {
   const Gdef gdef_;
   PairGlyph left_;
   PairGlyph right_;
+  View lookup_;  // the current lookup
   int32_t total_ = 0;
   bool covered_ = false;
   bool matched_ = false;  // in the current lookup
-  Mode mode_ = Mode::Match;
+  Mode mode_ = Mode::Unread;
 };
 
 }  // namespace
