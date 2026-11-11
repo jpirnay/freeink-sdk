@@ -209,11 +209,56 @@
 #endif
 
 // --- 4) Derive default capabilities (override with -DFREEINK_CAP_*=0/1) -------
-#ifndef FREEINK_CAP_TOUCH
-#define FREEINK_CAP_TOUCH                                                                               \
+// Every device whose profile has a touch controller. Adding a touch device or
+// controller: follow the checklist in docs/adding-a-touch-controller.md.
+#define FREEINK_TOUCH_DEVICE_SELECTED                                                                   \
   (FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_M5PAPER || FREEINK_DEVICE_STICKY || \
    FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_PAPERMONO || FREEINK_DEVICE_PAPERS3 || FREEINK_DEVICE_MURPHY_M4 || \
    FREEINK_DEVICE_EEGO_A4 || FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_PICCO)
+#ifndef FREEINK_CAP_TOUCH
+#define FREEINK_CAP_TOUCH FREEINK_TOUCH_DEVICE_SELECTED
+#endif
+// Touch-controller drivers, one flag per BoardConfig::TouchController. InputManager
+// dispatches on ACTIVE.touch.controller at runtime and selectDevice() can switch
+// ACTIVE, so without these a touch build carries every driver. Each flag is 1 when
+// a selected device's profile names that controller; a multi-device binary gets
+// the union over its devices. Override any with -DFREEINK_TOUCH_<CONTROLLER>=0/1:
+// switching off a driver a selected profile needs fails the static_asserts after
+// DEFAULT_DEVICE, so it is a build error rather than a touchscreen that never
+// answers. A touch build whose selected profiles name no controller (CAP_TOUCH
+// forced on for touchless devices, or a device not classified here yet) keeps
+// every driver, as before; -DFREEINK_TOUCH_ALL_DRIVERS=1 forces that anywhere.
+#ifndef FREEINK_TOUCH_ALL_DRIVERS
+#define FREEINK_TOUCH_ALL_DRIVERS (!FREEINK_TOUCH_DEVICE_SELECTED)
+#endif
+#ifndef FREEINK_TOUCH_CHSC6X  // Murphy M3
+#define FREEINK_TOUCH_CHSC6X (FREEINK_CAP_TOUCH && (FREEINK_TOUCH_ALL_DRIVERS || FREEINK_DEVICE_MURPHY))
+#endif
+#ifndef FREEINK_TOUCH_GT911  // LilyGo T5 S3, M5Paper v1.1, PaperS3, Sticky, X4 Pro
+#define FREEINK_TOUCH_GT911                                                                              \
+  (FREEINK_CAP_TOUCH && (FREEINK_TOUCH_ALL_DRIVERS || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_M5PAPER || \
+                         FREEINK_DEVICE_PAPERS3 || FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4PRO))
+#endif
+#ifndef FREEINK_TOUCH_FT5X06  // Paper Mono (its FT6336 on the FT5x06 register set)
+#define FREEINK_TOUCH_FT5X06 (FREEINK_CAP_TOUCH && (FREEINK_TOUCH_ALL_DRIVERS || FREEINK_DEVICE_PAPERMONO))
+#endif
+#ifndef FREEINK_TOUCH_FT6336U  // Murphy M4
+#define FREEINK_TOUCH_FT6336U (FREEINK_CAP_TOUCH && (FREEINK_TOUCH_ALL_DRIVERS || FREEINK_DEVICE_MURPHY_M4))
+#endif
+#ifndef FREEINK_TOUCH_GSLX680  // EEGO A4
+#define FREEINK_TOUCH_GSLX680 (FREEINK_CAP_TOUCH && (FREEINK_TOUCH_ALL_DRIVERS || FREEINK_DEVICE_EEGO_A4))
+#endif
+#ifndef FREEINK_TOUCH_CST816S  // Metalio E-Ink 4
+#define FREEINK_TOUCH_CST816S (FREEINK_CAP_TOUCH && (FREEINK_TOUCH_ALL_DRIVERS || FREEINK_DEVICE_METALIO_EINK4))
+#endif
+#ifndef FREEINK_TOUCH_TMA525C  // Onyx Picco
+#define FREEINK_TOUCH_TMA525C (FREEINK_CAP_TOUCH && (FREEINK_TOUCH_ALL_DRIVERS || FREEINK_DEVICE_PICCO))
+#endif
+// GT911 INT as a light-sleep wake source (InputManager::touchWakeIrqPin). OPT-IN
+// (default off), not board-derived. Inert unless FREEINK_TOUCH_GT911 is also set:
+// a build without the GT911 driver compiles none of it and the accessor reports -1.
+#ifndef FREEINK_GT911_INT_WAKE
+#define FREEINK_GT911_INT_WAKE 0
 #endif
 // Touch-controller drivers, one flag per BoardConfig::TouchController. InputManager
 // dispatches on ACTIVE.touch.controller at runtime and selectDevice() can switch
@@ -250,9 +295,6 @@
 #endif
 #ifndef FREEINK_TOUCH_CST816S  // Metalio E-Ink 4
 #define FREEINK_TOUCH_CST816S (FREEINK_CAP_TOUCH && (FREEINK_TOUCH_ALL_DRIVERS || FREEINK_DEVICE_METALIO_EINK4))
-#endif
-#ifndef FREEINK_TOUCH_PICCO_CST  // Onyx Picco
-#define FREEINK_TOUCH_PICCO_CST (FREEINK_CAP_TOUCH && (FREEINK_TOUCH_ALL_DRIVERS || FREEINK_DEVICE_PICCO))
 #endif
 #ifndef FREEINK_CAP_FRONTLIGHT
 // EEGO A4's frontlight is an I2C LED driver (viaI2cLed), not LEDC PWM — the
@@ -333,7 +375,8 @@
 #ifndef FREEINK_BATTERY_I2C_GAUGE
 #define FREEINK_BATTERY_I2C_GAUGE                                                            \
   (FREEINK_DEVICE_X3 || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4PRO || \
-   FREEINK_DEVICE_X4CLASSIC || FREEINK_DEVICE_WS397 || FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_PICCO)
+   FREEINK_DEVICE_X4CLASSIC || FREEINK_DEVICE_WS397 || FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_PICCO || \
+   FREEINK_DEVICE_EEGO_A4)
 #endif
 #ifndef FREEINK_CAP_COLOR
 #define FREEINK_CAP_COLOR (FREEINK_DEVICE_M5)
@@ -361,7 +404,7 @@
 #ifndef FREEINK_CAP_IMU
 #define FREEINK_CAP_IMU \
   (FREEINK_DEVICE_X3 || FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4CLASSIC || FREEINK_DEVICE_WS397 || FREEINK_DEVICE_METALIO_EINK4 || \
-   FREEINK_DEVICE_PICCO)
+   FREEINK_DEVICE_PICCO || FREEINK_DEVICE_PAPERMONO)
 #endif
 // Consumer-triggered vibration output; independent of audio and input events.
 #ifndef FREEINK_CAP_HAPTIC
@@ -503,11 +546,8 @@ enum class DisplayController : uint8_t {
 };
 
 // Optional capacitive touch controller.
-// PiccoCst: the Onyx Picco's capacitive controller at I2C 0x24 (suspected
-// Chipsemi/Hynitron CST-series). Init/reset/INT are recovered; the framed
-// coordinate protocol is only partially recovered (per-point X/Y byte offsets
-// unknown), so the driver is a tap-dump scaffold — see InputManager.cpp.
-enum class TouchController : uint8_t { None, Chsc6x, Gt911, Ft5x06, Ft6336u, Gslx680, Cst816s, PiccoCst };
+// Tma525c: Parade TMA525C (PIP protocol), Onyx Picco at I2C 0x24.
+enum class TouchController : uint8_t { None, Chsc6x, Gt911, Ft5x06, Ft6336u, Gslx680, Cst816s, Tma525c };
 
 // Optional audio output path. Murphy M3 ships an ES8388-compatible stereo
 // codec (I2S slave, control over the shared touch I2C bus) — the contract was
@@ -566,10 +606,12 @@ struct SdmmcPins {
 // The I2C fuel-gauge silicon a board carries. Each type has its own register map and
 // init, so BatteryMonitor dispatches on it. Bq27220: TI command registers, no profile
 // upload (LilyGo/X3). Cw2017: CellWise gauge that needs an 80-byte BATINFO battery
-// profile loaded before it reports a valid SoC (Xteink X4 Pro).
+// profile loaded before it reports a valid SoC (Xteink X4 Pro). Cw2015: CellWise gauge
+// with a 64-byte BATINFO profile; probed at runtime, and the board's ADC pin is used
+// when it does not answer (EEGO A4).
 // Axp2101: not a gauge chip but a PMIC whose fuel-gauge block reports SoC directly
 // (Waveshare ESP32-S3-ePaper-3.97). Its registers live in Axp2101.h.
-enum class GaugeType : uint8_t { Bq27220, Cw2017, Axp2101 };
+enum class GaugeType : uint8_t { Bq27220, Cw2017, Axp2101, Cw2015 };
 
 // The I2C charger IC at batteryGauge.chargerAddr. Both report CHRG_STAT in bits
 // [4:3] of a status register (BQ25896 REG0B, SGM41562 REG08); SGM41562 also
@@ -584,7 +626,7 @@ struct BatteryGaugeConfig {
   int8_t i2cSda;
   int8_t i2cScl;
   uint32_t i2cHz;
-  uint8_t gaugeAddr;    // BQ27220 = 0x55; CW2017 = 0x63; 0 = no I2C gauge (use ADC)
+  uint8_t gaugeAddr;    // BQ27220 = 0x55; CW2017 = 0x63; CW2015 = 0x62; 0 = no I2C gauge (use ADC)
   uint8_t chargerAddr;  // BQ25896 = 0x6B; SGM41562 = 0x03; 0 = none
   // Arduino I2C controller index: 0 = Wire, 1 = Wire1. Default 0. Set to 1 on
   // boards where the gauge sits on a different physical bus than another I2C
@@ -625,7 +667,11 @@ struct TouchConfig {
   uint16_t rawMinY, rawMaxY;
   bool synthesizeConfirm;  // emit a CONFIRM button event on tap
   uint8_t i2cAddressAlt;   // alternate I2C address to probe (GT911 0x14; 0 = none)
-  bool irqActiveLow;       // touch IRQ asserted LOW (CHSC6x)
+  // Asserted level of the irq pin (true = LOW). Reported by
+  // InputManager::touchWakeIrqActiveLow() so a host can arm the right level as a
+  // light-sleep wake source; the GT911 INT-wake path also refuses to configure a
+  // profile that claims active-high, since it only programs a low-level hold.
+  bool irqActiveLow;
   // GT911 point-frame layout: false = datasheet standard (track-id at 0x8150, so
   // coords start at byte 1); true = coords start at byte 0 (no track-id), as seen
   // on M5Paper's GT911 which boots without a reset/config dance. Ignored (CHSC6x).
@@ -692,10 +738,12 @@ struct FrontlightConfig {
   // PM1's fixed 12 bits.
   bool viaPm1Pwm = false;
   // Boost-driver floors, in permille of full duty. Zero on boards whose LED
-  // hangs directly off the PWM pin. On a board that PWMs a boost converter's
-  // EN pin (LilyGo T5 S3: PT4103 behind GPIO11), an on-time shorter than the
-  // boost's start-up produces NO light rather than dim light, so a perceptual
-  // dimming curve must land its bottom on the boost's floor, not on one LSB.
+  // hangs directly off the PWM pin, which leaves the dimming curve untouched.
+  //
+  // On a board that PWMs a boost converter's EN pin, an on-time shorter than the
+  // boost's start-up window produces NO light rather than dim light, so a
+  // perceptual dimming curve has to land its bottom on the boost's floor rather
+  // than on one duty LSB.
   //   minStartPermille: lowest duty the boost reliably IGNITES from cold.
   //   minHoldPermille:  lowest duty it stays lit at once running (<= start;
   //                     FrontlightManager bridges the gap with a brief kick at
@@ -765,7 +813,7 @@ struct MicConfig {
 };
 
 enum class RtcType : uint8_t { None, Pcf8563, Ds3231, Rx8130, Pcf85063, Rx8010 };
-enum class ImuType : uint8_t { None, Lsm6ds3, Qmi8658, Sc7a20h };
+enum class ImuType : uint8_t { None, Lsm6ds3, Qmi8658, Sc7a20h, Bmi270 };
 
 // On-board I2C sensors sharing one bus (e.g. the Sticky's RTC + temp/humidity +
 // IMU on SDA1/SCL0, the same bus as its fuel gauge). Each addr is 0 when that
@@ -776,7 +824,7 @@ struct SensorsConfig {
   uint32_t i2cHz;
   uint8_t rtcAddr;           // PCF8563 = 0x51, DS3231 = 0x68; 0 = none
   uint8_t tempHumidityAddr;  // SHT40 = 0x44; 0 = none
-  uint8_t imuAddr;           // LSM6DS3TR-C = 0x6A, QMI8658 = 0x6B/0x6A; 0 = none
+  uint8_t imuAddr;           // LSM6DS3TR-C = 0x6A, QMI8658 = 0x6B/0x6A, BMI270 = 0x68/0x69; 0 = none
   uint8_t i2cBus = 0;        // 0 = Wire, 1 = Wire1 on multi-bus SoCs
   RtcType rtcType = RtcType::None;
   ImuType imuType = ImuType::None;
@@ -917,6 +965,14 @@ struct BoardProfile {
   // measured floating/pull-up/pull-down all read 0 with USB connected), so
   // consumers must read it with a pull-up and invert.
   bool usbDetectActiveHigh = true;
+  // Pixels the firmware lowers its bottom status line (toward the screen edge)
+  // from the theme's position.
+  int8_t statusBarOffsetY = 0;
+  // Side clearance for chrome in the bottom corners (status line, footer
+  // readouts) when those corners need more room than cornerRadius. 0 = use
+  // cornerRadius.
+  uint8_t bottomCornerRadius = 0;
+
   // The panel visibly fades in direct sunlight unless the driver powers it down
   // between refreshes.
   //
@@ -1098,6 +1154,8 @@ constexpr BoardProfile XTEINK_X4 = {Board::XteinkX4,
                                     100,                    // tabBarWidthPct
                                     0,                      // wifiMaxTxPower: radio default
                                     true,                   // usbDetectActiveHigh
+                                    0,                      // statusBarOffsetY
+                                    0,                      // bottomCornerRadius
                                     true};                  // panelFadesInSunlight: white units fade strongly
 
 // --- Xteink X3 — ESP32-C3, UC8253 (792x528) ----------------------------------
@@ -1150,6 +1208,8 @@ constexpr BoardProfile XTEINK_X3 = {
     100,                // tabBarWidthPct
     0,                  // wifiMaxTxPower: radio default
     true,               // usbDetectActiveHigh (usbDetect itself is unassigned)
+    0,                  // statusBarOffsetY
+    0,                  // bottomCornerRadius
     true};              // panelFadesInSunlight: fades too, less than the X4
 
 // --- Xteink X3 (UC8279d run) — ESP32-C3, UC8279d (792x528) -------------------
@@ -1197,6 +1257,8 @@ constexpr BoardProfile XTEINK_X3_UC8279 = {
     100,                // tabBarWidthPct
     0,                  // wifiMaxTxPower: radio default
     true,               // usbDetectActiveHigh (usbDetect itself is unassigned)
+    0,                  // statusBarOffsetY
+    0,                  // bottomCornerRadius
     true};              // panelFadesInSunlight: fades too, less than the X4
 
 // panelFadesInSunlight is the fork's last positional field (see BoardProfile).
@@ -1294,7 +1356,11 @@ constexpr BoardProfile PAPER_MONO = {
     {13, 12, 11, 10, 9, 8, 4},
     NO_GAUGE,
     PAPER_MONO_MIC,
-    {47, 48, 100000, 0x32, 0, 0, 0, RtcType::Rx8130, ImuType::None},
+    // RX8130CE RTC at 0x32 and BMI270 IMU at 0x68 share the internal bus with
+    // the PM1, IOE1 and touch. The BMI270 sits rotated 180° against the
+    // X3-frame convention, so both tilt axes are flipped. Its INT1 reaches the
+    // PM1's GPIO4, not an ESP pin; it is not used here.
+    {47, 48, 100000, 0x32, 0, 0x68, 0, RtcType::Rx8130, ImuType::Bmi270, false, true, true},
     1.0f,  // uiScale: unchanged (was the struct default)
     {},    // power: none
     0,     // displayControllerVariant
@@ -1686,15 +1752,19 @@ constexpr BoardProfile EEGO_A4 = {
     DisplayController::UC8279C,
     768,
     552,
-    {42, 45, 21, 14, 13, 41, 6},                       // SCLK MOSI CS DC RST BUSY PWR-EN
+    // GPIO6: display enable (HIGH) here, which units without the CW2015 need for
+    // GPIO10 battery readings. SDCardManager reassigns it to SD power (active-low)
+    // when the gauge answers. See docs/eego-a4-support.md.
+    {42, 45, 21, 14, 13, 41, 6},
     20000000,
-    {39, 40, 38, 47, PIN_UNASSIGNED, true, 20000000},  // dedicated HSPI SD: SCLK MISO MOSI CS
+    // SD power enable: set at runtime (GPIO6, active-low) on units with the CW2015.
+    {39, 40, 38, 47, PIN_UNASSIGNED, true, 20000000},
     // UP DOWN POWER. Power is active-HIGH (press drives 3V3) with a weak
     // external pull-down; INPUT_PULLDOWN required (InputManager honors the
     // polarity for pinMode). An internal pull-up leaves the pin mid-rail and
     // phantom-pressed.
     {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 5, 7, 8, true},
-    10,      // batteryAdc
+    10,      // batteryAdc: used when the CW2015 gauge below does not answer
     11,      // batteryChargeStatus
     1.559f,  // divider
     PIN_UNASSIGNED,
@@ -1709,7 +1779,9 @@ constexpr BoardProfile EEGO_A4 = {
     NO_LEDS,
     NO_FLIP,
     NO_SDMMC,
-    NO_GAUGE,
+    // CW2015 fuel gauge at 0x62 on the shared touch/RTC bus. Stock V1.0.3 probes it at
+    // boot and falls back to the GPIO10 ADC when it is absent; BatteryMonitor does the same.
+    {2, 1, 400000, 0x62, 0, 0, GaugeType::Cw2015},
     NO_MIC,
     {2, 1, 400000, 0x51, 0, 0, 0, RtcType::Pcf8563, ImuType::None},  // PCF8563 on the shared touch bus
     1.2f,
@@ -1731,7 +1803,10 @@ constexpr BoardProfile EEGO_A4 = {
     18,   // tabBarOffsetY
     80,   // tabBarHeightPct
     80,   // tabBarWidthPct
-    60};  // wifiMaxTxPower: 15 dBm, the cap stock V1.0.3 applies
+    60,    // wifiMaxTxPower: 15 dBm, the cap stock V1.0.3 applies
+    true,  // usbDetectActiveHigh: default (no USB detect pin)
+    6,     // statusBarOffsetY
+    40};   // bottomCornerRadius
 
 static_assert(EEGO_A4.displayWidth / 8 * EEGO_A4.displayHeight == 52992,
               "EEGO A4 framebuffer must be 52,992 bytes (768/8 x 552)");
@@ -1909,9 +1984,6 @@ constexpr BoardProfile METALIO_EINK4 = {
 //
 // Pending hardware validation / deeper RE (shipped conservatively here):
 //   * Buttons — up=21 / down=9 confirmed on hardware; GPIO5's role is not.
-//   * Touch — controller model is unknown (I2C 0x24 is non-standard) and the INT
-//     pin was not recovered, so touch can't function yet → NO_TOUCH for now
-//     (recovered so far: RST=11, addr=0x24, native 480x800 portrait digitizer).
 //   * Frontlight — it's a 2-channel warm/cool I2C LED driver @0x38 (not PWM, not
 //     the LM3630A the I2cFrontlight backend supports) → NO_FRONTLIGHT until a
 //     driver is added.
@@ -1949,14 +2021,10 @@ constexpr BoardProfile PICCO = {
     PIN_UNASSIGNED,  // batteryChargeStatus: no STAT pin; charge state comes from the SGM41562
     2.0f,
     PIN_UNASSIGNED,  // usbDetect
-    // Capacitive touch (PiccoCst @ I2C 0x24 on the shared bus SDA7/SCL8, RST=10,
+    // Capacitive touch (Parade TMA525C @ I2C 0x24 on the shared bus SDA7/SCL8, RST=10,
     // INT=11 active-low). Native digitizer is 480x800 portrait on the 800x480
     // landscape panel, so swapXY maps it to panel axes (like the Sticky).
-    // TAP-DUMP SCAFFOLD: init/reset/INT are recovered and the driver reads on INT,
-    // but the per-point X/Y byte offsets in the status block are NOT yet recovered,
-    // so coordinates are not published until a hardware tap-dump identifies them
-    // (build with -DTOUCH_PROBE_DEBUG to log raw frames). flipX/flipY pending HW.
-    {TouchController::PiccoCst, 7, 8, 11, 10, 0x24, 0, 799, 0, 479, false, 0, true, false, PIN_UNASSIGNED, true,
+    {TouchController::Tma525c, 7, 8, 11, 10, 0x24, 0, 799, 0, 479, false, 0, true, false, PIN_UNASSIGNED, true,
      false, true},  // swapXY; flipX=false; flipY=true (portrait horizontal was reversed on hardware)
     NO_FRONTLIGHT,   // no LEDC pins; the frontlight is the I2C driver in i2cFrontlight below
     NO_AUDIO,
@@ -2045,6 +2113,8 @@ constexpr BoardProfile XTEINK_X4_PRO = {
     // internal config on the standard reset dance — no host config upload needed. Mounted PORTRAIT
     // (reports X:0..480, Y:0..800) on the 800x480 landscape panel → swapXY=true; rawMax describe the
     // post-swap panel axes. Coords start at byte 0 of the 0x8150 read → gt911CoordsAtByte0=true.
+    // irqActiveLow=true: the GT911 INT asserts LOW in the low-level hold mode the driver programs
+    // for wake (FREEINK_GT911_INT_WAKE) and idles HIGH on its pull-up between report frames.
     // flipX/flipY pending a corner-tap test. {ctrl,sda,scl,irq,rst,addr,rawMinX,rawMaxX,rawMinY,rawMaxY,
     //  synthConfirm,altAddr,irqActiveLow,coordsAtByte0,powerEnable,swapXY,flipX,flipY,hasHomeKey,pwrActiveHigh}
     {TouchController::Gt911,
@@ -2059,7 +2129,7 @@ constexpr BoardProfile XTEINK_X4_PRO = {
      479,
      false,
      0x14,
-     false,
+     true,
      true,
      2,
      true,
@@ -2103,8 +2173,9 @@ constexpr BoardProfile XTEINK_X4_PRO = {
     // board_begin at IROM 0x420a23dc). Carried as power.latch0 so holdPowerRails() asserts it
     // early — without it the panel rail and the SD slot both stay unpowered (the bring-up
     // symptom: EPD BUSY never asserts, SD returns 0xFF). GPIO2 is a second board-init output
-    // driven LOW (role unknown); not modeled here. NOTE: GPIO1/GPIO2 are therefore NOT the ADC
-    // button ladder — that earlier assumption was wrong; the ladder pins remain unconfirmed.
+    // driven LOW: the touch controller's active-LOW rail, modeled above as the TouchConfig
+    // powerEnable=2 / powerEnableActiveHigh=false pair. NOTE: GPIO1/GPIO2 are therefore NOT the
+    // ADC button ladder — that earlier assumption was wrong; the ladder pins remain unconfirmed.
     {1},
     0,  // displayControllerVariant: filled by the boot probe
     // Bezel overlap: the panel sits recessed, and 7px is the empirically-tuned
@@ -2332,8 +2403,8 @@ constexpr bool touchDriverCompiled(TouchController c) {
       return FREEINK_TOUCH_GSLX680;
     case TouchController::Cst816s:
       return FREEINK_TOUCH_CST816S;
-    case TouchController::PiccoCst:
-      return FREEINK_TOUCH_PICCO_CST;
+    case TouchController::Tma525c:
+      return FREEINK_TOUCH_TMA525C;
   }
   return false;
 }

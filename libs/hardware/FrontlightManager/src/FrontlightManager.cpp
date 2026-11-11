@@ -1,11 +1,16 @@
 #include "FrontlightManager.h"
 
-#if FREEINK_CAP_FRONTLIGHT
-#include "FrontlightManager.h"
+#if FREEINK_DEVICE_PICCO
+#include <algorithm>
+#include <cmath>
+#endif
 
+#if FREEINK_CAP_FRONTLIGHT
 #include <M5Pm1.h>
 #include <Wire.h>
 #include <driver/gpio.h>  // gpio_hold_en/dis in prepareForDeepSleep()/begin()
+
+#include "FrontlightManager.h"
 #ifdef FREEINK_FRONTLIGHT_LS
 #include <driver/ledc.h>
 // esp_sleep_sub_mode_config lives in a private IDF header (no public API exists
@@ -21,6 +26,11 @@
 // firmware's Serial stream the monitor reads. LOG_INF routes through logPrintf
 // to the firmware Serial and the crash-report ring buffer.
 #include <Logging.h>
+#if FREEINK_DEVICE_EEGO_A4
+#include <esp_mac.h>
+
+#include "EegoUnlitUnits.h"
+#endif
 
 namespace {
 constexpr uint32_t maxDuty(uint8_t bits) { return (1u << bits) - 1u; }
@@ -141,7 +151,7 @@ void detachChannel(int8_t gpio, uint8_t /*ch*/) { ledcDetachPin(gpio); }
 
 // Release a pad hold left by a previous prepareForDeepSleep(). gpio_hold_en
 // survives the deep-sleep wake reset, and a held pad silently ignores both the
-// LEDC routing and any GPIO write — the light would never come back on.
+// LEDC routing and any GPIO write -- the light would never come back on.
 void releasePinHold(int8_t gpio) {
   if (gpio == BoardConfig::PIN_UNASSIGNED) return;
   gpio_hold_dis(static_cast<gpio_num_t>(gpio));
@@ -150,11 +160,12 @@ void releasePinHold(int8_t gpio) {
 // Hand the pad from LEDC back to plain GPIO, drive the LED's INACTIVE level and
 // latch it for deep sleep. Deliberately not left to
 // esp_sleep_config_gpio_isolate(): an isolated pad floats, and what the light
-// then does depends on an external pull that is a board-layout detail (the
-// LilyGo T5 S3's PT4103 boost driver takes its EN through a 100R from this pin)
-// — a lit frontlight is by far the largest load a sleeping reader can carry, so
-// it gets driven off explicitly rather than assumed off. LEDC is stopped first
-// or the peripheral output keeps overriding the GPIO write at the pad.
+// then does depends on an external pull that is a board-layout detail (on a
+// board whose PWM gates a boost converter's EN pin through a pull-up, floating
+// reads as ON). A lit frontlight is by far the largest load a sleeping reader
+// can carry, so it gets driven off explicitly rather than assumed off. LEDC is
+// stopped first, or the peripheral output keeps overriding the GPIO write at the
+// pad.
 void parkPinForSleep(int8_t gpio, uint8_t ch, bool activeHigh) {
   if (gpio == BoardConfig::PIN_UNASSIGNED) return;
   detachChannel(gpio, ch);
@@ -190,6 +201,12 @@ void FrontlightManager::begin() {
     const bool detected = Wire.endTransmission() == 0;
     digitalWrite(i2c.enable, LOW);
     if (!detected) return;
+    // The controller is fitted on some unlit units too; stock lists those.
+    uint8_t mac[6] = {};
+    if (esp_efuse_mac_get_default(mac) == ESP_OK &&
+        freeink::eegoA4UidHasNoFrontlight(static_cast<uint32_t>(mac[3]) << 16 | mac[4] << 8 | mac[5])) {
+      return;
+    }
 
     _begun = true;
     _brightness = 0;
@@ -358,26 +375,111 @@ void FrontlightManager::applyLm3630a() {
 //   reg0  = master enable  (bit2/0x04 = cool on, bit1/0x02 = warm on; bit7 = standby, cleared on shutdown)
 //   reg1  = mode           (low 3 bits)         reg2 = 0x38 config      reg0x50 = 0x03
 //   reg3  = cool PWM        reg4 = warm PWM      reg5/6 = per-channel current limit (5-bit)
-// Brightness/color-temperature come from a 10x10x4 LUT the firmware indexes as
-// base + 40*colorTemp + 4*brightness, each entry {cool_pwm, warm_pwm, cool_cur,
-// warm_cur}. The table below is byte-verbatim from the vendor image (base
-// 0x3c78d4c4, confirmed via the l32r in FUN_42008d44). NOTE: the firmware's
-// brightness axis is 10 discrete steps; entries [*][0]/[*][1] are anomalous
-// (non-monotonic) while [*][2..9] form a clean ramp, so the SDK's 1..100% maps
-// onto brightness indices 2..9 to keep the response monotonic. CONFIDENCE:
-// register protocol high; exact UI index mapping medium — validate/tune on hardware.
+// Ten brightness steps per warmth row, starting eight bytes after 0x3c78d4c4
+// in the vendor image. Each step holds cool/warm PWM followed by cool/warm current.
+// The final two warm-only steps extend the recovered ramp up to its warm PWM limit.
 namespace {
-constexpr uint8_t PICCO_FL_LUT[400] = {
-    136,1,100,0,11,2,150,0,1,0,24,0,14,0,31,0,34,0,31,0,55,0,31,0,75,0,31,0,95,0,31,0,116,0,31,0,136,0,31,0,  // colorTemp 0
-    157,0,31,0,177,0,31,0,1,1,19,0,10,3,31,1,30,1,31,8,50,1,31,19,71,8,31,31,91,28,31,31,112,48,31,31,132,69,31,31,  // colorTemp 1
-    152,89,31,31,173,110,31,31,1,3,17,2,5,1,31,10,25,1,31,22,46,12,31,31,66,32,31,31,86,53,31,31,107,73,31,31,127,94,31,31,  // colorTemp 2
-    148,114,31,31,168,134,31,31,1,2,14,7,1,1,29,18,20,6,31,31,40,27,31,31,61,47,31,31,81,67,31,31,101,88,31,31,122,108,31,31,  // colorTemp 3
-    142,129,31,31,162,149,31,31,2,1,10,12,1,1,23,26,13,16,31,31,34,37,31,31,54,57,31,31,74,78,31,31,95,98,31,31,115,118,31,31,  // colorTemp 4
-    136,139,31,31,156,159,31,31,1,2,7,16,1,4,17,31,5,24,31,31,26,45,31,31,46,65,31,31,66,86,31,31,87,106,31,31,107,126,31,31,  // colorTemp 5
-    128,147,31,31,148,167,31,31,3,1,3,21,2,11,11,31,1,31,25,31,15,51,31,31,36,72,31,31,56,92,31,31,76,113,31,31,97,133,31,31,  // colorTemp 6
-    117,153,31,31,138,174,31,31,2,1,0,26,2,16,5,31,2,37,14,31,1,57,31,31,21,77,31,31,42,98,31,31,62,118,31,31,82,138,31,31,  // colorTemp 7
-    103,159,31,31,123,179,31,31,1,1,0,26,1,21,0,31,1,41,4,31,1,62,12,31,1,82,26,31,17,102,31,31,37,123,31,31,58,143,31,31,  // colorTemp 8
-    78,164,31,31,98,184,31,31,0,5,0,31,0,25,0,31,0,46,0,31,0,66,0,31,0,86,0,31,0,107,0,31,0,127,0,31,0,147,0,31,  // colorTemp 9
+constexpr uint8_t PICCO_FL_LUT[10][10][4] = {
+    {{1, 0, 24, 0},
+     {14, 0, 31, 0},
+     {34, 0, 31, 0},
+     {55, 0, 31, 0},
+     {75, 0, 31, 0},
+     {95, 0, 31, 0},
+     {116, 0, 31, 0},
+     {136, 0, 31, 0},
+     {157, 0, 31, 0},
+     {177, 0, 31, 0}},
+    {{1, 1, 19, 0},
+     {10, 3, 31, 1},
+     {30, 1, 31, 8},
+     {50, 1, 31, 19},
+     {71, 8, 31, 31},
+     {91, 28, 31, 31},
+     {112, 48, 31, 31},
+     {132, 69, 31, 31},
+     {152, 89, 31, 31},
+     {173, 110, 31, 31}},
+    {{1, 3, 17, 2},
+     {5, 1, 31, 10},
+     {25, 1, 31, 22},
+     {46, 12, 31, 31},
+     {66, 32, 31, 31},
+     {86, 53, 31, 31},
+     {107, 73, 31, 31},
+     {127, 94, 31, 31},
+     {148, 114, 31, 31},
+     {168, 134, 31, 31}},
+    {{1, 2, 14, 7},
+     {1, 1, 29, 18},
+     {20, 6, 31, 31},
+     {40, 27, 31, 31},
+     {61, 47, 31, 31},
+     {81, 67, 31, 31},
+     {101, 88, 31, 31},
+     {122, 108, 31, 31},
+     {142, 129, 31, 31},
+     {162, 149, 31, 31}},
+    {{2, 1, 10, 12},
+     {1, 1, 23, 26},
+     {13, 16, 31, 31},
+     {34, 37, 31, 31},
+     {54, 57, 31, 31},
+     {74, 78, 31, 31},
+     {95, 98, 31, 31},
+     {115, 118, 31, 31},
+     {136, 139, 31, 31},
+     {156, 159, 31, 31}},
+    {{1, 2, 7, 16},
+     {1, 4, 17, 31},
+     {5, 24, 31, 31},
+     {26, 45, 31, 31},
+     {46, 65, 31, 31},
+     {66, 86, 31, 31},
+     {87, 106, 31, 31},
+     {107, 126, 31, 31},
+     {128, 147, 31, 31},
+     {148, 167, 31, 31}},
+    {{3, 1, 3, 21},
+     {2, 11, 11, 31},
+     {1, 31, 25, 31},
+     {15, 51, 31, 31},
+     {36, 72, 31, 31},
+     {56, 92, 31, 31},
+     {76, 113, 31, 31},
+     {97, 133, 31, 31},
+     {117, 153, 31, 31},
+     {138, 174, 31, 31}},
+    {{2, 1, 0, 26},
+     {2, 16, 5, 31},
+     {2, 37, 14, 31},
+     {1, 57, 31, 31},
+     {21, 77, 31, 31},
+     {42, 98, 31, 31},
+     {62, 118, 31, 31},
+     {82, 138, 31, 31},
+     {103, 159, 31, 31},
+     {123, 179, 31, 31}},
+    {{1, 1, 0, 26},
+     {1, 21, 0, 31},
+     {1, 41, 4, 31},
+     {1, 62, 12, 31},
+     {1, 82, 26, 31},
+     {17, 102, 31, 31},
+     {37, 123, 31, 31},
+     {58, 143, 31, 31},
+     {78, 164, 31, 31},
+     {98, 184, 31, 31}},
+    {{0, 5, 0, 31},
+     {0, 25, 0, 31},
+     {0, 46, 0, 31},
+     {0, 66, 0, 31},
+     {0, 86, 0, 31},
+     {0, 107, 0, 31},
+     {0, 127, 0, 31},
+     {0, 147, 0, 31},
+     {0, 167, 0, 31},
+     {0, 184, 0, 31}},
 };
 }  // namespace
 
@@ -400,11 +502,20 @@ bool FrontlightManager::piccoUpdate(const uint8_t reg, const uint8_t mask, const
 }
 
 bool FrontlightManager::configurePicco() {
+  // The LM3630A-style controller needs time to leave software sleep before
+  // brightness/current writes (also used by the Linux lm3630a driver). Only
+  // pay this settling delay on the first on after boot/off, not slider ticks.
+  if (!piccoUpdate(0x00, 0x80, 0x00)) {
+    LOG_ERR("FrontlightMgr", "Picco frontlight wake failed");
+    return false;
+  }
+  delay(2);
   // Recovered power-on sequence (FUN_42008cc4): filter/mode/config registers.
   bool ok = piccoWrite(0x50, 0x03);
   ok = piccoUpdate(0x01, 0x07, 0x00) && ok;
   ok = piccoWrite(0x02, 0x38) && ok;
   _i2cConfigured = ok;
+  if (!ok) LOG_ERR("FrontlightMgr", "Picco frontlight configuration failed");
   return ok;
 }
 
@@ -420,21 +531,36 @@ void FrontlightManager::applyPicco() {
   }
   if (!_i2cConfigured && !configurePicco()) return;
 
-  // Map SDK brightness% (1..100) -> LUT brightness index 2..9 (the monotonic ramp)
-  // and warmPercent (0..100) -> colorTemp index 0..9.
-  const uint8_t br = static_cast<uint8_t>(2 + (static_cast<uint16_t>(_brightness - 1) * 7 + 50) / 100);
-  const uint8_t ct = static_cast<uint8_t>((static_cast<uint16_t>(_warmPercent) * 9 + 50) / 100);
-  const uint8_t* e = &PICCO_FL_LUT[ct * 40 + br * 4];
-  const uint8_t coolPwm = e[0], warmPwm = e[1], coolCur = static_cast<uint8_t>(e[2] & 0x1f),
-                warmCur = static_cast<uint8_t>(e[3] & 0x1f);
+  // Spend more of the slider on low light, where a change is easiest to see.
+  const float brightness = (_brightness - 1) / 99.0f;
+  const float step = 9.0f * brightness * std::sqrt(brightness);
+  const float warmth = (9 * _warmPercent) / 100.0f;
+  const int b = step >= 9 ? 8 : static_cast<int>(step);
+  const int w = warmth >= 9 ? 8 : static_cast<int>(warmth);
+  const float bf = step - b;
+  const float wf = warmth - w;
+  const auto blend = [&](int field) {
+    const float lo = (1 - bf) * PICCO_FL_LUT[w][b][field] + bf * PICCO_FL_LUT[w][b + 1][field];
+    const float hi = (1 - bf) * PICCO_FL_LUT[w + 1][b][field] + bf * PICCO_FL_LUT[w + 1][b + 1][field];
+    return static_cast<uint8_t>((1 - wf) * lo + wf * hi + 0.5f);
+  };
+  // Both channels stay on (PWM >= 1) for warmth 1-99%; a channel switches off
+  // only at 0% (warm) or 100% (cool). Even PWM 1 / current 0 is visibly lit,
+  // so switching a channel off mid-slider, where its blended PWM rounds to 0,
+  // was a colour jump at every brightness (e.g. warmth 94->95%).
+  const bool coolOn = _warmPercent < 100;
+  const bool warmOn = _warmPercent > 0;
+  const uint8_t coolPwm = coolOn ? std::max<uint8_t>(blend(0), 1) : 0;
+  const uint8_t warmPwm = warmOn ? std::max<uint8_t>(blend(1), 1) : 0;
+  const uint8_t coolCur = coolOn ? blend(2) : 0;
+  const uint8_t warmCur = warmOn ? blend(3) : 0;
 
-  piccoUpdate(0x00, 0x80, 0x00);  // leave standby
-  piccoWrite(0x03, coolPwm);      // cool brightness
-  piccoWrite(0x04, warmPwm);      // warm brightness
+  piccoWrite(0x03, coolPwm);  // cool brightness
+  piccoWrite(0x04, warmPwm);  // warm brightness
   piccoUpdate(0x05, 0x1f, coolCur);
   piccoUpdate(0x06, 0x1f, warmCur);
-  piccoUpdate(0x00, 0x14, (coolPwm || coolCur) ? 0x04 : 0x00);  // cool channel enable
-  piccoUpdate(0x00, 0x0b, (warmPwm || warmCur) ? 0x02 : 0x00);  // warm channel enable
+  piccoUpdate(0x00, 0x14, coolPwm ? 0x04 : 0x00);  // cool channel enable
+  piccoUpdate(0x00, 0x0b, warmPwm ? 0x02 : 0x00);  // warm channel enable
 }
 #endif
 
@@ -475,15 +601,14 @@ void FrontlightManager::apply() {
   } else if (!_useLevel) {
     totalDuty = perceptualDuty(_brightness, full);
   }
-
   // Boost-EN floor. On a light whose PWM gates a boost converter's EN pin, an
-  // on-time under the boost's start-up window produces NO light, so the dim
-  // end of any curve must land on the physical floor, not on one LSB -- that
-  // is how the plain gamma above blacked the light out at every ordinary
-  // reading brightness when it first shipped. Remap (0, full] onto
-  // [holdFloor, full]: the curve keeps its shape, 1% becomes the dimmest level
-  // the hardware can actually sustain, and boards with no floor configured are
-  // untouched (holdFloor == 0 leaves the identity mapping).
+  // on-time under the boost's start-up window produces NO light, so the dim end
+  // of any curve must land on the physical floor, not on one LSB -- that is how
+  // a plain gamma curve can black the light out at every ordinary reading
+  // brightness. Remap (0, full] onto [holdFloor, full]: the curve keeps its
+  // shape, 1% becomes the dimmest level the hardware can actually sustain, and
+  // boards with no floor configured are untouched (holdFloor == 0 leaves the
+  // identity mapping).
   const uint32_t holdFloor = (full * fl.minHoldPermille + 500u) / 1000u;
   if (totalDuty > 0 && holdFloor > 0) {
     totalDuty = holdFloor + static_cast<uint32_t>((static_cast<uint64_t>(totalDuty) * (full - holdFloor)) / full);
@@ -497,7 +622,6 @@ void FrontlightManager::apply() {
 #ifdef FREEINK_FRONTLIGHT_LS
   updateLsKeepAlive(totalDuty != 0);
 #endif
-
   // Kick-start: a boost sustains below the duty it can ignite from. Turning on
   // from dark into the hold band gets a brief burst at the ignition floor, then
   // settles to the target -- which is what lets minHoldPermille sit below
@@ -519,7 +643,7 @@ void FrontlightManager::apply() {
     writeChannel(fl.gpioWarm, LEDC_CH_WARM, physicalDuty(warmDuty, full, fl.activeHigh));
   }
   LOG_INF("FrontlightMgr", "apply: brightness=%u level=%u totalDuty=%u coolDuty=%u warmDuty=%u lit=%d", _brightness,
-           _brightnessLevel, totalDuty, coolDuty, warmDuty, totalDuty != 0 ? 1 : 0);
+          _brightnessLevel, totalDuty, coolDuty, warmDuty, totalDuty != 0 ? 1 : 0);
 }
 
 #ifdef FREEINK_FRONTLIGHT_LS
@@ -624,8 +748,8 @@ void FrontlightManager::prepareForDeepSleep() {
   const auto& fl = BoardConfig::ACTIVE.frontlight;
   if (fl.viaPm1Pwm) {
     // Paper Mono: the PWM lives in the M5PM1, so there is no ESP pad to park.
-    // Zero the duty (clearing the channel-enable bit) so the AW9967 is dark
-    // even if the EPD rail feeding it is still up when we sleep.
+    // Zero the duty (clearing the channel-enable bit) so the AW9967 is dark even
+    // if the EPD rail feeding it is still up when we sleep.
     if (_begun) pm1FrontlightWrite(0);
     return;
   }
