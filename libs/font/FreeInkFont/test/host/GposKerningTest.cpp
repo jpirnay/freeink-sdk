@@ -2,13 +2,20 @@
 // fallback through it, and for the legacy kern table reader (KernTable.h).
 // Run via test/host/run_gpos.sh under ASan/UBSan.
 //
-// Two layers: synthetic hand-built GPOS and kern blobs exercise both PairPos
-// formats (1 via an Extension wrapper, 2 via class matrices), activation by
-// any script, lookups adding up, the resolved-once API, and malformed-input
-// robustness deterministically; the DejaVuSans fixture then proves the FtFont
-// plumbing end-to-end, including that stripping the legacy 'kern' table
-// leaves kerning working through GPOS alone, and checks the resolved reader
-// against the stateless one and the kern table reader against FreeType.
+// Two layers: synthetic hand-built GPOS, GDEF and kern blobs exercise both
+// PairPos formats (1 via an Extension wrapper, 2 via class matrices),
+// activation by any script, lookups adding up, the lookup flags GDEF classes
+// feed, the resolved-once API, and malformed-input robustness
+// deterministically; the DejaVuSans fixture then proves the FtFont plumbing
+// end-to-end, including that stripping the legacy 'kern' table leaves kerning
+// working through GPOS alone and that GDEF reaches resident and streamed
+// faces, and checks the resolved reader against the stateless one and the
+// kern table reader against FreeType.
+//
+// The lookup-flag cases, syntheticGdef(), setPairLookupFlags() and the
+// resident/streamed GDEF checks are ported from Free-Ink/freeink-sdk (PR #197,
+// d2e6f09, by Georg Kaindl), with this reader's answers where it follows
+// HarfBuzz instead (reserved bits, unknown classes, an unreadable GDEF).
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -135,8 +142,10 @@ std::vector<uint8_t> pairPos2(uint16_t left, uint16_t right, int16_t xAdvance) {
 }
 
 // Lookup wrapping one subtable, optionally through an Extension (type 9)
-// indirection around the real `type`.
-std::vector<uint8_t> lookup(uint16_t type, const std::vector<uint8_t>& subtable, bool viaExtension) {
+// indirection around the real `type`, with its LookupFlag (and the mark
+// filtering set's index when the flag asks for one).
+std::vector<uint8_t> lookup(uint16_t type, const std::vector<uint8_t>& subtable, bool viaExtension, uint16_t flags = 0,
+                            uint16_t markSet = 0) {
   std::vector<uint8_t> inner = subtable;
   uint16_t lookupType = type;
   if (viaExtension) {
@@ -150,19 +159,20 @@ std::vector<uint8_t> lookup(uint16_t type, const std::vector<uint8_t>& subtable,
   }
   std::vector<uint8_t> bytes;
   appendU16be(bytes, lookupType);
-  appendU16be(bytes, 0);  // LookupFlag
-  appendU16be(bytes, 1);  // SubTableCount
-  appendU16be(bytes, 8);  // subtable offset (after this 8-byte header)
+  appendU16be(bytes, flags);                    // LookupFlag
+  appendU16be(bytes, 1);                        // SubTableCount
+  appendU16be(bytes, flags & 0x0010 ? 10 : 8);  // subtable offset (after the header)
+  if (flags & 0x0010) appendU16be(bytes, markSet);
   appendBlob(bytes, inner);
   return bytes;
 }
 
 // Minimal GPOS: latn/DefaultLangSys activates one 'kern' feature that lists
 // both lookups: [0] Extension-wrapped PairPos1 (10,20)->-123, [1] PairPos2
-// (30,40)->-45.
-std::vector<uint8_t> syntheticGpos() {
-  const std::vector<uint8_t> lk0 = lookup(2, pairPos1(10, 20, -123), /*viaExtension=*/true);
-  const std::vector<uint8_t> lk1 = lookup(2, pairPos2(30, 40, -45), /*viaExtension=*/false);
+// (30,40)->-45, both with `flags` (and `markSet`).
+std::vector<uint8_t> syntheticGpos(uint16_t flags = 0, uint16_t markSet = 0, uint16_t left = 10, uint16_t right = 20) {
+  const std::vector<uint8_t> lk0 = lookup(2, pairPos1(left, right, -123), /*viaExtension=*/true, flags, markSet);
+  const std::vector<uint8_t> lk1 = lookup(2, pairPos2(30, 40, -45), /*viaExtension=*/false, flags, markSet);
 
   std::vector<uint8_t> scriptList;
   appendU16be(scriptList, 1);
@@ -199,6 +209,47 @@ std::vector<uint8_t> syntheticGpos() {
   appendBlob(bytes, scriptList);
   appendBlob(bytes, featureList);
   appendBlob(bytes, lookupList);
+  return bytes;
+}
+
+// GDEF 1.2 classifying glyphs 10 and 30 as `leftClass` and 20 and 40 as
+// `rightClass` (GlyphClassDef in format 1 or 2), glyph 10 in mark attachment
+// class 7, and two mark glyph sets: {10, 30} and {20, 40}.
+std::vector<uint8_t> syntheticGdef(uint16_t leftClass, uint16_t rightClass, bool format1 = false) {
+  std::vector<uint8_t> classes;
+  if (format1) {
+    appendU16be(classes, 1);
+    appendU16be(classes, 10);
+    appendU16be(classes, 31);
+    for (unsigned glyph = 10; glyph <= 40; ++glyph)
+      appendU16be(classes, glyph == 10 || glyph == 30 ? leftClass : glyph == 20 || glyph == 40 ? rightClass : 0);
+  } else {
+    appendU16be(classes, 2);
+    appendU16be(classes, 4);
+    for (uint16_t glyph : {10, 20, 30, 40}) {
+      appendU16be(classes, glyph);
+      appendU16be(classes, glyph);
+      appendU16be(classes, glyph == 10 || glyph == 30 ? leftClass : rightClass);
+    }
+  }
+  const auto attachment = classDefSingle(10, 7);
+  const auto firstSet = coverage({10, 30});
+  const auto secondSet = coverage({20, 40});
+  std::vector<uint8_t> bytes;
+  appendU32be(bytes, 0x00010002);
+  appendU16be(bytes, 14);  // GlyphClassDef
+  appendU16be(bytes, 0);   // AttachList
+  appendU16be(bytes, 0);   // LigCaretList
+  appendU16be(bytes, uint16_t(14 + classes.size()));
+  appendU16be(bytes, uint16_t(14 + classes.size() + attachment.size()));
+  appendBlob(bytes, classes);
+  appendBlob(bytes, attachment);
+  appendU16be(bytes, 1);  // MarkGlyphSetsDef format
+  appendU16be(bytes, 2);  // set count
+  appendU32be(bytes, 12);
+  appendU32be(bytes, uint32_t(12 + firstSet.size()));
+  appendBlob(bytes, firstSet);
+  appendBlob(bytes, secondSet);
   return bytes;
 }
 
@@ -299,6 +350,237 @@ std::vector<uint8_t> kernTableWith(
   return bytes;
 }
 
+// Both readers' answer for a pair under this GDEF: the per-call walk's, which
+// the entries resolved from the same table must give too (when they do not,
+// a value no check expects). `covered` is the resolved reader's.
+constexpr int32_t kReadersDisagree = INT32_MIN;
+int32_t kernWithGdef(const std::vector<uint8_t>& gpos, const uint8_t* gdef, size_t gdefSize, uint32_t left,
+                     uint32_t right, bool* covered = nullptr) {
+  uint32_t entries[64];
+  const unsigned count = freeink::font::gpos::ResolveKernSubtables(gpos.data(), gpos.size(), entries, 64);
+  const int32_t resolved = freeink::font::gpos::PairKernAdjustment(
+      gpos.data(), gpos.size(), entries, count < 64 ? count : 64, left, right, gdef, gdefSize, covered);
+  const int32_t walked = freeink::font::gpos::PairKernAdjustment(gpos.data(), gpos.size(), left, right, gdef, gdefSize);
+  if (resolved != walked) {
+    fprintf(stderr, "readers disagree on %u/%u: %d resolved, %d per call\n", left, right, int(resolved), int(walked));
+    return kReadersDisagree;
+  }
+  return walked;
+}
+
+void testLookupFlags() {
+  auto adjustment = [](uint16_t flags, uint16_t leftClass, uint16_t rightClass, uint16_t markSet = 0,
+                       bool format1 = false, bool extension = true) {
+    const auto gpos = syntheticGpos(flags, markSet);
+    const auto gdef = syntheticGdef(leftClass, rightClass, format1);
+    return kernWithGdef(gpos, gdef.data(), gdef.size(), extension ? 10 : 30, extension ? 20 : 40);
+  };
+  for (bool extension : {false, true}) {
+    const int expected = extension ? -123 : -45;
+    for (bool format1 : {false, true}) {
+      expect(adjustment(0, 1, 1, 0, format1, extension) == expected, "an unflagged lookup kerns base glyphs");
+      expect(adjustment(1, 1, 1, 0, format1, extension) == expected, "RightToLeft does not change a pair adjustment");
+      expect(adjustment(0x000E, 1, 1, 0, format1, extension) == 0, "Caecilia's flags skip base glyph pairs");
+      for (uint16_t klass : {1, 2, 3}) {
+        const uint16_t flag = uint16_t(1u << klass);
+        expect(adjustment(flag, klass, 0, 0, format1, extension) == 0, "the class's flag skips the left glyph");
+        expect(adjustment(flag, 0, klass, 0, format1, extension) == 0, "the class's flag skips the right glyph");
+      }
+      expect(adjustment(0x0008, 1, 1, 0, format1, extension) == expected, "IgnoreMarks keeps base glyph kerning");
+      expect(adjustment(0x000E, 4, 4, 0, format1, extension) == expected, "component glyphs are never skipped");
+      expect(adjustment(0x000E, 0, 0, 0, format1, extension) == expected, "unclassified glyphs are never skipped");
+      expect(adjustment(0x000E, 5, 9, 0, format1, extension) == expected,
+             "a class GDEF does not define counts as unclassified, as in HarfBuzz");
+    }
+  }
+  expect(adjustment(0x0700, 3, 1) == -123, "a mark of the lookup's attachment class kerns");
+  expect(adjustment(0x0800, 3, 1) == 0, "a mark of another attachment class is skipped");
+  expect(adjustment(0x0700, 1, 3) == 0, "the attachment class skips the right glyph too");
+  expect(adjustment(0x0010, 3, 1, 0) == -123, "a mark in the lookup's mark glyph set kerns (left)");
+  expect(adjustment(0x0010, 3, 1, 1) == 0, "a mark outside the set is skipped (left)");
+  expect(adjustment(0x0010, 1, 3, 1) == -123, "a mark in the lookup's mark glyph set kerns (right)");
+  expect(adjustment(0x0010, 1, 3, 0) == 0, "a mark outside the set is skipped (right)");
+  expect(adjustment(0x0010, 3, 1, 2) == 0, "a set the GDEF does not have holds no mark");
+  expect(adjustment(0x0810, 3, 1) == -123, "the mark glyph set wins over the attachment class");
+  expect(adjustment(0x0018, 3, 1) == 0, "IgnoreMarks wins over the mark glyph set");
+  expect(adjustment(0x0020, 1, 1) == -123, "reserved flag bits change nothing, as in HarfBuzz");
+  expect(adjustment(0x0022, 1, 1) == 0, "the flags beside them still apply");
+
+  // Only the lookup whose flags skip a glyph drops out; the others still add up.
+  const auto mixed = gposWith(
+      {{"latn", {0, 1}}}, {lookup(2, pairPos1(10, 20, -100), false, 0x0008), lookup(2, pairPos1(10, 20, -20), false)});
+  const auto rightMark = syntheticGdef(1, 3);
+  expect(kernWithGdef(mixed, rightMark.data(), rightMark.size(), 10, 20) == -20,
+         "an unflagged lookup kerns beside one that skips the pair");
+
+  // `covered` is about the left glyph alone: a lookup that skips only the right
+  // glyph still covers it (another right glyph may kern with it), one that
+  // skips the left glyph does not.
+  {
+    const auto ignoreMarks = syntheticGpos(0x0008);
+    bool covered = false;
+    expect(kernWithGdef(ignoreMarks, rightMark.data(), rightMark.size(), 10, 20, &covered) == 0 && covered,
+           "a skipped right glyph leaves the left one covered");
+    const auto leftMark = syntheticGdef(3, 1);
+    covered = true;
+    expect(kernWithGdef(ignoreMarks, leftMark.data(), leftMark.size(), 10, 20, &covered) == 0 && !covered,
+           "a skipped left glyph is covered by no lookup");
+  }
+
+  // Without a GDEF, or with one these readers cannot read, every glyph is
+  // unclassified: the font kerns as the overloads without GDEF read it.
+  const auto flagged = syntheticGpos(0x000E);
+  expect(kernWithGdef(flagged, nullptr, 0, 10, 20) == -123, "without GDEF every glyph is unclassified");
+  expect(freeink::font::gpos::PairKernAdjustment(flagged.data(), flagged.size(), 10, 20) == -123,
+         "the overload without GDEF kerns the same");
+  auto gdef = syntheticGdef(1, 1);
+  bool shortHeaderKerns = true;
+  for (size_t len = 0; len < 12; ++len)
+    shortHeaderKerns = shortHeaderKerns && kernWithGdef(flagged, gdef.data(), len, 10, 20) == -123;
+  expect(shortHeaderKerns, "a GDEF too short for its header counts as absent");
+  auto otherMajor = gdef;
+  otherMajor[1] = 2;
+  expect(kernWithGdef(flagged, otherMajor.data(), otherMajor.size(), 10, 20) == -123,
+         "a GDEF of another major version counts as absent");
+  auto version10 = syntheticGdef(3, 1);
+  version10[3] = 0;  // GDEF 1.0 has no mark glyph sets
+  const auto markSetLookups = syntheticGpos(0x0010, 0);
+  expect(kernWithGdef(markSetLookups, version10.data(), version10.size(), 10, 20) == 0,
+         "before GDEF 1.2 no mark is in a mark glyph set");
+
+  // Every truncation and single-byte corruption of either table stays in
+  // bounds (ASan/UBSan), and the two readers keep agreeing.
+  int disagreements = 0;
+  for (uint16_t flags : {0x000E, 0x0700, 0x0010, 0x0810}) {
+    const auto gpos = syntheticGpos(flags);
+    gdef = syntheticGdef(3, 1);
+    for (size_t len = 0; len <= gdef.size(); ++len)
+      disagreements += kernWithGdef(gpos, gdef.data(), len, 10, 20) == kReadersDisagree;
+    for (size_t i = 0; i < gdef.size(); ++i) {
+      auto corrupt = gdef;
+      corrupt[i] ^= 0xFF;
+      disagreements += kernWithGdef(gpos, corrupt.data(), corrupt.size(), 10, 20) == kReadersDisagree;
+    }
+    for (size_t len = 0; len <= gpos.size(); ++len) {
+      const std::vector<uint8_t> cut(gpos.begin(), gpos.begin() + long(len));
+      disagreements += kernWithGdef(cut, gdef.data(), gdef.size(), 10, 20) == kReadersDisagree;
+    }
+    for (size_t i = 0; i < gpos.size(); ++i) {
+      auto corrupt = gpos;
+      corrupt[i] ^= 0xFF;
+      disagreements += kernWithGdef(corrupt, gdef.data(), gdef.size(), 10, 20) == kReadersDisagree;
+    }
+  }
+  expect(disagreements == 0, "flagged GPOS/GDEF truncation and corruption sweeps: in bounds, readers agree");
+
+  // GDEF's class and mark set tables are binary-searched: a glyph in the last
+  // of 8192 ranges is found, and a query costs bounded time whatever the counts.
+  {
+    const unsigned ranges = 8192;
+    std::vector<uint8_t> big;
+    appendU32be(big, 0x00010002);
+    appendU16be(big, 14);                             // GlyphClassDef
+    appendU16be(big, 0);                              // AttachList
+    appendU16be(big, 0);                              // LigCaretList
+    appendU16be(big, 0);                              // MarkAttachClassDef
+    appendU16be(big, uint16_t(14 + 4 + ranges * 6));  // MarkGlyphSetsDef
+    appendU16be(big, 2);                              // ClassDef format 2: every even glyph a mark
+    appendU16be(big, uint16_t(ranges));
+    for (unsigned r = 0; r < ranges; ++r) {
+      appendU16be(big, uint16_t(r * 2));
+      appendU16be(big, uint16_t(r * 2));
+      appendU16be(big, 3);
+    }
+    appendU16be(big, 1);  // MarkGlyphSetsDef format
+    appendU16be(big, 1);
+    appendU32be(big, 8);  // the set's Coverage, format 2: every even glyph but the last
+    appendU16be(big, 2);
+    appendU16be(big, uint16_t(ranges - 1));
+    for (unsigned r = 0; r < ranges - 1; ++r) {
+      appendU16be(big, uint16_t(r * 2));
+      appendU16be(big, uint16_t(r * 2));
+      appendU16be(big, uint16_t(r));
+    }
+    const uint16_t last = uint16_t((ranges - 1) * 2);
+    const uint16_t inSet = uint16_t(last - 2);
+    const auto ignoreMarks = syntheticGpos(0x0008, 0, inSet, last);
+    const auto inSetOnly = syntheticGpos(0x0010, 0, inSet, inSet - 2);
+    const auto lastNotInSet = syntheticGpos(0x0010, 0, inSet, last);
+    const auto start = std::chrono::steady_clock::now();
+    bool right = true;
+    for (int i = 0; i < 1000; ++i) {
+      right = right && kernWithGdef(ignoreMarks, big.data(), big.size(), inSet, last) == 0;
+      right = right && kernWithGdef(inSetOnly, big.data(), big.size(), inSet, inSet - 2) == -123;
+      right = right && kernWithGdef(lastNotInSet, big.data(), big.size(), inSet, last) == 0;
+    }
+    const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    expect(right, "a GDEF of 8192 ranges classifies its last glyphs");
+    expect(seconds < 1.0, "a GDEF of 8192 ranges costs bounded time");
+  }
+}
+
+// KernsByGdefClass(): whether a font's kerning depends on its GDEF, as a cache of pairs kerned without it must know.
+void testKernsByGdefClass() {
+  using freeink::font::gpos::KernsByGdefClass;
+  const auto kerns = [](const std::vector<uint8_t>& gpos, const std::vector<uint8_t>& gdef) {
+    return KernsByGdefClass(gpos.data(), gpos.size(), gdef.empty() ? nullptr : gdef.data(), gdef.size());
+  };
+  const auto bases = syntheticGdef(1, 1);
+  expect(!kerns(syntheticGpos(0x000E), {}), "without GDEF nothing depends on it");
+  expect(!kerns(syntheticGpos(0), bases), "unflagged lookups do not depend on GDEF");
+  expect(!kerns(syntheticGpos(0x0001), bases), "nor do RightToLeft ...");
+  expect(!kerns(syntheticGpos(0x0020), bases), "... or the reserved bits");
+  expect(kerns(syntheticGpos(0x0002), bases), "a lookup that skips base glyphs depends on GDEF");
+  expect(kerns(syntheticGpos(0x0004), bases), "so does one that skips ligatures");
+  expect(!kerns(syntheticGpos(0x0008), bases), "IgnoreMarks over pairs that hold no mark changes nothing");
+  expect(!kerns(syntheticGpos(0x0700), bases), "nor does a mark attachment class");
+  expect(kerns(syntheticGpos(0x0008), syntheticGdef(3, 1)), "IgnoreMarks with a mark in the coverage depends");
+  expect(kerns(syntheticGpos(0x0008), syntheticGdef(1, 3)), "IgnoreMarks with a mark as a second glyph depends");
+  expect(kerns(syntheticGpos(0x0010, 0), syntheticGdef(1, 3)), "so does a mark filtering set");
+  // Format 2 alone: a mark that ClassDef2 classes.
+  const auto classPairs = gposWith({{"latn", {0}}}, {lookup(2, pairPos2(30, 40, -45), false, 0x0008)});
+  expect(kerns(classPairs, syntheticGdef(1, 3)), "a mark ClassDef2 classes is a second glyph");
+  expect(!kerns(classPairs, bases), "format 2 without a mark changes nothing");
+
+  // A coverage of 5 x 65,535 glyphs and a mark past them all: the check stops at its bound and answers true.
+  std::vector<uint8_t> huge;
+  appendU16be(huge, 1);   // PosFormat 1
+  appendU16be(huge, 10);  // Coverage right after this header
+  appendU16be(huge, 0x0004);
+  appendU16be(huge, 0);
+  appendU16be(huge, 0);  // PairSetCount
+  appendU16be(huge, 2);  // Coverage format 2
+  appendU16be(huge, 5);
+  for (int r = 0; r < 5; ++r) {
+    appendU16be(huge, 0);
+    appendU16be(huge, 0xFFFE);
+    appendU16be(huge, 0);
+  }
+  std::vector<uint8_t> lastIsMark;
+  appendU32be(lastIsMark, 0x00010000);
+  appendU16be(lastIsMark, 12);
+  appendU16be(lastIsMark, 0);
+  appendU16be(lastIsMark, 0);
+  appendU16be(lastIsMark, 0);
+  appendBlob(lastIsMark, classDefSingle(0xFFFF, 3));
+  const auto start = std::chrono::steady_clock::now();
+  expect(kerns(gposWith({{"latn", {0}}}, {lookup(2, huge, false, 0x0008)}), lastIsMark),
+         "past its bound the check answers true");
+  expect(std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count() < 1.0,
+         "a hostile coverage costs bounded time");
+  // Truncated and corrupted tables stay in bounds.
+  const auto gpos = syntheticGpos(0x0008);
+  const auto gdef = syntheticGdef(1, 3);
+  for (size_t len = 0; len <= gdef.size(); ++len) (void)KernsByGdefClass(gpos.data(), gpos.size(), gdef.data(), len);
+  for (size_t len = 0; len <= gpos.size(); ++len) (void)KernsByGdefClass(gpos.data(), len, gdef.data(), gdef.size());
+  for (size_t i = 0; i < gpos.size(); ++i) {
+    auto corrupt = gpos;
+    corrupt[i] ^= 0xFF;
+    (void)KernsByGdefClass(corrupt.data(), corrupt.size(), gdef.data(), gdef.size());
+  }
+  expect(true, "KernsByGdefClass truncation and corruption sweeps completed");
+}
+
 // sfnt table lookup for plain (non-collection) fonts — enough for fixtures.
 bool findTable(const std::vector<uint8_t>& font, const char* tag, size_t& offset, size_t& length) {
   if (font.size() < 12) return false;
@@ -333,6 +615,28 @@ bool stripTable(std::vector<uint8_t>& font, const char* tag) {
   return false;
 }
 
+unsigned long readMemory(void* ctx, unsigned long offset, unsigned char* buffer, unsigned long count) {
+  const auto& bytes = *static_cast<const std::vector<uint8_t>*>(ctx);
+  if (offset > bytes.size() || count > bytes.size() - offset) return 0;
+  if (count) memcpy(buffer, bytes.data() + offset, count);
+  return count;
+}
+
+// Sets every pair adjustment lookup's LookupFlag, as a font such as Caecilia
+// LT ships them (0x000E: skip base glyphs, ligatures and marks).
+void setPairLookupFlags(std::vector<uint8_t>& font, uint16_t flags) {
+  size_t offset = 0, length = 0;
+  if (!findTable(font, "GPOS", offset, length)) return;
+  auto u16 = [&](size_t at) { return unsigned(font[at]) * 256 + font[at + 1]; };
+  const size_t lookups = offset + u16(offset + 8);
+  for (unsigned i = 0; i < u16(lookups); ++i) {
+    const size_t lookup = lookups + u16(lookups + 2 + i * 2);
+    if (u16(lookup) != 2 && u16(lookup) != 9) continue;
+    font[lookup + 2] = uint8_t(flags >> 8);
+    font[lookup + 3] = uint8_t(flags);
+  }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -360,6 +664,8 @@ int main(int argc, char** argv) {
     (void)PairKernAdjustment(corrupt.data(), corrupt.size(), 30, 40);
   }
   expect(true, "truncation/corruption sweep completed");
+  testLookupFlags();
+  testKernsByGdefClass();
 
   // --- Lookups and scripts --------------------------------------------------
   using freeink::font::gpos::ResolveKernSubtables;
@@ -394,13 +700,15 @@ int main(int argc, char** argv) {
 
   // --- Resolved once ----------------------------------------------------------
   {
+    using freeink::font::gpos::kLookupStart;
     uint32_t subtables[8];
-    expect(ResolveKernSubtables(gpos.data(), gpos.size(), subtables, 8) == 2, "two subtables resolved");
-    expect((subtables[0] & freeink::font::gpos::kLookupStart) && (subtables[1] & freeink::font::gpos::kLookupStart),
-           "each starts its own lookup");
-    expect(ResolveKernSubtables(gpos.data(), gpos.size(), nullptr, 0) == 2, "counting alone");
+    expect(ResolveKernSubtables(gpos.data(), gpos.size(), subtables, 8) == 4, "two lookups of one subtable: 4 entries");
+    expect((subtables[0] & kLookupStart) && !(subtables[1] & kLookupStart) && (subtables[2] & kLookupStart) &&
+               !(subtables[3] & kLookupStart),
+           "each lookup's entry leads its subtables");
+    expect(ResolveKernSubtables(gpos.data(), gpos.size(), nullptr, 0) == 4, "counting alone");
     uint32_t one[1] = {0};
-    expect(ResolveKernSubtables(gpos.data(), gpos.size(), one, 1) == 2 && one[0] != 0,
+    expect(ResolveKernSubtables(gpos.data(), gpos.size(), one, 1) == 4 && (one[0] & kLookupStart),
            "a short buffer gets what fits, and the full count");
     const unsigned glyphs[] = {0, 10, 20, 30, 40, 99};
     bool agree = true;
@@ -414,10 +722,10 @@ int main(int argc, char** argv) {
     expect(resolvedKern(gpos, 10, 10, &covered) == 0 && covered,
            "a covered left glyph, kerning nothing with this right");
     expect(resolvedKern(gpos, 99, 20, &covered) == 0 && !covered, "an uncovered left glyph");
-    expect(freeink::font::gpos::PairKernAdjustment(nullptr, 0, subtables, 2, 10, 20) == 0, "null table, resolved");
+    expect(freeink::font::gpos::PairKernAdjustment(nullptr, 0, subtables, 4, 10, 20) == 0, "null table, resolved");
     for (size_t len = 0; len <= gpos.size(); ++len) {
       (void)ResolveKernSubtables(gpos.data(), len, subtables, 8);
-      (void)freeink::font::gpos::PairKernAdjustment(gpos.data(), len, subtables, 2, 10, 20);
+      (void)freeink::font::gpos::PairKernAdjustment(gpos.data(), len, subtables, 4, 10, 20);
     }
     for (size_t i = 0; i < gpos.size(); ++i) {
       std::vector<uint8_t> corrupt = gpos;
@@ -522,6 +830,46 @@ int main(int argc, char** argv) {
       expect(viaGpos < 0, "A/V still kerns with legacy kern stripped (GPOS path)");
       printf("info: A/V 26.6 kerning: combined %d, GPOS-only %d\n", int(kern), int(viaGpos));
 
+      // With Caecilia LT's lookup flags (0x000E), the fixture's GDEF classes
+      // A and V as base glyphs, so its kern lookups skip them, as HarfBuzz
+      // does: A/V kerns 0, resident or streamed. Without its GDEF the same
+      // flags skip nothing.
+      size_t gdefOffset = 0, gdefLength = 0;
+      expect(findTable(font, "GDEF", gdefOffset, gdefLength), "fixture has GDEF glyph classifications");
+      auto filtered = gposOnly;
+      setPairLookupFlags(filtered, 0x000E);
+      FtFont resident;
+      expect(resident.init(filtered.data(), uint32_t(filtered.size()), 32), "filtered resident font parses");
+      expect(resident.kerning26_6('A', 'V', 32u * 64u) == 0, "resident GDEF filters base-pair lookup");
+      printf("info: A/V at 32 px: %.2f px kerned, 0 with Caecilia's lookup flags\n", viaGpos / 64.0);
+      expect(resident.init(gposOnly.data(), uint32_t(gposOnly.size()), 32), "resident face reinitializes");
+      expect(resident.kerning26_6('A', 'V', 32u * 64u) == viaGpos, "reinit restores unfiltered kerning");
+      auto filteredNoGdef = filtered;
+      expect(stripTable(filteredNoGdef, "GDEF"), "fixture's GDEF stripped");
+      expect(resident.init(filteredNoGdef.data(), uint32_t(filteredNoGdef.size()), 32), "GDEF-stripped font parses");
+      expect(resident.kerning26_6('A', 'V', 32u * 64u) == viaGpos, "without GDEF the flags skip nothing");
+      size_t flaggedGpos = 0, flaggedGposLength = 0;
+      expect(findTable(filtered, "GPOS", flaggedGpos, flaggedGposLength), "flagged fixture has GPOS");
+      expect(freeink::font::gpos::KernsByGdefClass(&filtered[flaggedGpos], flaggedGposLength, &filtered[gdefOffset],
+                                                   gdefLength),
+             "with Caecilia's flags DejaVu's kerning depends on GDEF");
+      expect(!freeink::font::gpos::KernsByGdefClass(&font[gposOffset], gposLength, &font[gdefOffset], gdefLength),
+             "with its own (none) it does not");
+
+      FtFont stream;
+      expect(stream.initStream(readMemory, &filtered, filtered.size(), 32), "filtered streamed font parses");
+      expect(stream.kerning26_6('A', 'V', 32u * 64u) == 0, "streamed GDEF filters base-pair lookup");
+      stream.setGposByteBudget(gposLength + gdefLength);
+      expect(stream.initStream(readMemory, &gposOnly, gposOnly.size(), 32), "streamed face reinitializes");
+      expect(stream.kerning26_6('A', 'V', 32u * 64u) == viaGpos, "combined table budget allows streamed kerning");
+      stream.setGposByteBudget(gposLength + gdefLength - 1);
+      expect(stream.kerning26_6('A', 'V', 32u * 64u) == 0, "lowered combined budget releases both tables");
+      expect(stream.initStream(readMemory, &gposOnly, gposOnly.size(), 32), "budget-limited streamed face parses");
+      expect(stream.kerning26_6('A', 'V', 32u * 64u) == 0, "combined allocation cannot exceed table budget");
+      stream.setGposByteBudget(0);
+      expect(stream.initStream(readMemory, &gposOnly, gposOnly.size(), 32), "zero-budget streamed face parses");
+      expect(stream.kerning26_6('A', 'V', 32u * 64u) == 0, "zero budget disables streamed GPOS");
+
       // releaseKerningTable(): queries return 0 afterwards, without a reload.
       ftGposOnly.releaseKerningTable();
       expect(ftGposOnly.kerningGlyphs26_6(ftGposOnly.glyphId('A'), ftGposOnly.glyphId('V'), 32u * 64u) == 0,
@@ -541,11 +889,15 @@ int main(int argc, char** argv) {
     size_t kernOffset = 0;
     size_t kernLength = 0;
     const bool hasKern = findTable(font, "kern", kernOffset, kernLength);
+    size_t gdefOffset = 0;
+    size_t gdefLength = 0;
+    const uint8_t* gdef = findTable(font, "GDEF", gdefOffset, gdefLength) ? &font[gdefOffset] : nullptr;
     std::vector<uint32_t> subtables(256);
     const unsigned count =
         hasGpos ? ResolveKernSubtables(&font[gposOffset], gposLength, subtables.data(), unsigned(subtables.size())) : 0;
     expect(count <= subtables.size(), "the fixture's subtables fit");
     bool resolvedAgrees = true;
+    bool gdefChangesNothing = true;
     bool kernAgrees = true;
     int kerned = 0;
     for (unsigned l = 0x21; l < 0x7F; ++l) {
@@ -556,7 +908,11 @@ int main(int argc, char** argv) {
           const int32_t stateless = PairKernAdjustment(&font[gposOffset], gposLength, gl, gr);
           const int32_t resolved = freeink::font::gpos::PairKernAdjustment(&font[gposOffset], gposLength,
                                                                           subtables.data(), count, gl, gr);
-          resolvedAgrees = resolvedAgrees && stateless == resolved;
+          const int32_t withGdef = PairKernAdjustment(&font[gposOffset], gposLength, gl, gr, gdef, gdefLength);
+          const int32_t resolvedWithGdef = freeink::font::gpos::PairKernAdjustment(
+              &font[gposOffset], gposLength, subtables.data(), count, gl, gr, gdef, gdefLength);
+          resolvedAgrees = resolvedAgrees && stateless == resolved && withGdef == resolvedWithGdef;
+          gdefChangesNothing = gdefChangesNothing && withGdef == stateless;
           kerned += stateless != 0;
         }
         if (hasKern) {
@@ -567,11 +923,13 @@ int main(int argc, char** argv) {
         }
       }
     }
-    expect(resolvedAgrees, "resolved GPOS agrees with the stateless reader on every ASCII pair");
+    expect(resolvedAgrees, "resolved GPOS agrees with the stateless reader on every ASCII pair, GDEF or not");
+    // The fixture's kern lookups set no flags: its GDEF changes no pair.
+    expect(gdef != nullptr && gdefChangesNothing, "GDEF changes no ASCII pair of a font whose lookups skip nothing");
     expect(!hasGpos || kerned > 100, "the fixture's GPOS kerns ASCII pairs (not a vacuous match)");
     expect(kernAgrees, "the kern table reader agrees with FT_Get_Kerning on every ASCII pair");
-    printf("info: %u kern subtables resolved, %d ASCII pairs kerned; legacy kern table %s\n", count, kerned,
-           hasKern ? "checked against FreeType" : "absent");
+    printf("info: %u kern lookup and subtable entries resolved, %d ASCII pairs kerned; legacy kern table %s\n", count,
+           kerned, hasKern ? "checked against FreeType" : "absent");
     FT_Done_Face(face);
     FT_Done_FreeType(library);
   }
