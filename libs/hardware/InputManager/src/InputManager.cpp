@@ -1515,16 +1515,17 @@ uint8_t InputManager::serviceTouch() {
 void InputManager::updateTouchFromIrq(const unsigned long now, const int irqRaw) {
   // Poll the controller over I2C on a fixed cadence, independent of the IRQ.
   // The CHSC6x IRQ is a brief (~24ms) pulse at touch-down, not a level held for
-  // the contact, so edge/level-gated reads missed quick taps. readChsc6xPoint
-  // only returns true for a real touch (data[3] touch bit), so polling can't
-  // latch the idle phantom frame. A valid read sets the press and refreshes the
-  // release deadline; once reads stop coming, the touch releases after a short
-  // hold-over.
+  // the contact, so edge/level-gated reads missed quick taps. Only a contact
+  // frame (data[3] touch bit) presses, so polling can't latch the idle frame.
+  // A contact read sets the press and refreshes the release deadline; a lift
+  // frame ends the contact at once. The short hold-over only covers a lift that
+  // was not read.
   (void)irqRaw;
   if (now >= touchReadAt) {
     touchReadAt = now + TOUCH_SAMPLE_DELAY_MS;
     TouchPoint point = {false, 0, 0, 0};
-    if (readChsc6xPoint(point)) {
+    const bool readable = readChsc6xPoint(point);
+    if (readable && point.valid) {
       touchPoint = point;
       if (!touchPressed) {
         touchPressed = true;
@@ -1547,6 +1548,10 @@ void InputManager::updateTouchFromIrq(const unsigned long now, const int irqRaw)
         }
       }
       touchReleaseAt = now + TOUCH_IRQ_PULSE_MS;
+    } else if (readable && touchPressed) {
+      // A lift frame. Waiting out the hold-over instead held every release
+      // 120 ms, and merged a second tap that came within it into the first.
+      touchReleaseAt = now;
     }
   }
 
@@ -1585,6 +1590,8 @@ bool InputManager::readChsc6xPoint(TouchPoint& point) {
   return decodeChsc6xFrame(data, TOUCH_FRAME_SIZE, point);
 }
 
+// True when the frame is a contact or a lift with coordinates; point.valid then
+// says contact. A lift frame keeps the coordinates of the touch it ends.
 bool InputManager::decodeChsc6xFrame(const uint8_t* data, const size_t len, TouchPoint& point) const {
   if (len < 7) {
     return false;
@@ -1593,9 +1600,12 @@ bool InputManager::decodeChsc6xFrame(const uint8_t* data, const size_t len, Touc
   // when idle. The controller keeps returning a stale coordinate frame between
   // touches, so without this gate every read looks like a phantom touch (which
   // is why polling reported a fixed point and IRQ-gated reads were needed to
-  // dodge it). Release transitions briefly show 0x40/0xff — both fail this test
-  // or the coordinate sanity check below.
-  if ((data[3] & 0x80) == 0) {
+  // dodge it). The top two bits are the event, as in the FT6336 layout: 0x40
+  // is a lift, which ends the contact but never starts one. A 0xff frame fails
+  // the coordinate sanity check below.
+  const bool contact = (data[3] & 0x80) != 0;
+  const bool lift = (data[3] >> 6) == 1;
+  if (!contact && !lift) {
     return false;
   }
   const uint16_t rawX = data[4];                                          // X: one byte
@@ -1604,7 +1614,7 @@ bool InputManager::decodeChsc6xFrame(const uint8_t* data, const size_t len, Touc
     return false;
   }
   const auto& t = BoardConfig::ACTIVE.touch;
-  point.valid = true;
+  point.valid = contact;
   // Panel-native coordinates (the calibrated raw range); the app maps to its
   // display/logical frame. See the touch note in the README. Mount correction
   // follows the profile like the GT911 path: swap axes first, map with the
