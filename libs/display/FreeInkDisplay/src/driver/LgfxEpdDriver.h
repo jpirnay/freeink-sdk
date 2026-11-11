@@ -57,6 +57,10 @@ class LgfxEpdDriver : public PanelDriver {
   // (see ED047TC2Waveform.cpp); the generic two-push flow stays available for
   // callers that do not use it.
   bool supportsGrayFrame() const override { return true; }
+  // Inverted frames keep their anti-aliasing: the canvas is filled from the frame as the panel shows
+  // it, and on a dark background overlayCanvasGray() swaps the two greys (see the .cpp).
+  bool invertsGrayFrame() const override { return true; }
+  void setBackgroundHint(bool darkBackground) override;
   // Deferred single-push; see the .cpp for why the host framebuffer is free early.
   bool displayGrayFrameStart(EpdBus& bus, const uint8_t* fb, RefreshMode mode, bool turnOff) override;
   void displayGrayFrame(EpdBus& bus, const uint8_t* fb, RefreshMode mode, bool turnOff) override;

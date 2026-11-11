@@ -306,9 +306,13 @@ class FreeInkDisplay {
   void displayGrayBuffer(bool turnOffScreen = false, const unsigned char* lut = nullptr, bool factoryMode = false);
   // Single-push grayscale: composes the framebuffer (B/W) with the staged
   // LSB/MSB planes and displays them as one waveform. Falls back to a plain
-  // B/W displayBuffer() when the driver cannot (or the output is inverted --
-  // the planes' meaning does not survive inversion).
+  // B/W displayBuffer() when the driver cannot, or when the output is inverted
+  // and the driver cannot mirror its greys (invertsGrayFrame()).
   bool supportsGrayFrame() const;
+  // The selected driver keeps the single push's greys on an inverted frame: see
+  // PanelDriver::invertsGrayFrame(). The plane pair of the two-push flow never
+  // does, whatever this says.
+  bool invertsGrayFrame() const;
   bool supportsOnePassText() const;
   void setReaderRefresh(bool reading);
   // One-pass text with no memory beyond the two frame buffers (the X3, the X4). The buffer that holds the

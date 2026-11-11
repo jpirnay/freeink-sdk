@@ -1047,6 +1047,89 @@ static void testDeferredGrayFacadeUsesCurrentDrawFrame() {
   free(driver._grayBase);
 }
 
+// Dark mode's single push (PanelDriver::invertsGrayFrame): a driver that mirrors its greys gets the
+// frame as the panel shows it, learns the polarity, and the host keeps its logical frame. One that
+// cannot is never offered the single push while inverted, and its frames go out B/W.
+class GrayFrameDriver : public BwOnlyDriver {
+ public:
+  explicit GrayFrameDriver(bool inverts) : inverts_(inverts) {}
+  bool supportsGrayFrame() const override { return true; }
+  bool invertsGrayFrame() const override { return inverts_; }
+  void setBackgroundHint(bool dark) override { dark_ = dark; }
+  void display(EpdBus&, const uint8_t* fb, const uint8_t*, RefreshMode mode, bool) override {
+    shown.assign(fb, fb + 48000);
+    lastMode = mode;
+    ++bwFrames;
+  }
+  bool displayGrayFrameStart(EpdBus&, const uint8_t* fb, RefreshMode, bool) override {
+    shown.assign(fb, fb + 48000);
+    ++grayFrames;
+    return false;
+  }
+  void displayGrayFrame(EpdBus& bus, const uint8_t* fb, RefreshMode mode, bool off) override {
+    displayGrayFrameStart(bus, fb, mode, off);
+  }
+  void copyGrayscaleLsb(EpdBus&, const uint8_t* lsb) override { lsbPlane.assign(lsb, lsb + 48000); }
+  void copyGrayscaleMsb(EpdBus&, const uint8_t* msb) override { msbPlane.assign(msb, msb + 48000); }
+  Bytes shown, lsbPlane, msbPlane;
+  RefreshMode lastMode = RefreshMode::Fast;
+  int bwFrames = 0, grayFrames = 0;
+  bool dark_ = false;
+
+ private:
+  bool inverts_;
+};
+
+static Bytes inverted(const Bytes& b) {
+  Bytes out(b.size());
+  for (size_t i = 0; i < b.size(); ++i) out[i] = static_cast<uint8_t>(~b[i]);
+  return out;
+}
+
+static void testInvertedGrayFrame() {
+  const auto page = frame(41);
+  for (const bool inverts : {true, false}) {
+    GrayFrameDriver driver(inverts);
+    FreeInkDisplay display(12, 11, 13, 18, 14, 6);
+    display._driver = &driver;
+    display.begin();
+    assert(display.supportsGrayFrame() && display.invertsGrayFrame() == inverts);
+
+    display.setInverted(true);
+    assert(driver.dark_ && display.supportsGrayFrame() == inverts);
+    std::memcpy(display.getFrameBuffer(), page.data(), page.size());
+    // The first frame after the change is promoted to HALF and goes out B/W, whatever the driver.
+    display.displayGrayscaleFrame(FreeInkDisplay::FAST_REFRESH);
+    assert(driver.bwFrames == 1 && driver.grayFrames == 0 && driver.lastMode == RefreshMode::Half);
+    assert(driver.shown == inverted(page));
+
+    for (const bool deferred : {false, true}) {
+      std::memcpy(display.getFrameBuffer(), page.data(), page.size());
+      // The page's own planes reach a driver that mirrors them; the push must not compose an earlier page's.
+      const auto lsb = frame(deferred ? 7 : 8), msb = frame(deferred ? 9 : 10);
+      display.copyGrayscaleLsbBuffers(lsb.data());
+      display.copyGrayscaleMsbBuffers(msb.data());
+      assert(inverts ? driver.lsbPlane == lsb && driver.msbPlane == msb : driver.lsbPlane.empty());
+      if (deferred) {
+        display.triggerGrayscaleFrame(FreeInkDisplay::FAST_REFRESH);
+      } else {
+        display.displayGrayscaleFrame(FreeInkDisplay::FAST_REFRESH);
+      }
+      assert(driver.shown == inverted(page));  // the panel's view, gray or B/W
+      // The host keeps the frame it drew: what it patches next is logical, as after any refresh.
+      assert(std::equal(page.begin(), page.end(), display.getFrameBuffer()));
+    }
+    assert(inverts ? driver.grayFrames == 2 && driver.bwFrames == 1 : driver.grayFrames == 0 && driver.bwFrames == 3);
+
+    // Dark mode never lends the gray canvas: its pictures keep their dither.
+    assert(display.grayLevels() == 4 && display.borrowGray8Canvas(nullptr) == nullptr);
+
+    display.setInverted(false);
+    assert(!driver.dark_ && display.supportsGrayFrame());
+    display.releaseBuffers();
+  }
+}
+
 int main(int argc, char** argv) {
   if (argc > 1 && std::strcmp(argv[1], "metalio") == 0) {
     testMetalio();
@@ -1064,6 +1147,7 @@ int main(int argc, char** argv) {
   testTextWaveformDoses();
   testTextAaCharge();
   testOnePassFrame();
+  testInvertedGrayFrame();
   testUc8279X4WaveformSelection();
   testDirectSleep<Uc8179Driver>();
   testDirectSleep<Uc8279X4Driver>();

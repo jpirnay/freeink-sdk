@@ -220,6 +220,8 @@ uint16_t g_w = 0, g_h = 0, g_wb = 0;
 // LgfxEpdConfig::grayDark.
 constexpr uint8_t kGrayBlack = 0x00, kGrayWhite = 0xFF;
 uint8_t g_grayDark = 0, g_grayLight = 0;
+// Dark mode (setBackgroundHint): the frame arrives inverted, its ink white.
+bool g_darkBackground = false;
 
 void allocCanvas(uint16_t w, uint16_t h) {
   g_w = w;
@@ -266,10 +268,17 @@ void fillCanvasBW(const uint8_t* fb) {
 // The canvas already holds the B/W frame from the base push and is not cleared by
 // pushSprite(), so it IS the base. Reading it instead of a caller-supplied pointer
 // removes the ambiguity rather than relying on the caller to resolve it.
+//
+// Both planes set mark a fringe pixel with more ink in it, the MSB alone one with less: on paper the
+// dark grey and the light one. On an inverted frame (dark mode) the ink is white, so the two swap: the
+// pixel with more ink is the light grey. The fast bank carries a column for each of the two greys and
+// nothing else, so mirroring means swapping them, not computing new levels.
 void overlayCanvasGray() {
   if (!g_canvas || !g_lsb || !g_msb) return;
   auto* dst = static_cast<uint8_t*>(g_canvas->getBuffer());
   if (!dst) return;
+  const uint8_t moreInk = g_darkBackground ? g_grayLight : g_grayDark;
+  const uint8_t lessInk = g_darkBackground ? g_grayDark : g_grayLight;
   for (uint16_t y = 0; y < g_h; ++y) {
     const uint8_t* lrow = g_lsb + static_cast<uint32_t>(y) * g_wb;
     const uint8_t* mrow = g_msb + static_cast<uint32_t>(y) * g_wb;
@@ -281,7 +290,7 @@ void overlayCanvasGray() {
         const uint8_t mask = 0x80 >> bit;
         const bool lb = (l & mask) != 0, mb = (m & mask) != 0;
         if (!lb && !mb) continue;
-        drow[bx * 8 + bit] = (mb && !lb) ? g_grayLight : g_grayDark;
+        drow[bx * 8 + bit] = (mb && !lb) ? lessInk : moreInk;
       }
     }
   }
@@ -935,6 +944,14 @@ void LgfxEpdDriver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
   fillCanvasBW(bw);
 #else
   (void)bw;
+#endif
+}
+
+void LgfxEpdDriver::setBackgroundHint(bool darkBackground) {
+#if FREEINK_DRIVER_LGFX_EPD
+  g_darkBackground = darkBackground;
+#else
+  (void)darkBackground;
 #endif
 }
 
