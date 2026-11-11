@@ -930,12 +930,25 @@ struct BoardProfile {
   // here rather than testing a board name at the call site is what lets a new
   // board answer the question by filling in a profile.
   //
-  // Fork-only field, kept LAST: profiles are positional, so a field upstream
-  // appends must go before it, and the profiles that set it gain a placeholder
-  // for the new field. A bare `true` landing one slot early would brace-elide
-  // into the new struct (haptic.gpio = 1) without a diagnostic -- the
-  // static_asserts after XTEINK_X3_UC8279 catch exactly that drift.
+  // Fork-only field, kept LAST but for the fork-only fields below it: profiles
+  // are positional, so a field upstream appends must go before it, and the
+  // profiles that set it gain a placeholder for the new field. A bare `true`
+  // landing one slot early would brace-elide into the new struct
+  // (haptic.gpio = 1) without a diagnostic -- the static_asserts after
+  // XTEINK_X3_UC8279 catch exactly that drift.
   bool panelFadesInSunlight = false;
+  // Whether a board whose partition table has no flash-area partition (the
+  // firmware's raw cache area, `spiffs` on the Xteink layout) saves the copy of
+  // that area it keeps in PSRAM to the SD card. true: the image is written to a
+  // file on the card and read back at boot, so the caches in it (installed
+  // fonts, the UI language) outlive a restart, at the price of card writes.
+  // false, the default and the answer for any board that has not decided: the
+  // image stays in PSRAM, the card is never written, and the caches are built
+  // again after each boot. Irrelevant on a board that has the partition.
+  //
+  // Fork-only, after panelFadesInSunlight: a profile that sets it gives
+  // panelFadesInSunlight too.
+  bool flashAreaOnCard = false;
 };
 
 constexpr TouchConfig NO_TOUCH = {TouchController::None,
