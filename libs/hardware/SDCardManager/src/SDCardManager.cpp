@@ -11,6 +11,9 @@
 #if FREEINK_DEVICE_PAPERMONO
 #include <PaperMonoBoard.h>
 #endif
+#if FREEINK_DEVICE_EEGO_A4
+#include <Wire.h>
+#endif
 
 SDCardManager SDCardManager::instance;
 
@@ -153,6 +156,34 @@ bool SDCardManager::begin() {
   const uint32_t SPI_FQ = BoardConfig::ACTIVE.sd.spiHz != 0 ? BoardConfig::ACTIVE.sd.spiHz : 40000000;
 
   if (_powerHook) _powerHook();  // board brings up its SD rail (e.g. PMIC) if needed
+
+#if FREEINK_DEVICE_EEGO_A4
+  // EEGO A4 revisions differ on GPIO6. Units whose CW2015 gauge answers use it as
+  // the SD card's active-low power enable (stock V1.0.3 logs "SD power enabled:
+  // GPIO6 active-low"); held HIGH, their card does not answer. Units without the
+  // gauge read the battery on the GPIO10 ADC only with GPIO6 HIGH, which the
+  // profile leaves to display initialization. Decided once, before SD and display
+  // initialization drive the pin.
+  if (BoardConfig::isEegoA4()) {
+    static bool decided = false;
+    const int8_t gpio6 = BoardConfig::ACTIVE.display.powerEnable;
+    if (!decided && gpio6 >= 0) {
+      decided = true;
+      const auto& g = BoardConfig::ACTIVE.batteryGauge;
+      Wire.begin(g.i2cSda, g.i2cScl, g.i2cHz);
+      Wire.beginTransmission(g.gaugeAddr);
+      const bool gauge = Wire.endTransmission() == 0;
+      if (gauge) {
+        BoardConfig::ACTIVE.sd.powerEnable = gpio6;
+        BoardConfig::ACTIVE.sd.powerActiveHigh = false;
+        BoardConfig::ACTIVE.display.powerEnable = BoardConfig::PIN_UNASSIGNED;
+      }
+      if (Serial)
+        Serial.printf("[%lu] [SD] EEGO A4: CW2015 %s, GPIO%d = %s\n", millis(), gauge ? "present" : "absent", gpio6,
+                      gauge ? "SD power (active-low)" : "display enable (HIGH)");
+    }
+  }
+#endif
 
   // Boards that gate the SD rail with a plain GPIO (e.g. Sticky's SD_PWR_EN on
   // GPIO10) must power it before probing. Active-high enable + a brief settle.
@@ -530,12 +561,21 @@ bool SDCardManager::openFileForWrite(const char* moduleName, const String& path,
 uint64_t SDCardManager::sdTotalBytes() const { return cachedTotalBytes; }
 
 uint64_t SDCardManager::sdUsedBytes() {
-  if (!initialized) return 0;
+  uint64_t usedBytes = 0;
+  sdUsedBytes(usedBytes);
+  return usedBytes;
+}
+
+bool SDCardManager::sdUsedBytes(uint64_t& usedBytes) {
+  usedBytes = 0;
+  if (!initialized) return false;
   const uint32_t now = millis();
   if (!cachedUsedBytesValid || (now - cachedUsedBytesAt) >= USED_BYTES_CACHE_TTL_MS) {
     const int32_t freeClusters = vol().freeClusterCount();
     const uint64_t clusterCount = vol().clusterCount();
-    if (freeClusters < 0) {
+    cachedUsedBytesAvailable = freeClusters >= 0;
+    if (!cachedUsedBytesAvailable) {
+      if (Serial) Serial.printf("[%lu] [SD] Failed to count free clusters\n", millis());
       cachedUsedBytes = 0;
     } else {
       const uint64_t cappedFree = (static_cast<uint64_t>(freeClusters) > clusterCount)
@@ -546,7 +586,8 @@ uint64_t SDCardManager::sdUsedBytes() {
     cachedUsedBytesValid = true;
     cachedUsedBytesAt = now;
   }
-  return cachedUsedBytes;
+  usedBytes = cachedUsedBytes;
+  return cachedUsedBytesAvailable;
 }
 
 bool SDCardManager::removeDir(const char* path) {

@@ -1,6 +1,6 @@
 #pragma once
 
-// SSD1677 panel driver — Xteink X4 and the de-link ESP32-S3 board (both drive
+// SSD1677 panel driver — Xteink X4 and the Silkscreen ESP32-S3 board (both drive
 // an 800x480 GDEQ0426T82 over the same controller). B/W with software 2-bit
 // grayscale via a custom LUT, dual-RAM (BW 0x24 / RED 0x26) differential fast
 // refresh. Active-HIGH BUSY.
@@ -80,6 +80,7 @@ const Ssd1677Config& ssd1677DefaultConfig();
 
 class Ssd1677Driver : public PanelDriver {
  public:
+  const char* controllerName() const override { return "SSD1677"; }
   explicit Ssd1677Driver(const Ssd1677Config& cfg = ssd1677DefaultConfig());
 
   uint32_t spiHz() const override;
@@ -88,6 +89,7 @@ class Ssd1677Driver : public PanelDriver {
 
   void begin(EpdBus& bus) override;
   void deepSleep(EpdBus& bus) override;
+  void powerOffBetweenFrames(EpdBus& bus) override;
 
   void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
   // Deferred refresh: displayStart() runs the full update (RAM writes,
@@ -145,7 +147,7 @@ class Ssd1677Driver : public PanelDriver {
   void powerOn(EpdBus& bus);
   // Documented SSD1677 analog/oscillator shutdown. Used after a 0xFC update
   // when turnOff was requested and by deepSleep().
-  void powerOffController(EpdBus& bus);
+  void powerOffController(EpdBus& bus, uint16_t settleMs = 200);
   void displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff, bool async);
 
   const Ssd1677Config& _cfg;
@@ -187,6 +189,12 @@ enum PiccoPanel : uint8_t {
   PiccoSe0400nqw47 = 4,  // the stock "SSD2677" driver path (Ssd2677Driver)
 };
 uint8_t piccoProbePanel();
+#endif
+
+#if FREEINK_DEVICE_STICKY
+// Sticky panel probe (cached): true when the unit carries an SSD2677 instead of
+// the SSD1677 (CMD 0x70 answers 0x07).
+bool stickyHasSsd2677();
 #endif
 
 }  // namespace freeink
