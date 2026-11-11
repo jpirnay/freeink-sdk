@@ -245,19 +245,27 @@ script input, takes the union of every script's DefaultLangSys `kern`
 lookups. The two agree when the font points every script at the same lookups,
 as most fonts do (Latin, Cyrillic and Greek then kern alike); a font that
 splits its kern lookups by script gets their union.
-`PairKernAdjustment(gpos, size, left, right)` walks the script, feature and
-lookup lists on every call. A caller kerning many pairs resolves the
-subtables once with `ResolveKernSubtables()` (byte offsets into the table, so
-they survive the table moving) and passes them to the resolved overload,
-which skips the walk and can also report whether the left glyph kerns with
-anything at all. It gives the per-call value while that walk stays within its
-budget (resolving is allowed a larger one) and the caller passes every
-resolved subtable. `kerntable::PairKernAdjustment()` reads
+Given the font's `GDEF` table, both overloads apply each lookup's LookupFlag
+as HarfBuzz does: a lookup that skips either glyph of the pair (a base glyph,
+ligature or mark by its GDEF class, or a mark outside the lookup's mark
+attachment class or mark glyph set) does not kern it. With adjacent pairs
+only, a skipped glyph is not looked past, as a shaper would. Without `GDEF`
+every glyph is unclassified and no lookup skips it.
+`PairKernAdjustment(gpos, size, left, right, gdef, gdefSize)` walks the
+script, feature and lookup lists on every call. A caller kerning many pairs
+resolves them once with `ResolveKernSubtables()` (each lookup, then its
+subtables, as byte offsets into the table, so they survive the table moving)
+and passes them to the resolved overload, which skips the walk and can also
+report whether the left glyph kerns with anything at all. It gives the
+per-call value while that walk stays within its budget (resolving is allowed
+a larger one) and the caller passes every resolved entry.
+`kerntable::PairKernAdjustment()` reads
 the legacy table, for fonts with no GPOS kerning, as `FT_Get_Kerning()` does
 for sorted subtables, but skips cross-stream subtables, which FreeType adds in.
 All three are bounds-checked and keep their work bounded on hostile counts.
 `run_gpos.sh` checks the resolved reader against the per-call one, and the
-kern table reader against FreeType, on DejaVuSans.
+kern table reader against FreeType, on DejaVuSans, and the lookup flags on
+synthetic tables.
 
 ### FtFont integration APIs
 

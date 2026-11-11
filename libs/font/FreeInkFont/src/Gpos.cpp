@@ -1,3 +1,6 @@
+// LookupFlag filtering through GDEF ported from Free-Ink/freeink-sdk (PR #197, d2e6f09, by Georg Kaindl). Reworked
+// here for the resolved entries, binary-searched GDEF reads, and HarfBuzz's treatment of reserved flag bits, unknown
+// glyph classes and an unreadable GDEF header.
 #include "Gpos.h"
 
 #include <string.h>
@@ -47,21 +50,27 @@ unsigned xAdvanceOffset(unsigned valueFormat) {
 // genuine record (even a zero-valued one — format 2 matrices are dense, and a
 // matched pair must stop the lookup's subtables exactly as a shaper's would) from
 // "this subtable does not cover the pair". `covered` is set when the subtable
-// covers `left`, whatever the right glyph.
-int32_t pairAdjustment(View subtable, unsigned left, unsigned right, bool& found, bool& covered) {
+// covers `left`, whatever the right glyph. Without `matchRight` only that is
+// looked at: the lookup skips the right glyph.
+int32_t pairAdjustment(View subtable, unsigned left, unsigned right, bool matchRight, bool& found, bool& covered) {
   found = false;
   const unsigned format = subtable.u16(0);
   const unsigned valueFormat1 = subtable.u16(4);
   const unsigned valueFormat2 = subtable.u16(6);
+  if (format != 1 && format != 2) return 0;
   if ((valueFormat1 & kXAdvanceBit) == 0) return 0;  // no X-advance data → nothing to kern with
+  // Both formats list their first glyphs in the coverage table; format 2
+  // resolves every covered left glyph to a (possibly zero) record through its
+  // class matrix.
+  const int coverage = otl::coverageIndex(subtable.sub(subtable.u16(2)), left);
+  if (coverage < 0) return 0;
+  covered = true;
+  if (!matchRight) return 0;
   const unsigned len1 = valueRecordSize(valueFormat1);
   const unsigned len2 = valueRecordSize(valueFormat2);
   const unsigned advanceAt = xAdvanceOffset(valueFormat1);
 
   if (format == 1) {
-    const int coverage = otl::coverageIndex(subtable.sub(subtable.u16(2)), left);
-    if (coverage < 0) return 0;
-    covered = true;
     const unsigned setCount = subtable.u16(8);
     if (unsigned(coverage) >= setCount || !subtable.has(10, size_t(setCount) * 2)) return 0;
     View set = subtable.sub(subtable.u16(10 + unsigned(coverage) * 2));
@@ -83,24 +92,99 @@ int32_t pairAdjustment(View subtable, unsigned left, unsigned right, bool& found
     return set.s16(2 + low * recordSize + 2 + advanceAt);
   }
 
-  if (format == 2) {
-    // Coverage lists the first glyphs; a covered left glyph always resolves
-    // to a (possibly zero) record through the class matrix.
-    if (otl::coverageIndex(subtable.sub(subtable.u16(2)), left) < 0) return 0;
-    covered = true;
-    const unsigned class1Count = subtable.u16(12);
-    const unsigned class2Count = subtable.u16(14);
-    const unsigned class1 = otl::glyphClass(subtable.sub(subtable.u16(8)), left);
-    const unsigned class2 = otl::glyphClass(subtable.sub(subtable.u16(10)), right);
-    if (class1 >= class1Count || class2 >= class2Count) return 0;
-    const size_t recordSize = size_t(len1) + len2;
-    const size_t record = 16 + (size_t(class1) * class2Count + class2) * recordSize;
-    if (!subtable.has(16, size_t(class1Count) * class2Count * recordSize)) return 0;
-    found = true;
-    return subtable.s16(record + advanceAt);
+  const unsigned class1Count = subtable.u16(12);
+  const unsigned class2Count = subtable.u16(14);
+  const unsigned class1 = otl::glyphClass(subtable.sub(subtable.u16(8)), left);
+  const unsigned class2 = otl::glyphClass(subtable.sub(subtable.u16(10)), right);
+  if (class1 >= class1Count || class2 >= class2Count) return 0;
+  const size_t recordSize = size_t(len1) + len2;
+  const size_t record = 16 + (size_t(class1) * class2Count + class2) * recordSize;
+  if (!subtable.has(16, size_t(class1Count) * class2Count * recordSize)) return 0;
+  found = true;
+  return subtable.s16(record + advanceAt);
+}
+
+// LookupFlag bits that skip glyphs by their GDEF class (OpenType chapter 2).
+// RightToLeft (0x0001) only concerns cursive attachment, and the reserved
+// bits (0x00E0) are ignored, as HarfBuzz ignores them.
+constexpr unsigned kIgnoreBaseGlyphs = 0x0002;
+constexpr unsigned kIgnoreLigatures = 0x0004;
+constexpr unsigned kIgnoreMarks = 0x0008;
+constexpr unsigned kUseMarkFilteringSet = 0x0010;
+constexpr unsigned kMarkAttachmentType = 0xFF00;
+constexpr unsigned kSkippingFlags =
+    kIgnoreBaseGlyphs | kIgnoreLigatures | kIgnoreMarks | kUseMarkFilteringSet | kMarkAttachmentType;
+
+// GDEF's GlyphClassDef values. Any other value counts as unclassified, as in
+// HarfBuzz.
+enum class GlyphClass : unsigned { Unclassified = 0, Base = 1, Ligature = 2, Mark = 3, Component = 4 };
+
+// The font's GDEF as lookup flags read it. Empty, every glyph unclassified,
+// for a font without one or one whose header cannot be read: such a font
+// kerns as one without GDEF. Every read is a binary search (OpenType.h), so
+// classifying a glyph costs bounded time whatever the counts say.
+class Gdef {
+ public:
+  Gdef(const uint8_t* bytes, size_t size) {
+    const View table{bytes, size};
+    if (bytes != nullptr && table.has(0, 12) && table.u16(0) == 1) table_ = table;
+  }
+  bool empty() const { return table_.data == nullptr; }
+  GlyphClass glyphClass(unsigned glyph) const {
+    return static_cast<GlyphClass>(otl::glyphClass(table_.sub(table_.u16(4)), glyph));
+  }
+  unsigned markAttachmentClass(unsigned glyph) const { return otl::glyphClass(table_.sub(table_.u16(10)), glyph); }
+  // Whether mark glyph set `set` (GDEF 1.2 and later) holds `glyph`. A set the
+  // table does not have holds nothing.
+  bool inMarkGlyphSet(unsigned set, unsigned glyph) const {
+    if (table_.u16(2) < 2 || !table_.has(12, 2)) return false;
+    const View sets = table_.sub(table_.u16(12));
+    const unsigned count = sets.u16(2);
+    if (sets.u16(0) != 1 || set >= count || !sets.has(4, size_t(count) * 4)) return false;
+    return otl::coverageIndex(sets.sub(sets.u32(4 + size_t(set) * 4)), glyph) >= 0;
   }
 
-  return 0;
+ private:
+  View table_;
+};
+
+// One glyph of the pair, its GDEF class read at most once a query, and only
+// when a lookup has flags to test it against.
+struct PairGlyph {
+  unsigned glyph;
+  bool classRead = false;
+  GlyphClass glyphClass = GlyphClass::Unclassified;
+
+  GlyphClass classIn(const Gdef& gdef) {
+    if (!classRead) {
+      glyphClass = gdef.glyphClass(glyph);
+      classRead = true;
+    }
+    return glyphClass;
+  }
+};
+
+// Whether a lookup with these flags skips the glyph (HarfBuzz's
+// check_glyph_property): a base glyph or ligature by its own flag, a mark by
+// IgnoreMarks, else by its mark glyph set or, without one, its mark
+// attachment class.
+bool skips(const Gdef& gdef, const unsigned flags, const unsigned markSet, PairGlyph& glyph) {
+  switch (glyph.classIn(gdef)) {
+    case GlyphClass::Base:
+      return (flags & kIgnoreBaseGlyphs) != 0;
+    case GlyphClass::Ligature:
+      return (flags & kIgnoreLigatures) != 0;
+    case GlyphClass::Mark:
+      break;
+    case GlyphClass::Unclassified:
+    case GlyphClass::Component:
+    default:
+      return false;
+  }
+  if (flags & kIgnoreMarks) return true;
+  if (flags & kUseMarkFilteringSet) return !gdef.inMarkGlyphSet(markSet, glyph.glyph);
+  if (flags & kMarkAttachmentType) return (gdef.markAttachmentClass(glyph.glyph) & 0xFFu) != flags >> 8;
+  return false;
 }
 
 // The lookups the 'kern' feature of any script's DefaultLangSys lists, sorted
@@ -150,10 +234,11 @@ unsigned kernLookups(View gpos, uint16_t (&out)[kMaxKernLookups], unsigned& work
   return count;
 }
 
-// Calls `visit(subtable, firstOfItsLookup)` for each PairPos subtable of the
-// kern lookups, in the order they apply.
-template <typename Visit>
-void forEachKernSubtable(View gpos, const unsigned budget, Visit visit) {
+// For each kern lookup with a PairPos subtable, in the order they apply:
+// `visitLookup(lookup)`, then `visitSubtable(subtable)` for each of those
+// subtables.
+template <typename VisitLookup, typename VisitSubtable>
+void forEachKernLookup(View gpos, const unsigned budget, VisitLookup visitLookup, VisitSubtable visitSubtable) {
   unsigned work = 0;
   uint16_t indices[kMaxKernLookups];
   const unsigned count = kernLookups(gpos, indices, work, budget);
@@ -163,7 +248,7 @@ void forEachKernSubtable(View gpos, const unsigned budget, Visit visit) {
     const unsigned type = lookup.u16(0);
     const unsigned subtableCount = lookup.u16(4);
     if ((type != 2 && type != 9) || !lookup.has(6, size_t(subtableCount) * 2)) continue;
-    bool first = true;
+    bool visited = false;
     for (unsigned j = 0; j < subtableCount; ++j) {
       if (++work > budget) return;
       View subtable = lookup.sub(lookup.u16(6 + j * 2));
@@ -174,41 +259,85 @@ void forEachKernSubtable(View gpos, const unsigned budget, Visit visit) {
         subtable = subtable.sub(subtable.u32(4));
       }
       if (subtable.data == nullptr) continue;
-      visit(subtable, first);
-      first = false;
+      if (!visited) visitLookup(lookup);
+      visited = true;
+      visitSubtable(subtable);
     }
   }
 }
 
-// Adds a subtable's adjustment unless an earlier subtable of the same lookup
-// already matched: what a shaper does with the kern feature's lookups.
-struct Accumulator {
-  int32_t total = 0;
-  bool matched = false;  // in the current lookup
-  bool covered = false;
+// What a shaper does with the kern feature's lookups for one pair: each lookup
+// that skips neither glyph adds the adjustment of its first subtable that
+// matches the pair.
+class Accumulator {
+ public:
+  Accumulator(unsigned left, unsigned right, const uint8_t* gdefBytes, size_t gdefSize)
+      : gdef_(gdefBytes, gdefSize), left_{left}, right_{right} {}
 
-  void apply(View subtable, const bool firstOfItsLookup, const unsigned left, const unsigned right) {
-    if (firstOfItsLookup) matched = false;
-    if (matched) return;
+  int32_t total() const { return total_; }
+  bool covered() const { return covered_; }
+
+  // A lookup starts: its subtables' matches start afresh, and its flags decide
+  // which of them the pair is looked up in.
+  void startLookup(View lookup) {
+    matched_ = false;
+    mode_ = modeFor(lookup);
+  }
+
+  void apply(View subtable) {
+    if (matched_ || mode_ == Mode::Skip || (mode_ == Mode::CoverOnly && covered_)) return;
     bool found = false;
-    const int32_t value = pairAdjustment(subtable, left, right, found, covered);
+    const int32_t value = pairAdjustment(subtable, left_.glyph, right_.glyph, mode_ == Mode::Match, found, covered_);
     if (found) {
-      total += value;
-      matched = true;
+      total_ += value;
+      matched_ = true;
     }
   }
+
+ private:
+  // What a lookup does with the pair: kern it, skip it (it skips the left
+  // glyph: no right glyph kerns with it), or only find whether it covers the
+  // left glyph (it skips just the right one).
+  enum class Mode : uint8_t { Match, CoverOnly, Skip };
+
+  Mode modeFor(View lookup) {
+    const unsigned flags = lookup.u16(2);
+    if ((flags & kSkippingFlags) == 0 || gdef_.empty()) return Mode::Match;
+    unsigned markSet = 0;
+    if (flags & kUseMarkFilteringSet) {
+      // The set's index follows the subtable offsets.
+      const size_t at = 6 + size_t(lookup.u16(4)) * 2;
+      if (!lookup.has(at, 2)) return Mode::Skip;
+      markSet = lookup.u16(at);
+    }
+    if (skips(gdef_, flags, markSet, left_)) return Mode::Skip;
+    return skips(gdef_, flags, markSet, right_) ? Mode::CoverOnly : Mode::Match;
+  }
+
+  const Gdef gdef_;
+  PairGlyph left_;
+  PairGlyph right_;
+  int32_t total_ = 0;
+  bool covered_ = false;
+  bool matched_ = false;  // in the current lookup
+  Mode mode_ = Mode::Match;
 };
 
 }  // namespace
 
-int32_t PairKernAdjustment(const uint8_t* gposBytes, size_t gposSize, uint32_t leftGlyph, uint32_t rightGlyph) {
+int32_t PairKernAdjustment(const uint8_t* gposBytes, size_t gposSize, uint32_t leftGlyph, uint32_t rightGlyph,
+                           const uint8_t* gdefBytes, size_t gdefSize) {
   if (gposBytes == nullptr || leftGlyph == 0 || rightGlyph == 0) return 0;
   const View gpos{gposBytes, gposSize};
   if (!gpos.has(0, 10)) return 0;
-  Accumulator sum;
-  forEachKernSubtable(gpos, kQueryBudget,
-                      [&](View subtable, const bool first) { sum.apply(subtable, first, leftGlyph, rightGlyph); });
-  return sum.total;
+  Accumulator sum(leftGlyph, rightGlyph, gdefBytes, gdefSize);
+  forEachKernLookup(
+      gpos, kQueryBudget, [&](View lookup) { sum.startLookup(lookup); }, [&](View subtable) { sum.apply(subtable); });
+  return sum.total();
+}
+
+int32_t PairKernAdjustment(const uint8_t* gposBytes, size_t gposSize, uint32_t leftGlyph, uint32_t rightGlyph) {
+  return PairKernAdjustment(gposBytes, gposSize, leftGlyph, rightGlyph, nullptr, 0);
 }
 
 unsigned ResolveKernSubtables(const uint8_t* gposBytes, size_t gposSize, uint32_t* subtables, unsigned capacity) {
@@ -216,32 +345,38 @@ unsigned ResolveKernSubtables(const uint8_t* gposBytes, size_t gposSize, uint32_
   const View gpos{gposBytes, gposSize};
   if (!gpos.has(0, 10)) return 0;
   unsigned count = 0;
-  forEachKernSubtable(gpos, kResolveBudget, [&](View subtable, const bool first) {
-    if (subtables != nullptr && count < capacity) {
-      subtables[count] = uint32_t(subtable.data - gposBytes) | (first ? kLookupStart : 0u);
-    }
+  const auto add = [&](View table, const uint32_t mark) {
+    if (subtables != nullptr && count < capacity) subtables[count] = uint32_t(table.data - gposBytes) | mark;
     ++count;
-  });
+  };
+  forEachKernLookup(
+      gpos, kResolveBudget, [&](View lookup) { add(lookup, kLookupStart); }, [&](View subtable) { add(subtable, 0); });
   return count;
 }
 
 int32_t PairKernAdjustment(const uint8_t* gposBytes, size_t gposSize, const uint32_t* subtables, unsigned count,
-                           uint32_t leftGlyph, uint32_t rightGlyph, bool* covered) {
-  Accumulator sum;
+                           uint32_t leftGlyph, uint32_t rightGlyph, const uint8_t* gdefBytes, size_t gdefSize,
+                           bool* covered) {
+  Accumulator sum(leftGlyph, rightGlyph, gdefBytes, gdefSize);
   if (gposBytes != nullptr && subtables != nullptr && leftGlyph != 0 && rightGlyph != 0) {
     const View gpos{gposBytes, gposSize};
     for (unsigned i = 0; i < count; ++i) {
-      const bool first = (subtables[i] & kLookupStart) != 0;
-      const View subtable = gpos.sub(subtables[i] & ~kLookupStart);
-      if (subtable.data != nullptr) {
-        sum.apply(subtable, first, leftGlyph, rightGlyph);
-      } else if (first) {
-        sum.matched = false;  // a lookup whose first subtable cannot be read still starts afresh
+      // A lookup whose entry cannot be read still starts afresh, unflagged.
+      const View table = gpos.sub(subtables[i] & ~kLookupStart);
+      if (subtables[i] & kLookupStart) {
+        sum.startLookup(table);
+      } else if (table.data != nullptr) {
+        sum.apply(table);
       }
     }
   }
-  if (covered != nullptr) *covered = sum.covered;
-  return sum.total;
+  if (covered != nullptr) *covered = sum.covered();
+  return sum.total();
+}
+
+int32_t PairKernAdjustment(const uint8_t* gposBytes, size_t gposSize, const uint32_t* subtables, unsigned count,
+                           uint32_t leftGlyph, uint32_t rightGlyph, bool* covered) {
+  return PairKernAdjustment(gposBytes, gposSize, subtables, count, leftGlyph, rightGlyph, nullptr, 0, covered);
 }
 
 }  // namespace gpos

@@ -119,9 +119,10 @@ invalidation, and a null-pointer safety check on `Gsub::LigatureGlyphId`.
 
 Covers the GPOS and legacy kern table readers (FreeInkOpenType): both PairPos
 formats, the `kern` feature under any script, lookups adding up, the
-resolved-once API against the per-call walk, malformed-table robustness, and
-on DejaVuSans the resolved reader against the per-call one and the kern table
-reader against `FT_Get_Kerning`.
+LookupFlag filtering GDEF feeds (glyph classes, mark attachment classes and
+mark glyph sets), the resolved-once API against the per-call walk,
+malformed-table robustness, and on DejaVuSans the resolved reader against the
+per-call one and the kern table reader against `FT_Get_Kerning`.
 
 ## BLE HID host
 
