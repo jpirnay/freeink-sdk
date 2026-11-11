@@ -1056,6 +1056,17 @@ void FreeInkDisplay::displayGray8Canvas(RefreshMode mode, bool turnOffScreen) {
   // No swapBuffers(), for the same reason displayGrayscaleFrame() omits it: the
   // driver diffs against its own panel buffer and never reads `prev`, so a swap
   // would only leave frameBuffer pointing at an older page.
+  //
+  // But keep frameBuffer as the displayed copy, as the single push does
+  // (keepDisplayedCopy): the caller drew the frame's 1-bit image there and
+  // stamped it onto the canvas, so it is the nearest the host has to what is
+  // on the glass. Left as it was, syncWriteBufferFromActive() handed whatever
+  // paints over the screen (a popup, the light drawer, a screenshot) the frame
+  // from before this one. Not claimed to match the glass: the canvas carries
+  // grey that the copy does not.
+#ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
+  if (frameBuffer && frameBufferActive) memcpy(frameBufferActive, frameBuffer, bufferSize);
+#endif
 }
 
 void FreeInkDisplay::displayGrayBuffer(bool turnOffScreen, const unsigned char* lut, bool factoryMode) {
