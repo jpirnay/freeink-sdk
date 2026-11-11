@@ -250,7 +250,9 @@ as HarfBuzz does: a lookup that skips either glyph of the pair (a base glyph,
 ligature or mark by its GDEF class, or a mark outside the lookup's mark
 attachment class or mark glyph set) does not kern it. With adjacent pairs
 only, a skipped glyph is not looked past, as a shaper would. Without `GDEF`
-every glyph is unclassified and no lookup skips it. FtFont loads `GDEF` with
+every glyph is unclassified and no lookup skips it. `KernsByGdefClass()` tells
+whether a font's kerning depends on its GDEF at all, for a caller that kept
+pairs kerned without it. FtFont loads `GDEF` with
 `GPOS`, a streamed face's copy counting against the same budget.
 `PairKernAdjustment(gpos, size, left, right, gdef, gdefSize)` walks the
 script, feature and lookup lists on every call. A caller kerning many pairs

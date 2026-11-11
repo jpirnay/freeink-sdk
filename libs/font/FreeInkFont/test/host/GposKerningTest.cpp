@@ -519,6 +519,68 @@ void testLookupFlags() {
   }
 }
 
+// KernsByGdefClass(): whether a font's kerning depends on its GDEF, as a cache of pairs kerned without it must know.
+void testKernsByGdefClass() {
+  using freeink::font::gpos::KernsByGdefClass;
+  const auto kerns = [](const std::vector<uint8_t>& gpos, const std::vector<uint8_t>& gdef) {
+    return KernsByGdefClass(gpos.data(), gpos.size(), gdef.empty() ? nullptr : gdef.data(), gdef.size());
+  };
+  const auto bases = syntheticGdef(1, 1);
+  expect(!kerns(syntheticGpos(0x000E), {}), "without GDEF nothing depends on it");
+  expect(!kerns(syntheticGpos(0), bases), "unflagged lookups do not depend on GDEF");
+  expect(!kerns(syntheticGpos(0x0001), bases), "nor do RightToLeft ...");
+  expect(!kerns(syntheticGpos(0x0020), bases), "... or the reserved bits");
+  expect(kerns(syntheticGpos(0x0002), bases), "a lookup that skips base glyphs depends on GDEF");
+  expect(kerns(syntheticGpos(0x0004), bases), "so does one that skips ligatures");
+  expect(!kerns(syntheticGpos(0x0008), bases), "IgnoreMarks over pairs that hold no mark changes nothing");
+  expect(!kerns(syntheticGpos(0x0700), bases), "nor does a mark attachment class");
+  expect(kerns(syntheticGpos(0x0008), syntheticGdef(3, 1)), "IgnoreMarks with a mark in the coverage depends");
+  expect(kerns(syntheticGpos(0x0008), syntheticGdef(1, 3)), "IgnoreMarks with a mark as a second glyph depends");
+  expect(kerns(syntheticGpos(0x0010, 0), syntheticGdef(1, 3)), "so does a mark filtering set");
+  // Format 2 alone: a mark that ClassDef2 classes.
+  const auto classPairs = gposWith({{"latn", {0}}}, {lookup(2, pairPos2(30, 40, -45), false, 0x0008)});
+  expect(kerns(classPairs, syntheticGdef(1, 3)), "a mark ClassDef2 classes is a second glyph");
+  expect(!kerns(classPairs, bases), "format 2 without a mark changes nothing");
+
+  // A coverage of 5 x 65,535 glyphs and a mark past them all: the check stops at its bound and answers true.
+  std::vector<uint8_t> huge;
+  appendU16be(huge, 1);   // PosFormat 1
+  appendU16be(huge, 10);  // Coverage right after this header
+  appendU16be(huge, 0x0004);
+  appendU16be(huge, 0);
+  appendU16be(huge, 0);  // PairSetCount
+  appendU16be(huge, 2);  // Coverage format 2
+  appendU16be(huge, 5);
+  for (int r = 0; r < 5; ++r) {
+    appendU16be(huge, 0);
+    appendU16be(huge, 0xFFFE);
+    appendU16be(huge, 0);
+  }
+  std::vector<uint8_t> lastIsMark;
+  appendU32be(lastIsMark, 0x00010000);
+  appendU16be(lastIsMark, 12);
+  appendU16be(lastIsMark, 0);
+  appendU16be(lastIsMark, 0);
+  appendU16be(lastIsMark, 0);
+  appendBlob(lastIsMark, classDefSingle(0xFFFF, 3));
+  const auto start = std::chrono::steady_clock::now();
+  expect(kerns(gposWith({{"latn", {0}}}, {lookup(2, huge, false, 0x0008)}), lastIsMark),
+         "past its bound the check answers true");
+  expect(std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count() < 1.0,
+         "a hostile coverage costs bounded time");
+  // Truncated and corrupted tables stay in bounds.
+  const auto gpos = syntheticGpos(0x0008);
+  const auto gdef = syntheticGdef(1, 3);
+  for (size_t len = 0; len <= gdef.size(); ++len) (void)KernsByGdefClass(gpos.data(), gpos.size(), gdef.data(), len);
+  for (size_t len = 0; len <= gpos.size(); ++len) (void)KernsByGdefClass(gpos.data(), len, gdef.data(), gdef.size());
+  for (size_t i = 0; i < gpos.size(); ++i) {
+    auto corrupt = gpos;
+    corrupt[i] ^= 0xFF;
+    (void)KernsByGdefClass(corrupt.data(), corrupt.size(), gdef.data(), gdef.size());
+  }
+  expect(true, "KernsByGdefClass truncation and corruption sweeps completed");
+}
+
 // sfnt table lookup for plain (non-collection) fonts — enough for fixtures.
 bool findTable(const std::vector<uint8_t>& font, const char* tag, size_t& offset, size_t& length) {
   if (font.size() < 12) return false;
@@ -603,6 +665,7 @@ int main(int argc, char** argv) {
   }
   expect(true, "truncation/corruption sweep completed");
   testLookupFlags();
+  testKernsByGdefClass();
 
   // --- Lookups and scripts --------------------------------------------------
   using freeink::font::gpos::ResolveKernSubtables;
@@ -785,6 +848,13 @@ int main(int argc, char** argv) {
       expect(stripTable(filteredNoGdef, "GDEF"), "fixture's GDEF stripped");
       expect(resident.init(filteredNoGdef.data(), uint32_t(filteredNoGdef.size()), 32), "GDEF-stripped font parses");
       expect(resident.kerning26_6('A', 'V', 32u * 64u) == viaGpos, "without GDEF the flags skip nothing");
+      size_t flaggedGpos = 0, flaggedGposLength = 0;
+      expect(findTable(filtered, "GPOS", flaggedGpos, flaggedGposLength), "flagged fixture has GPOS");
+      expect(freeink::font::gpos::KernsByGdefClass(&filtered[flaggedGpos], flaggedGposLength, &filtered[gdefOffset],
+                                                   gdefLength),
+             "with Caecilia's flags DejaVu's kerning depends on GDEF");
+      expect(!freeink::font::gpos::KernsByGdefClass(&font[gposOffset], gposLength, &font[gdefOffset], gdefLength),
+             "with its own (none) it does not");
 
       FtFont stream;
       expect(stream.initStream(readMemory, &filtered, filtered.size(), 32), "filtered streamed font parses");

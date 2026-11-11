@@ -64,6 +64,17 @@ int32_t PairKernAdjustment(const uint8_t* gposBytes, size_t gposSize, uint32_t l
 // The same without GDEF: every glyph unclassified.
 int32_t PairKernAdjustment(const uint8_t* gposBytes, size_t gposSize, uint32_t leftGlyph, uint32_t rightGlyph);
 
+// Whether GDEF changes how this font kerns: a lookup ResolveKernSubtables()
+// resolves (the 'kern' feature's, see above) skips base glyphs or ligatures, or
+// skips marks (IgnoreMarks, a MarkAttachmentType, UseMarkFilteringSet) and can
+// kern a pair holding a mark (one in its coverage, or among its second
+// glyphs: format 1's records, the glyphs format 2's ClassDef2 classes). False
+// without a GDEF these readers read. A caller that kept pairs kerned without
+// GDEF (a cache from before) need drop them only for such a font. A format 2
+// subtable kerning the glyphs its ClassDef2 leaves in class 0 is not looked
+// at. Bounded: past about 260,000 glyph checks the answer is true.
+bool KernsByGdefClass(const uint8_t* gposBytes, size_t gposSize, const uint8_t* gdefBytes, size_t gdefSize);
+
 // --- Resolved once, for many pairs ---
 
 // The kern feature's lookups in the order they apply, each followed by its

@@ -120,7 +120,8 @@ invalidation, and a null-pointer safety check on `Gsub::LigatureGlyphId`.
 Covers the GPOS and legacy kern table readers (FreeInkOpenType): both PairPos
 formats, the `kern` feature under any script, lookups adding up, the
 LookupFlag filtering GDEF feeds (glyph classes, mark attachment classes and
-mark glyph sets), the resolved-once API against the per-call walk,
+mark glyph sets) and whether a font's kerning depends on it
+(`KernsByGdefClass`), the resolved-once API against the per-call walk,
 malformed-table robustness, and on DejaVuSans the resolved reader against the
 per-call one, the kern table reader against `FT_Get_Kerning`, and GDEF in
 resident and streamed faces under the combined GPOS + GDEF stream budget.

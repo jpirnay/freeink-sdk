@@ -131,6 +131,7 @@ class Gdef {
     if (bytes != nullptr && table.has(0, 12) && table.u16(0) == 1) table_ = table;
   }
   bool empty() const { return table_.data == nullptr; }
+  View classDef() const { return table_.sub(table_.u16(4)); }
   GlyphClass glyphClass(unsigned glyph) const {
     return static_cast<GlyphClass>(otl::glyphClass(table_.sub(table_.u16(4)), glyph));
   }
@@ -336,7 +337,141 @@ class Accumulator {
   Mode mode_ = Mode::Unread;
 };
 
+// The glyphs GDEF classes as marks, as a few ranges where they lie together, as fonts put them; past kMaxRanges of
+// them, each glyph is looked up in GDEF itself.
+class MarkGlyphs {
+ public:
+  explicit MarkGlyphs(const Gdef& gdef) : gdef_(gdef) {
+    const View classes = gdef.classDef();
+    const unsigned format = classes.u16(0);
+    if (format == 1) {
+      const unsigned start = classes.u16(2);
+      const unsigned count = classes.u16(4) < otl::kMaxRanges ? classes.u16(4) : otl::kMaxRanges;
+      if (!classes.has(6, size_t(count) * 2)) return;
+      for (unsigned i = 0; i < count; ++i) {
+        if (classes.u16(6 + i * 2) == unsigned(GlyphClass::Mark)) add(start + i, start + i);
+      }
+    } else if (format == 2) {
+      const unsigned count = classes.u16(2) < otl::kMaxRanges ? classes.u16(2) : otl::kMaxRanges;
+      if (!classes.has(4, size_t(count) * 6)) return;
+      for (unsigned i = 0; i < count; ++i) {
+        const size_t record = 4 + size_t(i) * 6;
+        if (classes.u16(record + 4) == unsigned(GlyphClass::Mark)) add(classes.u16(record), classes.u16(record + 2));
+      }
+    }
+  }
+
+  bool any() const { return count_ != 0 || overflow_; }
+  bool isMark(unsigned glyph) const {
+    if (overflow_) return gdef_.glyphClass(glyph) == GlyphClass::Mark;
+    for (unsigned i = 0; i < count_; ++i) {
+      if (glyph >= first_[i] && glyph <= last_[i]) return true;
+    }
+    return false;
+  }
+
+ private:
+  static constexpr unsigned kMaxRanges = 32;
+
+  void add(unsigned first, unsigned last) {
+    if (overflow_ || last < first) return;
+    if (count_ != 0 && first == last_[count_ - 1] + 1u) {
+      last_[count_ - 1] = uint16_t(last);
+    } else if (count_ == kMaxRanges) {
+      overflow_ = true;
+    } else {
+      first_[count_] = uint16_t(first);
+      last_[count_] = uint16_t(last);
+      ++count_;
+    }
+  }
+
+  const Gdef& gdef_;
+  uint16_t first_[kMaxRanges] = {};
+  uint16_t last_[kMaxRanges] = {};
+  unsigned count_ = 0;
+  bool overflow_ = false;
+};
+
+// Glyph checks KernsByGdefClass() makes at most; past them it answers true. Real kern tables need tens of thousands.
+constexpr unsigned kMaxGlyphChecks = 1u << 18;
+
+// Whether a PairPos subtable can kern a pair holding a mark: one in its coverage (a first glyph), or among its second
+// glyphs (format 1's pair records, the glyphs format 2's ClassDef2 gives a class). Counts its glyph checks in `work`.
+bool pairsHoldAMark(View subtable, const MarkGlyphs& marks, unsigned& work) {
+  const auto anyMarkIn = [&](View classOrCoverage, const bool classDef) {
+    const unsigned format = classOrCoverage.u16(0);
+    if (format == 1) {
+      // Coverage: a glyph list; ClassDef: a start and a class each, glyphs of class 0 not counting.
+      const unsigned start = classDef ? classOrCoverage.u16(2) : 0;
+      const size_t at = classDef ? 6 : 4;
+      const unsigned raw = classOrCoverage.u16(classDef ? 4 : 2);
+      const unsigned count = raw < otl::kMaxRanges ? raw : otl::kMaxRanges;
+      if (!classOrCoverage.has(at, size_t(count) * 2)) return false;
+      for (unsigned i = 0; i < count; ++i) {
+        if (++work > kMaxGlyphChecks) return true;
+        const unsigned value = classOrCoverage.u16(at + i * 2);
+        if (classDef ? (value != 0 && marks.isMark(start + i)) : marks.isMark(value)) return true;
+      }
+      return false;
+    }
+    if (format == 2) {
+      const unsigned raw = classOrCoverage.u16(2);
+      const unsigned count = raw < otl::kMaxRanges ? raw : otl::kMaxRanges;
+      if (!classOrCoverage.has(4, size_t(count) * 6)) return false;
+      for (unsigned i = 0; i < count; ++i) {
+        const size_t record = 4 + size_t(i) * 6;
+        if (classDef && classOrCoverage.u16(record + 4) == 0) continue;
+        for (unsigned glyph = classOrCoverage.u16(record); glyph <= classOrCoverage.u16(record + 2); ++glyph) {
+          if (++work > kMaxGlyphChecks) return true;
+          if (marks.isMark(glyph)) return true;
+        }
+      }
+    }
+    return false;
+  };
+  if (anyMarkIn(subtable.sub(subtable.u16(2)), false)) return true;
+  if (subtable.u16(0) == 2) return anyMarkIn(subtable.sub(subtable.u16(10)), true);
+  // Format 1: every pair record's second glyph.
+  const unsigned len1 = valueRecordSize(subtable.u16(4));
+  const unsigned len2 = valueRecordSize(subtable.u16(6));
+  const size_t recordSize = 2 + size_t(len1) + len2;
+  const unsigned setCount = subtable.u16(8);
+  if (!subtable.has(10, size_t(setCount) * 2)) return false;
+  for (unsigned i = 0; i < setCount; ++i) {
+    const View set = subtable.sub(subtable.u16(10 + i * 2));
+    const unsigned pairCount = set.u16(0);
+    if (!set.has(2, size_t(pairCount) * recordSize)) continue;
+    for (unsigned k = 0; k < pairCount; ++k) {
+      if (++work > kMaxGlyphChecks) return true;
+      if (marks.isMark(set.u16(2 + k * recordSize))) return true;
+    }
+  }
+  return false;
+}
+
 }  // namespace
+
+bool KernsByGdefClass(const uint8_t* gposBytes, size_t gposSize, const uint8_t* gdefBytes, size_t gdefSize) {
+  const Gdef gdef(gdefBytes, gdefSize);
+  const View gpos{gposBytes, gposSize};
+  if (gposBytes == nullptr || gdef.empty() || !gpos.has(0, 10)) return false;
+  const MarkGlyphs marks(gdef);
+  bool kerns = false;
+  unsigned flags = 0;
+  unsigned work = 0;
+  forEachKernLookup(
+      gpos, kResolveBudget, [&](View lookup) { flags = lookup.u16(2); },
+      [&](View subtable) {
+        if (kerns || (flags & kSkippingFlags) == 0) return;
+        if (flags & (kIgnoreBaseGlyphs | kIgnoreLigatures)) {
+          kerns = true;  // most of a font's glyphs are base glyphs; ligatures kern as letters do
+        } else if (marks.any()) {
+          kerns = pairsHoldAMark(subtable, marks, work);
+        }
+      });
+  return kerns;
+}
 
 int32_t PairKernAdjustment(const uint8_t* gposBytes, size_t gposSize, uint32_t leftGlyph, uint32_t rightGlyph,
                            const uint8_t* gdefBytes, size_t gdefSize) {
