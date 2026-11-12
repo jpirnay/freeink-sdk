@@ -119,7 +119,8 @@ reference port at **`lib/Board_T5S3/FreeInkLgfxConfig.cpp`**.
   microamp-class one.
 - **PCA9535 user button** — a second button behind the I²C expander.
   `InputManager::setButtonHook()` takes a board callback that reads the PCA9535 and
-  returns a `BTN_*` bitmask, so `InputManager` carries no expander code. This
+  returns a `BTN_*` bitmask, so `InputManager` carries no expander code; an app can
+  add hooks of its own beside it with `addButtonHook()`. This
   button is not a deep-sleep wake source (neither is it in the reference port).
 
 ## Board-support (outside the SDK)

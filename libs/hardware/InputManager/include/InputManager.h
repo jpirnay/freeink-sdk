@@ -241,17 +241,26 @@ class InputManager {
   // and refuses to report the pin at all on a profile that claims otherwise.
   bool touchWakeIrqActiveLow() const;
 
-  // Optional board hook for buttons that aren't direct GPIOs — e.g. a key
-  // behind an I2C IO-expander (the LilyGo T5 S3 user button on its PCA9535). It
-  // returns a (1<<BTN_*) bitmask that is OR'd into every update(); the board
-  // reads its expander, so InputManager itself stays device-agnostic. Default:
-  // none.
+  // Optional hooks for buttons that aren't direct GPIOs — e.g. a key behind an
+  // I2C IO-expander (the LilyGo T5 S3 user button on its PCA9535), or presses an
+  // app synthesizes (a test driver holding a key). Each returns a (1<<BTN_*)
+  // bitmask; every installed hook's mask is OR'd into every update(), before the
+  // debounce, so InputManager itself stays device-agnostic. Default: none.
+  //
+  // Install hooks while setting up, before input is polled from another task:
+  // the list is read without a lock.
   using ButtonHook = uint8_t (*)();
-  static void setButtonHook(ButtonHook hook) { s_buttonHook = hook; }
-  // True once a board has installed such a hook. Lets a host tell that some of
-  // its buttons are NOT readable as GPIO levels — e.g. a GPIO-interrupt idle
-  // wait cannot see them and must keep polling instead.
-  static bool hasButtonHook() { return s_buttonHook != nullptr; }
+  static constexpr uint8_t MAX_BUTTON_HOOKS = 4;
+  // The board's hook: replaces every hook installed so far (nullptr: none), as
+  // the single hook slot this replaced did.
+  static void setButtonHook(ButtonHook hook);
+  // One more hook beside the others. True when it is installed (also when it
+  // already was); false for nullptr or when all MAX_BUTTON_HOOKS slots are taken.
+  static bool addButtonHook(ButtonHook hook);
+  // True once any hook is installed. Lets a host tell that some of its buttons
+  // are NOT readable as GPIO levels — e.g. a GPIO-interrupt idle wait cannot see
+  // them and must keep polling instead.
+  static bool hasButtonHook() { return s_buttonHookCount != 0; }
 
   // Boards such as Sticky wire OK/confirm and power/wake to the same GPIO. By
   // default a short click emits CONFIRM and a hold emits POWER. Apps that
@@ -324,7 +333,10 @@ class InputManager {
   void readButtonAdc(ButtonAdcSample& group1, ButtonAdcSample& group2);
 
  private:
-  static ButtonHook s_buttonHook;
+  static ButtonHook s_buttonHooks[MAX_BUTTON_HOOKS];
+  static uint8_t s_buttonHookCount;
+  // Every installed hook's mask, OR'd.
+  static uint8_t readButtonHooks();
 
   QueueHandle_t _asyncQueue = nullptr;
   QueueHandle_t _asyncTapQueue = nullptr;
