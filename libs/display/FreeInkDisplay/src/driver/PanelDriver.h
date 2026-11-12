@@ -198,6 +198,12 @@ class PanelDriver {
   // state -- a driver advertises that with supportsGrayFrame(). Everyone else
   // keeps the two-push base + displayGray() flow.
   virtual bool supportsGrayFrame() const { return false; }
+  // The single push above keeps its greys on an INVERTED frame (FreeInkDisplay::setInverted, dark
+  // mode): once setBackgroundHint(true) has told it the ink is white, the driver puts each grey where
+  // it belongs beside white ink, and it is done with `fb` by the time displayGrayFrame() or
+  // displayGrayFrameStart() returns, so the facade can turn the host's frame back at once. Everyone
+  // else answers false, and the facade sends their frames B/W while inverted.
+  virtual bool invertsGrayFrame() const { return false; }
   // One-pass text: this panel can put a text page and its grays up in one waveform. Only the
   // host decides when: setReaderRefresh(true) makes supportsGrayFrame() answer for the frames
   // that follow, and copyGrayscale* stage instead of upload, so a host sets it around a page

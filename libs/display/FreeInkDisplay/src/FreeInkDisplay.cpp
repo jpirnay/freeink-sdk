@@ -950,7 +950,11 @@ void FreeInkDisplay::displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t 
 #endif
 }
 
-bool FreeInkDisplay::supportsGrayFrame() const { return !_inverted && _driver && _driver->supportsGrayFrame(); }
+bool FreeInkDisplay::supportsGrayFrame() const {
+  return _driver && (!_inverted || _driver->invertsGrayFrame()) && _driver->supportsGrayFrame();
+}
+
+bool FreeInkDisplay::invertsGrayFrame() const { return _driver && _driver->invertsGrayFrame(); }
 
 bool FreeInkDisplay::supportsOnePassText() const { return _driver && _driver->supportsOnePassText(); }
 
@@ -1011,27 +1015,33 @@ void FreeInkDisplay::displayOnePassFrame(RefreshMode mode, bool turnOffScreen) {
 }
 
 void FreeInkDisplay::triggerGrayscaleFrame(RefreshMode mode, bool turnOffScreen) {
-  if (_inverted || _inversionDirty || !_driver || !_driver->supportsGrayFrame()) {
+  if (_inversionDirty || !supportsGrayFrame()) {
     displayBuffer(mode, turnOffScreen);
     return;
   }
   DisplayPmLock pmLock;
   syncPendingAsync();
   _shadowValid = false;
+  // Inverted: the driver composes from the frame the panel shows, and is done with it on return
+  // (PanelDriver::invertsGrayFrame), so the host's frame is turned back at once.
+  if (_inverted) invertBytes(frameBuffer, bufferSize);
   _refreshPending = _driver->displayGrayFrameStart(_bus, frameBuffer, toInternal(mode), turnOffScreen);
+  if (_inverted) invertBytes(frameBuffer, bufferSize);
   // No swapBuffers(), for the same reason displayGrayscaleFrame() omits it -- see there.
   keepDisplayedCopy();
 }
 
 void FreeInkDisplay::displayGrayscaleFrame(RefreshMode mode, bool turnOffScreen) {
-  if (_inverted || _inversionDirty || !_driver || !_driver->supportsGrayFrame()) {
+  if (_inversionDirty || !supportsGrayFrame()) {
     displayBuffer(mode, turnOffScreen);
     return;
   }
   DisplayPmLock pmLock;
   syncPendingAsync();
   _shadowValid = false;
+  if (_inverted) invertBytes(frameBuffer, bufferSize);  // as in triggerGrayscaleFrame()
   _driver->displayGrayFrame(_bus, frameBuffer, toInternal(mode), turnOffScreen);
+  if (_inverted) invertBytes(frameBuffer, bufferSize);
   keepDisplayedCopy();
   // Deliberately NO swapBuffers(), unlike displayBuffer().
   //
@@ -1125,7 +1135,9 @@ void FreeInkDisplay::displayGrayCalibration(uint16_t customX, uint16_t customY, 
 void FreeInkDisplay::refreshDisplay(RefreshMode mode, bool turnOffScreen) { displayBuffer(mode, turnOffScreen); }
 
 void FreeInkDisplay::copyGrayscaleBuffers(const uint8_t* lsbBuffer, const uint8_t* msbBuffer) {
-  if (_inverted) return;
+  // Inverted, the planes are staged only for a driver whose single push mirrors them (invertsGrayFrame()):
+  // left out, its next push would compose the planes of an earlier page.
+  if (_inverted && !invertsGrayFrame()) return;
   DisplayPmLock pmLock;
   syncPendingAsync();  // RAM writes must not race a deferred refresh
   if (!acceptGrayscaleRows(0, lsbBuffer, 0, getDisplayHeight())) return;
@@ -1227,7 +1239,7 @@ void FreeInkDisplay::preconditionGrayscale(uint16_t x, uint16_t y, uint16_t w, u
 }
 
 void FreeInkDisplay::copyGrayscaleLsbBuffers(const uint8_t* lsbBuffer) {
-  if (_inverted) return;
+  if (_inverted && !invertsGrayFrame()) return;  // see copyGrayscaleBuffers()
   DisplayPmLock pmLock;
   syncPendingAsync();
   if (!acceptGrayscaleRows(0, lsbBuffer, 0, getDisplayHeight())) return;
@@ -1235,7 +1247,7 @@ void FreeInkDisplay::copyGrayscaleLsbBuffers(const uint8_t* lsbBuffer) {
 }
 
 void FreeInkDisplay::copyGrayscaleMsbBuffers(const uint8_t* msbBuffer) {
-  if (_inverted) return;
+  if (_inverted && !invertsGrayFrame()) return;  // see copyGrayscaleBuffers()
   DisplayPmLock pmLock;
   syncPendingAsync();
   if (!acceptGrayscaleRows(1, msbBuffer, 0, getDisplayHeight())) return;
