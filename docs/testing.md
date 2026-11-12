@@ -35,6 +35,7 @@ sh libs/book/ContentProtection/test/host/run.sh
 sh libs/hardware/InputManager/test/host/run.sh
 sh libs/hardware/InputManager/test/host/run_metalio.sh
 sh libs/hardware/InputManager/test/host/run_chsc6x_touch.sh
+sh libs/hardware/InputManager/test/host/run_button_hooks.sh
 sh libs/hardware/HapticManager/test/host/run.sh
 ```
 

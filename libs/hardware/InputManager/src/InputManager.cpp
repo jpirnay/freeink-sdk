@@ -227,14 +227,14 @@ uint8_t InputManager::getState() {
       }
     }
     state |= serviceTouch();
-    if (s_buttonHook) state |= s_buttonHook();
+    state |= readButtonHooks();
     return state;
   }
 
   if (BoardConfig::ACTIVE.inputStyle != BoardConfig::InputStyle::XteinkAdcLadder) {
     state = getDigitalState();
-    state |= serviceTouch();                    // run the touch machine; OR any synthesized button
-    if (s_buttonHook) state |= s_buttonHook();  // board buttons (e.g. I2C expander)
+    state |= serviceTouch();     // run the touch machine; OR any synthesized button
+    state |= readButtonHooks();  // board buttons (e.g. I2C expander)
     return state;
   }
 
@@ -259,11 +259,38 @@ uint8_t InputManager::getState() {
   }
 
   state |= serviceTouch();
-  if (s_buttonHook) state |= s_buttonHook();  // board buttons (e.g. I2C expander)
+  state |= readButtonHooks();  // board buttons (e.g. I2C expander)
   return state;
 }
 
-InputManager::ButtonHook InputManager::s_buttonHook = nullptr;
+InputManager::ButtonHook InputManager::s_buttonHooks[InputManager::MAX_BUTTON_HOOKS] = {};
+uint8_t InputManager::s_buttonHookCount = 0;
+
+void InputManager::setButtonHook(const ButtonHook hook) {
+  for (ButtonHook& slot : s_buttonHooks) slot = nullptr;
+  s_buttonHookCount = 0;
+  if (hook) {
+    s_buttonHooks[0] = hook;
+    s_buttonHookCount = 1;
+  }
+}
+
+bool InputManager::addButtonHook(const ButtonHook hook) {
+  if (!hook) return false;
+  for (uint8_t i = 0; i < s_buttonHookCount; ++i) {
+    if (s_buttonHooks[i] == hook) return true;
+  }
+  if (s_buttonHookCount == MAX_BUTTON_HOOKS) return false;
+  s_buttonHooks[s_buttonHookCount] = hook;  // the slot first, then the count that makes it visible
+  ++s_buttonHookCount;
+  return true;
+}
+
+uint8_t InputManager::readButtonHooks() {
+  uint8_t state = 0;
+  for (uint8_t i = 0; i < s_buttonHookCount; ++i) state |= s_buttonHooks[i]();
+  return state;
+}
 
 #if FREEINK_DEVICE_PICCO
 namespace {
@@ -539,7 +566,7 @@ void InputManager::updateConfirmPowerHold(const unsigned long currentTime) {
   const bool pressed = isDigitalPressed(sharedPin);
   uint8_t nonSharedState = getDigitalState();
   nonSharedState |= serviceTouch();
-  if (s_buttonHook) nonSharedState |= s_buttonHook();
+  nonSharedState |= readButtonHooks();
   bool emitConfirmClick = false;
 
   if (pressed && !confirmPowerPhysicalPressed) {
@@ -585,7 +612,7 @@ void InputManager::updateDigitalTwoButton(const unsigned long currentTime) {
   const bool down = isDigitalPressed(BoardConfig::ACTIVE.input.down);
   const uint8_t physical = static_cast<uint8_t>((up ? 1u : 0u) | (down ? 2u : 0u));
   uint8_t auxiliaryState = serviceTouch();
-  if (s_buttonHook) auxiliaryState |= s_buttonHook();
+  auxiliaryState |= readButtonHooks();
 #if FREEINK_DEVICE_PAPERMONO
   // The power button reaches only the PM1 PMIC; clicks surface here as a
   // one-tick BTN_POWER pulse in the STATE, so applyStateChange() emits the
