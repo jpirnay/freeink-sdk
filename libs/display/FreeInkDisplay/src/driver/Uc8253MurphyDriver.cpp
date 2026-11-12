@@ -169,7 +169,28 @@ void Uc8253MurphyDriver::begin(EpdBus& bus) {
   initController(bus);
 }
 
+namespace {
+bool mostlyBlack(const uint8_t* frame, const size_t size) {
+  size_t white = 0;
+  for (size_t i = 0; i < size; i++) white += static_cast<size_t>(__builtin_popcount(frame[i]));
+  return white * 2 < size * 8;
+}
+}  // namespace
+
 void Uc8253MurphyDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
+  // One clean refresh from a mostly black glass to a light page leaves a gray veil on this panel. Measured with a
+  // camera after Dark Mode's white on black, and after a dark Quick Resume page woken into a light one: the page's
+  // background came out about 2% below the same page after a second clean refresh, and a third changed nothing. So
+  // that refresh runs twice. Only that one: light to dark measured clean in one pass, and so does every other.
+  const size_t size = static_cast<size_t>(_fbWb) * _fbH;
+  if (mode != RefreshMode::Fast && _shownValid && mostlyBlack(_shown, size) && !mostlyBlack(fb, size)) {
+    displayOnce(bus, fb, prev, mode, false);
+  }
+  displayOnce(bus, fb, prev, mode, turnOff);
+}
+
+void Uc8253MurphyDriver::displayOnce(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode,
+                                     bool turnOff) {
   // Manufacturer guidance: hardware-reset and re-initialise the controller before
   // every refresh. The UC8253 retains LUT/RAM state between refreshes, and reusing
   // it leaves pixels half-latched (the previous frame bleeds through / flashes

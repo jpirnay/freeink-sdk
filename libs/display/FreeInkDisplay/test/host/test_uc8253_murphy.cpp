@@ -450,6 +450,42 @@ void testAFastAfterOnePassDrivesItsGrayAway() {
   assert(uniformPlane(bus, 0x10, 0xFF));  // gray told it was white, so it takes the drive to black
 }
 
+// A clean refresh that lightens a mostly black glass runs twice: one leaves a gray veil on this panel (Dark Mode's white
+// on black, a dark Quick Resume page woken into a light one). Every other clean refresh runs once, and FAST never twice.
+void testLeavingADarkGlassTakesTwoCleanPasses() {
+  const auto cfg = withText();
+  const Bits white = blank(0xFF), black = blank(0x00);
+  Uc8253MurphyDriver driver(cfg);
+  EpdBus bus;
+  driver.begin(bus);
+  bus.clear();
+  driver.display(bus, white.data(), nullptr, RefreshMode::Half, false);  // nothing of ours on the glass yet
+  assert(count(bus, 0x12) == 1);
+  bus.clear();
+  driver.display(bus, black.data(), nullptr, RefreshMode::Half, false);  // light to dark
+  assert(count(bus, 0x12) == 1);
+  bus.clear();
+  driver.display(bus, white.data(), nullptr, RefreshMode::Half, false);  // dark to light: twice, both clean
+  assert(count(bus, 0x12) == 2 && count(bus, 0x10) == 2);
+  assert(last(bus, 0x10)->bytes == last(bus, 0x13)->bytes);
+  assert(!std::memcmp(last(bus, 0x22)->bytes.data(), MURPHY_LUT_22_DEFAULT, sizeof(MURPHY_LUT_22_DEFAULT)));
+  bus.clear();
+  driver.display(bus, white.data(), nullptr, RefreshMode::Full, false);  // light to light
+  assert(count(bus, 0x12) == 1);
+  driver.display(bus, black.data(), nullptr, RefreshMode::Half, false);
+  bus.clear();
+  driver.display(bus, white.data(), black.data(), RefreshMode::Fast, false);
+  assert(count(bus, 0x12) == 1);
+  // The reader's clean page with its grays, the two-pass route of displayGrayFrame(): both clean passes, then the nudge.
+  driver.setReaderRefresh(true);
+  driver.display(bus, black.data(), nullptr, RefreshMode::Half, false);
+  driver.copyGrayscaleLsb(bus, white.data());
+  driver.copyGrayscaleMsb(bus, black.data());
+  bus.clear();
+  driver.displayGrayFrame(bus, white.data(), RefreshMode::Half, false);
+  assert(count(bus, 0x12) == 3);
+}
+
 int main() {
   BoardConfig::ACTIVE.displayWidth = FB_W;
   BoardConfig::ACTIVE.displayHeight = FB_H;
@@ -472,5 +508,6 @@ int main() {
   testOnePassPicksEachPixelsDrive();
   testOnePassKeepsTwoPassesWhereItMust();
   testAFastAfterOnePassDrivesItsGrayAway();
+  testLeavingADarkGlassTakesTwoCleanPasses();
   std::cout << "PASS: UC8253 Murphy gray nudge and gray-aware FAST\n";
 }

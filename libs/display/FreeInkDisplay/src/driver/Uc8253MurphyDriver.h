@@ -95,6 +95,8 @@ class Uc8253MurphyDriver : public PanelDriver {
   void displayGrayFrame(EpdBus& bus, const uint8_t* fb, RefreshMode mode, bool turnOff) override;
 
  private:
+  // One refresh of display(): display() runs it twice where one leaves a veil (see there).
+  void displayOnce(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff);
   void initController(EpdBus& bus);
   void loadLut(EpdBus& bus, const Uc8253MurphyLutBank& bank);
   void writePlane(EpdBus& bus, uint8_t command, const uint8_t* fb);  // rotates 416x240 fb -> 240x416 RAM
