@@ -495,6 +495,9 @@ class FreeInkDisplay {
   // After a single-push grayscale frame, which leaves frameBuffer as the write buffer
   // (no swap): copy it into frameBufferActive, the displayed frame the host keeps.
   void keepDisplayedCopy();
+  // A single-push grayscale frame that goes out B/W instead (the first frame after a polarity change, or no single
+  // push to be had): displayBuffer(), then the buffers as the single push leaves them.
+  void displayBufferAsGrayFrame(RefreshMode mode, bool turnOffScreen);
   // Shared body of displayBufferAsync() / triggerDisplayAsync(): fire the
   // update and return while the waveform runs (_asyncPending set).
   void displayAsyncImpl(RefreshMode mode, bool turnOffScreen, bool noShadow = false);

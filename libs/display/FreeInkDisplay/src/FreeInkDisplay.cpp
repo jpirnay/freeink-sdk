@@ -1014,9 +1014,22 @@ void FreeInkDisplay::displayOnePassFrame(RefreshMode mode, bool turnOffScreen) {
   displayBuffer(mode, turnOffScreen);
 }
 
+// displayBuffer() ends in a swap; the single push does not, and its callers count on that (the firmware's renderer
+// keeps drawing into the frame it had). Left swapped, the write buffer holds an older page while the caller draws its
+// next page into the displayed copy, and the next single push composes the wrong frame against the glass: on the
+// Murphy the first page turn after leaving Dark Mode came out nearly blank. So the swap is undone and the frame copied
+// beside it, as a single push leaves the two.
+void FreeInkDisplay::displayBufferAsGrayFrame(RefreshMode mode, bool turnOffScreen) {
+  displayBuffer(mode, turnOffScreen);
+#ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
+  swapBuffers();
+  keepDisplayedCopy();
+#endif
+}
+
 void FreeInkDisplay::triggerGrayscaleFrame(RefreshMode mode, bool turnOffScreen) {
   if (_inversionDirty || !supportsGrayFrame()) {
-    displayBuffer(mode, turnOffScreen);
+    displayBufferAsGrayFrame(mode, turnOffScreen);
     return;
   }
   DisplayPmLock pmLock;
@@ -1033,7 +1046,7 @@ void FreeInkDisplay::triggerGrayscaleFrame(RefreshMode mode, bool turnOffScreen)
 
 void FreeInkDisplay::displayGrayscaleFrame(RefreshMode mode, bool turnOffScreen) {
   if (_inversionDirty || !supportsGrayFrame()) {
-    displayBuffer(mode, turnOffScreen);
+    displayBufferAsGrayFrame(mode, turnOffScreen);
     return;
   }
   DisplayPmLock pmLock;

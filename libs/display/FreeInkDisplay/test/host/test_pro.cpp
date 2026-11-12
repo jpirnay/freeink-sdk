@@ -1130,6 +1130,47 @@ static void testInvertedGrayFrame() {
   }
 }
 
+// A single push that goes out B/W instead -- the first frame after a polarity change, or no single push while
+// inverted -- leaves the buffers as the single push does: no swap, the frame in the write buffer and its copy beside
+// it. The firmware's renderer keeps drawing into the pointer it had; left swapped, it drew the next page into the
+// displayed copy, and on the Murphy the next page turn came out nearly blank.
+static void testGrayFrameFallbackKeepsBuffers() {
+  const auto page = frame(43);
+  for (const bool deferred : {false, true}) {
+    for (const bool inverts : {true, false}) {
+      GrayFrameDriver driver(inverts);
+      FreeInkDisplay display(12, 11, 13, 18, 14, 6);
+      display._driver = &driver;
+      display.begin();
+      const auto push = [&] {
+        uint8_t* const write = display.getFrameBuffer();
+        std::memcpy(write, page.data(), page.size());
+        if (deferred) {
+          display.triggerGrayscaleFrame(FreeInkDisplay::FAST_REFRESH);
+        } else {
+          display.displayGrayscaleFrame(FreeInkDisplay::FAST_REFRESH);
+        }
+        assert(display.getFrameBuffer() == write);
+        assert(std::equal(page.begin(), page.end(), display.getFrameBuffer()));
+#ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
+        assert(std::equal(page.begin(), page.end(), display.frameBufferActive));
+#endif
+      };
+      display.setInverted(true);  // first frame: B/W and HALF
+      push();
+      assert(driver.bwFrames == 1 && driver.lastMode == RefreshMode::Half);
+      push();  // a driver that cannot mirror its greys: B/W again
+      assert(inverts ? driver.grayFrames == 1 : driver.bwFrames == 2);
+      display.setInverted(false);  // and back: B/W and HALF
+      push();
+      assert(driver.lastMode == RefreshMode::Half && driver.shown == page);
+      push();  // the single push again
+      assert(driver.grayFrames == (inverts ? 2 : 1));
+      display.releaseBuffers();
+    }
+  }
+}
+
 int main(int argc, char** argv) {
   if (argc > 1 && std::strcmp(argv[1], "metalio") == 0) {
     testMetalio();
@@ -1148,6 +1189,7 @@ int main(int argc, char** argv) {
   testTextAaCharge();
   testOnePassFrame();
   testInvertedGrayFrame();
+  testGrayFrameFallbackKeepsBuffers();
   testUc8279X4WaveformSelection();
   testDirectSleep<Uc8179Driver>();
   testDirectSleep<Uc8279X4Driver>();
