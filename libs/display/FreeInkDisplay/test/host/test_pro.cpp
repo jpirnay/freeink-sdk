@@ -1072,6 +1072,26 @@ static void testRestTextFrame() {
 }
 #endif
 
+// A lab frame (development builds): both planes and all five tables as given, one blocking refresh, and the
+// next B/W frame is a full one.
+static void testUc8179LabFrame() {
+  Uc8179Driver d;
+  EpdBus bus;
+  d.begin(bus);
+  Bytes base(48000, 0xff), red(48000, 0x0f), lut(210);
+  for (size_t i = 0; i < lut.size(); ++i) lut[i] = static_cast<uint8_t>(i);
+  d.display(bus, base.data(), nullptr, RefreshMode::Full, false);
+  bus.clear();
+  assert(d.displayLabFrame(bus, base.data(), red.data(), lut.data()));
+  for (unsigned t = 0; t < 5; ++t) {
+    bool sent = false;
+    for (const auto& w : bus.writes)
+      if (w.command == 0x20 + t) sent = w.bytes == Bytes(lut.begin() + t * 42, lut.begin() + (t + 1) * 42);
+    assert(sent);
+  }
+  assert(writesOf(bus, 0x12) == 1 && d._needFullClear && !d._oldPlaneValid);
+}
+
 static void testOnePassFrame() {
   Uc8179Driver d;
   EpdBus bus;
@@ -1581,6 +1601,8 @@ int main(int argc, char** argv) {
 #if FREEINK_UC8179_TEXT_REST
   testRestTextFrame();
 #endif
+
+  testUc8179LabFrame();
   testInvertedGrayFrame();
   testGrayFrameFallbackKeepsBuffers();
   testUc8279X4WaveformSelection();
