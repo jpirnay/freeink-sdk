@@ -319,7 +319,7 @@ bool Ssd2677Driver::ensureLsb() {
 
 void Ssd2677Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
   (void)bus;
-  if (_textBegun) {
+  if (_textBegun || (supportsGrayFrame() && !_absoluteGray)) {
     stageRestText(0, lsb);
     return;
   }
@@ -370,7 +370,7 @@ void Ssd2677Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode
 }
 
 void Ssd2677Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
-  if (_textBegun) {
+  if (_textBegun || (supportsGrayFrame() && !_absoluteGray)) {
     stageRestText(1, msb);
     return;
   }
@@ -418,6 +418,30 @@ void Ssd2677Driver::setReaderRefresh(const bool reading) {
   } else {
     ensureRestText();
   }
+}
+
+bool Ssd2677Driver::supportsOnePassText() const {
+#if defined(BOARD_HAS_PSRAM)
+  return !isSticky();
+#else
+  return false;  // see ensureRestText()
+#endif
+}
+
+void Ssd2677Driver::setOnePassText(const bool on) {
+  _onePassText = on;
+  // A pre-render stages its page before any book page has set the reader hint, so this takes the
+  // planes too.
+  if (on && supportsOnePassText()) ensureRestText();
+}
+
+void Ssd2677Driver::displayGrayFrame(EpdBus& bus, const uint8_t* fb, const RefreshMode mode, const bool turnOff) {
+  // A clean refresh, or the first frame after init, goes up in B/W first, as beginGrayscale() does.
+  if (mode != RefreshMode::Fast || _needsInitialFull) display(bus, fb, nullptr, mode, false);
+  // The rest pass reads the page from _textBase, which the combined-base entry fills in beginGrayscale().
+  if (_textBase) memcpy(_textBase, fb, geometry().bufferSize);
+  // On failure the page still goes up, in B/W.
+  if (!presentRestText(bus)) display(bus, fb, nullptr, RefreshMode::Fast, turnOff);
 }
 
 bool Ssd2677Driver::textPassReady() const {

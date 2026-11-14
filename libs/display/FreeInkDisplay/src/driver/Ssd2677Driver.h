@@ -44,6 +44,13 @@ class Ssd2677Driver : public PanelDriver {
 
   // Also takes the text pass's planes, on the first reader page rather than at begin().
   void setReaderRefresh(bool reading) override;
+  // Witch Reader's single push (PanelDriver::supportsGrayFrame): while setOnePassText() is on, a reader
+  // page stages its planes, then displayGrayFrame() sends base and gray as the same rest pass that
+  // displayGray() runs for a combined base. The Picco only; the Sticky keeps the combined-base entry.
+  bool supportsOnePassText() const override;
+  void setOnePassText(bool on) override;
+  bool supportsGrayFrame() const override { return _onePassText && supportsOnePassText() && textPassReady(); }
+  void displayGrayFrame(EpdBus& bus, const uint8_t* fb, RefreshMode mode, bool turnOff) override;
   void setBackgroundHint(bool darkBackground) override { _darkBackground = darkBackground; }
   // BOOX 2959 runs the reader AA overlay after inverted pages too.
   bool grayscaleWhileInverted() const override { return BoardConfig::ACTIVE.board != BoardConfig::Board::Sticky; }
@@ -102,6 +109,7 @@ class Ssd2677Driver : public PanelDriver {
   uint8_t _textStaged = 0;       // bit 0 LSB staged, bit 1 MSB
   bool _textBegun = false;       // beginGrayscale() took a Picco reader page for the text pass
   bool _readerRefresh = false;
+  bool _onePassText = false;  // the host sends reader pages through displayGrayFrame()
   bool _afterReader = false;  // last frame presented a book page
   bool _darkBackground = false;  // facade renders inverted frames
   bool _needsPowerOn = true;

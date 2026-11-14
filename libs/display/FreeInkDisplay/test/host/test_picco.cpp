@@ -535,6 +535,55 @@ static void expectLabFrame2677(Ssd2677Driver& s) {
     if (w.command == 0x20) assert(w.bytes == Bytes(lut_picco_se0400_full, lut_picco_se0400_full + 535));
 }
 
+// Witch Reader's single push: the reader hint alone keeps the two-pass flow; setOnePassText() stages a
+// page's planes and displayGrayFrame() sends the rest pass the combined base sends.
+static void expectSinglePushRestText2677(Ssd2677Driver& s) {
+  EpdBus bus;
+  Bytes base(48000, 0xFF), lsb(48000, 0), msb(48000, 0), next(48000, 0xFF);
+  base[0] = 0x1F;  // 3 px black
+  lsb[0] = 0x18;   // then 2 px gray
+  msb[0] = 0x08;
+  s.display(bus, base.data(), nullptr, RefreshMode::Full, false);
+  assert(s.supportsOnePassText());
+  s.setReaderRefresh(true);  // a book page with one-pass text off
+  assert(!s.supportsGrayFrame());
+  s.setOnePassText(true);
+  assert(s.supportsGrayFrame());
+  for (int page = 0; page < 2; ++page) {
+    bus.clear();
+    s.copyGrayscaleLsb(bus, lsb.data());
+    s.copyGrayscaleMsb(bus, msb.data());
+    assert(bus.writes.empty());  // staged, not uploaded
+    s.displayGrayFrame(bus, base.data(), RefreshMode::Fast, false);
+    unsigned refreshes = 0;
+    const Bytes* packed = nullptr;
+    for (const auto& w : bus.writes) {
+      refreshes += w.command == 0x12;
+      if (w.command == 0x10) packed = &w.bytes;
+      if (w.command == 0x20) assert(w.bytes == Bytes(lut_picco_se0400_text_rest, lut_picco_se0400_text_rest + 535));
+    }
+    assert(refreshes == 1 && packed);
+    if (page == 0) {
+      // Black and white rest (10), 2 px new gray (01), the rest of the screen rests.
+      assert((*packed)[0] == 0xA9 && (*packed)[1] == 0x6A && (*packed)[2] == 0xAA);
+    } else {
+      // The same page again: its gray is on the glass, so every pixel rests.
+      assert((*packed)[0] == 0xAA && (*packed)[1] == 0xAA);
+    }
+    assert(s._grayPending && s._lsb[0] == 0x18);
+  }
+  s.setOnePassText(false);
+  s.setReaderRefresh(false);
+  assert(!s.supportsGrayFrame());
+  bus.clear();
+  s.display(bus, next.data(), nullptr, RefreshMode::Fast, false);
+  const Bytes* packed = nullptr;
+  for (const auto& w : bus.writes)
+    if (w.command == 0x10) packed = &w.bytes;
+  // Black and gray pixels are both driven to the white target (01); white stays (11).
+  assert(packed && (*packed)[0] == 0x55 && (*packed)[1] == 0x7F);
+}
+
 // DEPG0397 reader pages: one combined activation, no separate B/W base. Other
 // SSD1677 panels keep the two-pass overlay.
 static void expectOnePassTextAa(Ssd1677Driver& d, bool expected) {
@@ -609,7 +658,8 @@ int main(int argc, char** argv) {
     if (argc > 2 && !strcmp(argv[2], "textaa")) {
       expectOnePassTextAa2677(s);
       expectLabFrame2677(s);
-      std::printf("Picco se0400: one-pass text AA and lab frame passed\n");
+      expectSinglePushRestText2677(s);
+      std::printf("Picco se0400: one-pass text AA, lab frame and single push passed\n");
       return 0;
     }
     // Stock reader table: 24-frame drives, 1-frame top-ups. Text table: black, gray, held white, white.
