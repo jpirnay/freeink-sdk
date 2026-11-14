@@ -3,7 +3,14 @@
 // One-pass text needs PSRAM, so a board without it does not carry the code.
 #if defined(BOARD_HAS_PSRAM)
 #define FREEINK_ONE_PASS_TEXT_AA 1
+#include "RestTextAa.h"
 #include "X4ProTextAa.h"
+
+// One-pass text that rests pixels already at their target (RestTextAa, an 18-frame table) instead of the
+// shipped full-target compose with a charge map (X4ProTextAa, 23 frames). Lab A/B switch.
+#ifndef FREEINK_UC8179_TEXT_REST
+#define FREEINK_UC8179_TEXT_REST 0
+#endif
 #else
 #define FREEINK_ONE_PASS_TEXT_AA 0
 #endif
@@ -199,7 +206,11 @@ class Uc8179Driver : public PanelDriver {
   }
 #if FREEINK_ONE_PASS_TEXT_AA
   void finishTextFrame(EpdBus& bus);
+#if FREEINK_UC8179_TEXT_REST
+  RestTextAa _textAa;
+#else
   X4ProTextAa _textAa;
+#endif
   bool _onePassText = false;
   bool _pendingTextFrame = false;  // the refresh in flight is a one-pass frame
 #endif
