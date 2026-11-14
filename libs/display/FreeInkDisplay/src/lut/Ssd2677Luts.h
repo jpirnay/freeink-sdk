@@ -10,7 +10,7 @@
 //   then six 88-byte tables of eight 11-byte groups. Table 0 is VCOM, tables
 //   1..4 serve pixel codes 00, 01, 10, 11 (high bit = previous plane, low bit =
 //   target plane, 1 = white: black-stays, to-white, to-black, white-stays), and
-//   table 5 is all 0xFF in stock.
+//   table 5 drives nothing in stock (its level bytes are 0xFF) but carries the timing.
 //   group: byte 0 repeat count, bytes 1..2 drive levels for phases 0..3 and
 //          4..7, bytes 3..10 the eight phase lengths in frames.
 //   counts (repeat and phase length) are 6-bit, active-low, with value bits
@@ -20,7 +20,8 @@
 //          5/3/1, black drive on bits 2/0/6, neither = no drive. Bits 7 and 4
 //          belong to the fourth phase, which stock never drives in a pixel
 //          table; the VCOM table clears bit 7 of byte 1 in every group.
-//   Every table of a LUT carries the same repeat counts and phase lengths.
+//   Every table of a LUT, table 5 included, carries the same repeat counts and phase lengths; the
+//          refresh runs as long as the longest table (measured: 308 ms + 13.6 ms per frame on a Picco).
 // Counter encoding: SolarOS epd_ssd2677_waveform.c (measured against BUSY on a
 // Sticky SSD2677). Plane roles: stock packers 0x4228af74 / 0x4228b030 and the
 // buffer hand-off at 0x42011418 (build 2959).
