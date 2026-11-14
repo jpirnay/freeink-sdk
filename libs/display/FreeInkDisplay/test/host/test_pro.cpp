@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cassert>
+#include <utility>
 #include <cstdio>
 #include <cstring>
 #include <type_traits>
@@ -942,6 +943,80 @@ static unsigned writesOf(const EpdBus& bus, uint8_t command) {
   return count;
 }
 
+#if FREEINK_UC8179_TEXT_REST
+// The rest pass: a pixel the glass already holds at its target rests (high 1, low 0); the others go to
+// white (1, 1), gray (0, 1) or black (0, 0), in one activation of the 18-frame table.
+static void testRestTextFrame() {
+  Uc8179Driver d;
+  EpdBus bus;
+  d.begin(bus);
+  Bytes base(48000, 0xff), lsb(48000, 0), msb(48000, 0);
+  base[0] = 0x0f;  // pixels 7..4 black, 6 and 5 of them gray
+  lsb[0] = 0x40;
+  msb[0] = 0x20;
+  const auto stage = [&] {
+    d.copyGrayscaleLsb(bus, lsb.data());
+    d.copyGrayscaleMsb(bus, msb.data());
+  };
+  const auto codesAt = [&](size_t fbByte) {
+    return std::make_pair(lastPlane(bus, 0x13)[479 * 100 + fbByte], lastPlane(bus, 0x10)[479 * 100 + fbByte]);
+  };
+  d.setOnePassText(true);
+
+  // Opening the book: the clean refresh puts the page up in B/W, so only its gray moves.
+  stage();
+  bus.clear();
+  assert(d.displayGrayFrameStart(bus, base.data(), RefreshMode::Half, false));
+  assert(codesAt(0) == std::make_pair(uint8_t(0x9f), uint8_t(0x60)) && codesAt(1) == std::make_pair(uint8_t(0xff), uint8_t(0)));
+  // Net drive per code, frames times polarity: to white -16, rest 0, gray -6 (white 8, black 4, white 2), to
+  // black +12; 18 frames in every row.
+  auto polarity = [](unsigned level) { return level == 1 ? 1 : level == 2 ? -1 : 0; };
+  const int dose[] = {-16, 0, -6, 12};
+  for (unsigned row = 1; row <= 4; ++row) {
+    const Bytes& table = lastPlane(bus, uint8_t(0x20 + row));
+    assert(table.size() == 42);
+    int net = 0, frames = 0;
+    for (unsigned group = 0; group < 7; ++group)
+      for (unsigned phase = 0; phase < 4; ++phase) {
+        const int n = table[group * 6 + 1 + phase] * table[group * 6 + 5];
+        net += polarity((table[group * 6] >> (6 - phase * 2)) & 3) * n;
+        frames += n;
+      }
+    assert(net == dose[row - 1] && frames == 18);
+  }
+  d.displayFinish(bus, base.data());
+
+  // The same page again: every pixel rests, its gray too.
+  stage();
+  bus.clear();
+  assert(d.displayGrayFrameStart(bus, base.data(), RefreshMode::Fast, false));
+  // The visible rows; the stub also records the controller's padding rows after them.
+  const auto visibleIs = [&](uint8_t command, uint8_t value) {
+    const Bytes& plane = lastPlane(bus, command);
+    return plane.size() >= 48000 && std::all_of(plane.begin(), plane.begin() + 48000, [&](uint8_t b) { return b == value; });
+  };
+  assert(visibleIs(0x13, 0xff) && visibleIs(0x10, 0));
+  d.displayFinish(bus, base.data());
+
+  // The next page: 7 turns white, gray 6 turns black, gray 5 stays, 3 turns black.
+  base[0] = 0x87;
+  lsb[0] = 0;
+  stage();
+  bus.clear();
+  assert(d.displayGrayFrameStart(bus, base.data(), RefreshMode::Fast, false));
+  assert(codesAt(0) == std::make_pair(uint8_t(0xb7), uint8_t(0x80)) && codesAt(1) == std::make_pair(uint8_t(0xff), uint8_t(0)));
+  d.displayFinish(bus, base.data());
+
+  // After a B/W frame the glass is not known: every pixel is driven to its target.
+  d.display(bus, base.data(), nullptr, RefreshMode::Fast, false);
+  stage();
+  bus.clear();
+  assert(d.displayGrayFrameStart(bus, base.data(), RefreshMode::Fast, false));
+  assert(codesAt(0) == std::make_pair(uint8_t(0x87), uint8_t(0xa7)) && codesAt(1) == std::make_pair(uint8_t(0xff), uint8_t(0xff)));
+  d.displayFinish(bus, base.data());
+}
+#endif
+
 static void testOnePassFrame() {
   Uc8179Driver d;
   EpdBus bus;
@@ -1433,6 +1508,9 @@ int main(int argc, char** argv) {
   testUc8179GrayShadeSplit();
   testTextAaCharge();
   testOnePassFrame();
+#if FREEINK_UC8179_TEXT_REST
+  testRestTextFrame();
+#endif
   testInvertedGrayFrame();
   testGrayFrameFallbackKeepsBuffers();
   testUc8279X4WaveformSelection();

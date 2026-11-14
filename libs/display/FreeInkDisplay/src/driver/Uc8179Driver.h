@@ -3,7 +3,17 @@
 // One-pass text needs PSRAM, so a board without it does not carry the code.
 #if defined(BOARD_HAS_PSRAM)
 #define FREEINK_ONE_PASS_TEXT_AA 1
+#include "RestTextAa.h"
 #include "X4ProTextAa.h"
+
+// One-pass text that rests pixels already at their target (RestTextAa, an 18-frame table) instead of
+// Free-Ink PR #213's full-target compose with a charge map (X4ProTextAa, 23 frames). On one X4 Pro in the
+// gray lab (2026-11-14) the rest pass turned pages faster (median 1,262 vs 1,390 ms), drew an even gray
+// (64 % from white and from black, where the charge-map pass gave 31 % and 0 %) and took 288 KB of PSRAM
+// instead of 576 KB, with no ghost after 500 pages of held black. 0 builds Free-Ink's pass.
+#ifndef FREEINK_UC8179_TEXT_REST
+#define FREEINK_UC8179_TEXT_REST 1
+#endif
 #else
 #define FREEINK_ONE_PASS_TEXT_AA 0
 #endif
@@ -196,7 +206,11 @@ class Uc8179Driver : public PanelDriver {
   }
 #if FREEINK_ONE_PASS_TEXT_AA
   void finishTextFrame(EpdBus& bus);
+#if FREEINK_UC8179_TEXT_REST
+  RestTextAa _textAa;
+#else
   X4ProTextAa _textAa;
+#endif
   bool _onePassText = false;
   bool _pendingTextFrame = false;  // the refresh in flight is a one-pass frame
 #endif
