@@ -192,7 +192,8 @@ void Ssd2677Driver::begin(EpdBus& bus) {
 
 void Ssd2677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
   (void)prev;  // unused: single-buffer host passes null; we track our own old plane
-  _textAa.invalidate();
+  // Ends the text history, not planes a single push staged for its page (begin() resets those).
+  _textAa.dropHistory();
   // First paint after init clears the panel with the full waveform (stock forces
   // mode 0 on the first frame).
   if (_needsInitialFull) mode = RefreshMode::Full;
@@ -318,7 +319,10 @@ bool Ssd2677Driver::ensureLsb() {
 
 void Ssd2677Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
   (void)bus;
-  if (_textAa.active()) { _textAa.stage(0, lsb, 0, geometry().height); return; }
+  if (_textAa.active() || (supportsGrayFrame() && !_absoluteGray)) {
+    _textAa.stage(0, lsb, 0, geometry().height);
+    return;
+  }
   if (!lsb) return;
   if (!_absoluteGray) ensureLsb();
   _grayMaskReady = false;
@@ -355,7 +359,10 @@ void Ssd2677Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode
 }
 
 void Ssd2677Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
-  if (_textAa.active()) { _textAa.stage(1, msb, 0, geometry().height); return; }
+  if (_textAa.active() || (supportsGrayFrame() && !_absoluteGray)) {
+    _textAa.stage(1, msb, 0, geometry().height);
+    return;
+  }
   if (!msb || !_lsb) return;
   if (_absoluteGray) {
     if (isSticky()) {
@@ -389,34 +396,55 @@ void Ssd2677Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
   }
 }
 
+bool Ssd2677Driver::supportsOnePassText() const { return !isSticky() && _textAa.ready(); }
+
+// PR #213's combined text pass, shared by displayGray() (a combined base) and displayGrayFrame()
+// (our single push). False when the planes do not compose; nothing was sent then.
+bool Ssd2677Driver::presentTextFrame(EpdBus& bus) {
+  if (!_textAa.compose()) {
+    _textAa.invalidate();
+    _needsInitialFull = true;
+    return false;
+  }
+  // Text codes: white plane in the high bit, gray / driven-white plane in the low bit.
+  // Sticky: a latched OTP waveform is cleared by reset + init before a RAM
+  // table runs, as for its overlay AA. The Picco powers on before the upload.
+  if (!isSticky()) powerOn(bus);
+  else if (_latchedWaveform != 0 && _latchedWaveform != LATCH_REINIT) initPanel(bus);
+  sendPacked(bus, _textAa.high(), _textAa.low());
+  refreshWith(bus, lut_picco_se0400_text, true);  // stock reader pages power off
+  if (isSticky()) _latchedWaveform = LATCH_REINIT;
+  const auto* text = lut_picco_se0400_text;
+  _textAa.finish(ssd2677LutDose(text, 1), ssd2677LutDose(text, 2), ssd2677LutDose(text, 3), ssd2677LutDose(text, 4));
+  // B/W history: the page's base, with its gray pixels flagged so the next
+  // B/W frame drives each of them to its target.
+  const uint32_t size = geometry().bufferSize;
+  if (_old) memcpy(_old, _textAa.base(), size);
+  if (_old && ensureLsb()) {
+    for (uint32_t i = 0; i < size; ++i) _lsb[i] = static_cast<uint8_t>(_textAa.low()[i] & ~_textAa.high()[i]);
+    _grayPending = true;
+  } else {
+    _needsInitialFull = true;
+  }
+  _grayMaskReady = false;
+  _afterReader = true;  // the next B/W frame erases reading-depth ink
+  return true;
+}
+
+void Ssd2677Driver::displayGrayFrame(EpdBus& bus, const uint8_t* fb, RefreshMode mode, bool turnOff) {
+  // A clean refresh, or the first frame after init, goes up in B/W first, as beginGrayscale() does.
+  if (mode != RefreshMode::Fast || _needsInitialFull) display(bus, fb, nullptr, mode, false);
+  _textAa.beginStaged(fb);
+  // On failure the page still goes up, in B/W.
+  if (!presentTextFrame(bus)) display(bus, fb, nullptr, RefreshMode::Fast, turnOff);
+}
+
 void Ssd2677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut,
                                 bool factoryMode) {
   (void)lut;
   (void)factoryMode;
   if (_textAa.active()) {
-    if (!_textAa.compose()) { _textAa.invalidate(); _needsInitialFull = true; return; }
-    // Text codes: white plane in the high bit, gray / driven-white plane in the low bit.
-    // Sticky: a latched OTP waveform is cleared by reset + init before a RAM
-    // table runs, as for its overlay AA. The Picco powers on before the upload.
-    if (!isSticky()) powerOn(bus);
-    else if (_latchedWaveform != 0 && _latchedWaveform != LATCH_REINIT) initPanel(bus);
-    sendPacked(bus, _textAa.high(), _textAa.low());
-    refreshWith(bus, lut_picco_se0400_text, true);  // stock reader pages power off
-    if (isSticky()) _latchedWaveform = LATCH_REINIT;
-    const auto* text = lut_picco_se0400_text;
-    _textAa.finish(ssd2677LutDose(text, 1), ssd2677LutDose(text, 2), ssd2677LutDose(text, 3), ssd2677LutDose(text, 4));
-    // B/W history: the page's base, with its gray pixels flagged so the next
-    // B/W frame drives each of them to its target.
-    const uint32_t size = geometry().bufferSize;
-    if (_old) memcpy(_old, _textAa.base(), size);
-    if (_old && ensureLsb()) {
-      for (uint32_t i = 0; i < size; ++i) _lsb[i] = static_cast<uint8_t>(_textAa.low()[i] & ~_textAa.high()[i]);
-      _grayPending = true;
-    } else {
-      _needsInitialFull = true;
-    }
-    _grayMaskReady = false;
-    _afterReader = true;  // the next B/W frame erases reading-depth ink
+    presentTextFrame(bus);
     return;
   }
   if (_absoluteGray) {

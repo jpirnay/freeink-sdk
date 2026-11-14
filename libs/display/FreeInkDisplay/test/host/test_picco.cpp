@@ -451,6 +451,36 @@ static void expectDarkGray2677(Ssd2677Driver& s) {
 
 // SE0400 reader pages: base and gray in one activation with the panel's text
 // table; leaving the reader drives the gray pixels to the next frame.
+// Our host's single push: planes staged under setReaderRefresh() before the page, then one
+// displayGrayFrame() sends base and gray in one activation with the same text table.
+static void expectSinglePushTextAa2677(Ssd2677Driver& s) {
+  EpdBus bus;
+  Bytes base(48000, 0xFF), lsb(48000, 0), msb(48000, 0);
+  base[0] = 0x1F;  // 3 px black
+  lsb[0] = 0x18;   // then 2 px gray, in the base as white
+  msb[0] = 0x08;
+  s.display(bus, base.data(), nullptr, RefreshMode::Full, false);
+  assert(s.supportsOnePassText() && !s.supportsGrayFrame());
+  s.setReaderRefresh(true);
+  assert(s.supportsGrayFrame());
+  bus.clear();
+  s.copyGrayscaleLsb(bus, lsb.data());
+  s.copyGrayscaleMsb(bus, msb.data());
+  assert(bus.writes.empty());  // staged, nothing sent
+  s.displayGrayFrame(bus, base.data(), RefreshMode::Fast, false);
+  unsigned refreshes = 0;
+  const Bytes* packed = nullptr;
+  for (const auto& w : bus.writes) {
+    refreshes += w.command == 0x12;
+    if (w.command == 0x10) packed = &w.bytes;
+    if (w.command == 0x20) assert(w.bytes == Bytes(lut_picco_se0400_text, lut_picco_se0400_text + 535));
+  }
+  assert(refreshes == 1 && packed && (*packed)[0] == 0x01 && (*packed)[1] == 0x7F && (*packed)[2] == 0xFF);
+  assert(s._textAa.onPanel() && s._grayPending);
+  s.setReaderRefresh(false);
+  assert(!s.supportsGrayFrame());
+}
+
 static void expectOnePassTextAa2677(Ssd2677Driver& s) {
   EpdBus bus;
   Bytes base(48000, 0xFF), lsb(48000, 0), msb(48000, 0), next(48000, 0xFF);
@@ -598,6 +628,7 @@ int main(int argc, char** argv) {
     assert(lastRegister(bus, 0x00) == 0x27 && lastRegister(bus, 0xE9) == 0x01);
     if (argc > 2 && !strcmp(argv[2], "textaa")) {
       expectOnePassTextAa2677(s);
+      expectSinglePushTextAa2677(s);
       expectLabFrame2677(s);
       std::printf("Picco se0400: one-pass text AA and lab frame passed\n");
       return 0;

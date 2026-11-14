@@ -43,6 +43,12 @@ class Ssd2677Driver : public PanelDriver {
   PanelGeometry geometry() const override;
 
   void setReaderRefresh(bool reading) override { _readerRefresh = reading; }
+  // Our host's single push (PanelDriver::supportsGrayFrame): a reader page stages its planes while
+  // setReaderRefresh() is on, then displayGrayFrame() sends base and gray as the one combined text pass
+  // that displayGray() runs for a combined base. Picco only; the Sticky keeps its OTP waveforms here.
+  bool supportsOnePassText() const override;
+  bool supportsGrayFrame() const override { return _readerRefresh && supportsOnePassText(); }
+  void displayGrayFrame(EpdBus& bus, const uint8_t* fb, RefreshMode mode, bool turnOff) override;
   void setBackgroundHint(bool darkBackground) override { _darkBackground = darkBackground; }
   // BOOX 2959 runs the reader AA overlay after inverted pages too.
   bool grayscaleWhileInverted() const override { return BoardConfig::ACTIVE.board != BoardConfig::Board::Sticky; }
@@ -87,6 +93,7 @@ class Ssd2677Driver : public PanelDriver {
   void powerOn(EpdBus& bus);
   void powerAndRefresh(EpdBus& bus, bool turnOff);
   void refreshWith(EpdBus& bus, const unsigned char* lut, bool turnOff);
+  bool presentTextFrame(EpdBus& bus);
 
   X4ProTextAa _textAa;
   bool _readerRefresh = false;
