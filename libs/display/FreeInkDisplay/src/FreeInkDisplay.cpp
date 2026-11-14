@@ -963,6 +963,10 @@ bool FreeInkDisplay::invertsGrayFrame() const { return _driver && _driver->inver
 
 bool FreeInkDisplay::supportsOnePassText() const { return _driver && _driver->supportsOnePassText(); }
 
+void FreeInkDisplay::setOnePassText(const bool on) {
+  if (_driver) _driver->setOnePassText(on);
+}
+
 void FreeInkDisplay::setReaderRefresh(const bool reading) {
   if (_driver) _driver->setReaderRefresh(reading);
 }

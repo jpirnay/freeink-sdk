@@ -210,12 +210,14 @@ class PanelDriver {
   // else answers false, and the facade sends their frames B/W while inverted.
   virtual bool invertsGrayFrame() const { return false; }
   // One-pass text: this panel can put a text page and its grays up in one waveform. Only the
-  // host decides when: setReaderRefresh(true) makes supportsGrayFrame() answer for the frames
+  // host decides when: setOnePassText(true) makes supportsGrayFrame() answer for the frames
   // that follow, and copyGrayscale* stage instead of upload, so a host sets it around a page
   // it will send through displayGrayFrame() and clears it for anything else.
-  // setReaderRefresh() is also the hint that book pages are being presented: drivers with a
-  // reading waveform (the Picco's SSD1677 and SSD2677 panels) pick it while it is set.
   virtual bool supportsOnePassText() const { return false; }
+  virtual void setOnePassText(bool on) { (void)on; }
+  // True while the host presents book pages; drivers with a reading waveform use it (the Picco's
+  // SSD1677 and SSD2677 panels). Upstream's meaning: it does not switch one-pass text on, so a
+  // host may set it around every book page whether one-pass text is on or not.
   virtual void setReaderRefresh(bool reading) { (void)reading; }
   // One-pass text where the host composes the planes, for a board with no memory to stage them:
   // `oldPlane` is 1 where a pixel rests (white before and after) or turns gray, `page` is the B/W page

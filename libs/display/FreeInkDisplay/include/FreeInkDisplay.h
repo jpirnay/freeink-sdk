@@ -314,6 +314,8 @@ class FreeInkDisplay {
   // does, whatever this says.
   bool invertsGrayFrame() const;
   bool supportsOnePassText() const;
+  // Pages that follow go through the single push (see PanelDriver::setOnePassText).
+  void setOnePassText(bool on);
   // True while book pages are presented (see PanelDriver::setReaderRefresh).
   void setReaderRefresh(bool reading);
   // One-pass text with no memory beyond the two frame buffers (the X3, the X4). The buffer that holds the

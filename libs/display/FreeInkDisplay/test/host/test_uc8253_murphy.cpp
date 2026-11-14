@@ -387,7 +387,7 @@ void testOnePassPicksEachPixelsDrive() {
     EpdBus bus;
     driver.begin(bus);
     assert(driver.supportsOnePassText() && !driver.supportsGrayFrame());
-    driver.setReaderRefresh(true);
+    driver.setOnePassText(true);
     assert(driver.supportsGrayFrame());
     driver.display(bus, c.shown->data(), nullptr, RefreshMode::Half, false);
     if (c.shownGray) {
@@ -411,7 +411,7 @@ void testOnePassKeepsTwoPassesWhereItMust() {
   Uc8253MurphyDriver driver(cfg);
   EpdBus bus;
   driver.begin(bus);
-  driver.setReaderRefresh(true);
+  driver.setOnePassText(true);
   // Straight after begin() nothing of ours is on the glass: a HALF and the nudge, never a blind FAST.
   driver.copyGrayscaleLsb(bus, white.data());
   driver.copyGrayscaleMsb(bus, black.data());
@@ -438,12 +438,12 @@ void testAFastAfterOnePassDrivesItsGrayAway() {
   Uc8253MurphyDriver driver(cfg);
   EpdBus bus;
   driver.begin(bus);
-  driver.setReaderRefresh(true);
+  driver.setOnePassText(true);
   driver.display(bus, white.data(), nullptr, RefreshMode::Half, false);
   driver.copyGrayscaleLsb(bus, white.data());
   driver.copyGrayscaleMsb(bus, black.data());
   driver.displayGrayFrame(bus, black.data(), RefreshMode::Fast, false);  // a page of gray
-  driver.setReaderRefresh(false);
+  driver.setOnePassText(false);
   assert(!driver.supportsGrayFrame());
   bus.clear();
   driver.display(bus, black.data(), black.data(), RefreshMode::Fast, false);

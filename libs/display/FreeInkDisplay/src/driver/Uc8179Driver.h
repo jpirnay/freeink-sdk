@@ -107,10 +107,10 @@ class Uc8179Driver : public PanelDriver {
   void cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) override;
 
 #if FREEINK_ONE_PASS_TEXT_AA
-  // --- One-pass text AA: see X4ProTextAa.h and PanelDriver::setReaderRefresh() ---
+  // --- One-pass text AA: see X4ProTextAa.h and PanelDriver::setOnePassText() ---
   bool supportsOnePassText() const override;
-  void setReaderRefresh(bool reading) override;
-  bool supportsGrayFrame() const override { return _readerRefresh && _textAa.ready(); }
+  void setOnePassText(bool on) override;
+  bool supportsGrayFrame() const override { return _onePassText && _textAa.ready(); }
   bool displayGrayFrameStart(EpdBus& bus, const uint8_t* fb, RefreshMode mode, bool turnOff) override;
   void displayGrayFrame(EpdBus& bus, const uint8_t* fb, RefreshMode mode, bool turnOff) override;
 #endif
@@ -197,7 +197,7 @@ class Uc8179Driver : public PanelDriver {
 #if FREEINK_ONE_PASS_TEXT_AA
   void finishTextFrame(EpdBus& bus);
   X4ProTextAa _textAa;
-  bool _readerRefresh = false;
+  bool _onePassText = false;
   bool _pendingTextFrame = false;  // the refresh in flight is a one-pass frame
 #endif
 };

@@ -819,10 +819,10 @@ bool Uc8179Driver::supportsOnePassText() const {
   return BoardConfig::ACTIVE.board == BoardConfig::Board::XteinkX4Pro && _w == 800 && _h == 480;
 }
 
-void Uc8179Driver::setReaderRefresh(const bool reading) {
+void Uc8179Driver::setOnePassText(const bool on) {
   // First use pays for the block, so a reader who leaves the option off never does.
-  if (reading && !_textAa.ready() && supportsOnePassText()) _textAa.allocate(true, _wb, _h);
-  _readerRefresh = reading;
+  if (on && !_textAa.ready() && supportsOnePassText()) _textAa.allocate(true, _wb, _h);
+  _onePassText = on;
 }
 
 // Branch fix-display-updates sends the frame from displayGray() and blocks on the waveform.

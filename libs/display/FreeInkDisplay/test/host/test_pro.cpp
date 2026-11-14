@@ -957,7 +957,7 @@ static void testOnePassFrame() {
   d.display(bus, base.data(), nullptr, RefreshMode::Full, false);
   assert(d.supportsOnePassText());
   assert(!d.supportsGrayFrame() && !d._textAa.ready());  // no block until a host asks
-  d.setReaderRefresh(true);
+  d.setOnePassText(true);
   assert(d.supportsGrayFrame());
 
   bus.clear();
@@ -1003,7 +1003,7 @@ static void testOnePassFrame() {
   assert(writesOf(bus, 0x12) == 1 && !d._pendingRefresh);
 
   // Outside a book page the planes go to the controller as they always did.
-  d.setReaderRefresh(false);
+  d.setOnePassText(false);
   assert(!d.supportsGrayFrame());
   bus.clear();
   d.copyGrayscaleLsb(bus, lsb.data());
@@ -1012,7 +1012,7 @@ static void testOnePassFrame() {
   fakeHeapCapsFail = true;
   Uc8179Driver noMemory;
   noMemory.begin(bus);
-  noMemory.setReaderRefresh(true);
+  noMemory.setOnePassText(true);
   assert(!noMemory.supportsGrayFrame());
   fakeHeapCapsFail = false;
 }

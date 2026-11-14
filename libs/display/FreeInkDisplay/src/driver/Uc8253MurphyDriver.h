@@ -90,8 +90,8 @@ class Uc8253MurphyDriver : public PanelDriver {
   void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;
 
   bool supportsOnePassText() const override { return _cfg.text.vcom != nullptr && _cfg.gray.vcom != nullptr; }
-  void setReaderRefresh(bool reading) override { _readerRefresh = reading; }
-  bool supportsGrayFrame() const override { return _readerRefresh && supportsOnePassText(); }
+  void setOnePassText(bool on) override { _onePassText = on; }
+  bool supportsGrayFrame() const override { return _onePassText && supportsOnePassText(); }
   void displayGrayFrame(EpdBus& bus, const uint8_t* fb, RefreshMode mode, bool turnOff) override;
 
  private:
@@ -131,7 +131,7 @@ class Uc8253MurphyDriver : public PanelDriver {
   uint8_t* _textOld = nullptr;
   uint8_t* _textNew = nullptr;
   bool _shownValid = false;
-  bool _readerRefresh = false;
+  bool _onePassText = false;
 };
 
 PanelDriver& uc8253MurphyDriver();
