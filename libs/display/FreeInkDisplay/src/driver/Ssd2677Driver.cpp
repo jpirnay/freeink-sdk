@@ -429,18 +429,8 @@ void Ssd2677Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
 
 #if FREEINK_PICCO_TEXT_REST
 namespace {
-// PR #213's text table with code 10 (its held white, one frame) turned into rest. Codes: 00 to black,
-// 01 gray, 10 rest, 11 to white.
-const unsigned char* restTextLut() {
-  static unsigned char lut[sizeof(lut_picco_se0400_text)];
-  static bool built = false;
-  if (!built) {
-    memcpy(lut, lut_picco_se0400_text, sizeof(lut));
-    lut[7 + 3 * 88 + 1] = lut[7 + 3 * 88 + 2] = 0xFF;  // pixel table 3, group 0: no drive
-    built = true;
-  }
-  return lut;
-}
+// The rest table (Ssd2677Luts.h). Codes: 00 to black, 01 gray, 10 rest, 11 to white.
+const unsigned char* restTextLut() { return lut_picco_se0400_text_rest; }
 }  // namespace
 #endif
 
