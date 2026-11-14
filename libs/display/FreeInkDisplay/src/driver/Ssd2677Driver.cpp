@@ -98,6 +98,9 @@ inline int lutCount(uint8_t v) {
   return n;
 }
 
+// The packed-pixel stream goes out in pieces of this size (sendPacked, sendRestCodes).
+uint8_t sendChunk[1024];
+
 }  // namespace
 
 int ssd2677LutDose(const unsigned char* lut, unsigned table) {
@@ -255,7 +258,7 @@ void Ssd2677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
 
 void Ssd2677Driver::sendPacked(EpdBus& bus, const uint8_t* hi, const uint8_t* lo, bool exclusive) {
   const PanelGeometry g = geometry();
-  static uint8_t chunk[1024];
+  auto& chunk = sendChunk;
   // The Sticky panel scans rows bottom-to-top relative to the framebuffer
   // (stock mirrors in software); the Picco takes them in order.
   const bool reversed = isSticky();
@@ -453,7 +456,7 @@ void Ssd2677Driver::stageRestText(const unsigned plane, const uint8_t* data) {
 // that stays black is never driven again, which is what keeps static text and the status bar from
 // collecting charge page after page. The rest go to white (11), to black (00) or to gray (01).
 void Ssd2677Driver::sendRestCodes(EpdBus& bus, const bool grayKnown) {
-  static uint8_t chunk[1024];
+  auto& chunk = sendChunk;
   const uint32_t size = geometry().bufferSize;
   bus.cmd(CMD_DATA);
   auto txn = bus.beginTxn();
