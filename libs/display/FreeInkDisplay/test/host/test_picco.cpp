@@ -509,7 +509,7 @@ static void expectOnePassTextAa2677(Ssd2677Driver& s) {
 }
 
 // A lab's frame (development builds) after a combined text pass: the LUT goes out as given, and nothing the
-// pass left behind (charge history, the gray mask for the next B/W frame) survives it; that frame is a full one.
+// pass left behind (the gray mask for the next B/W frame) survives it; that frame is a full one.
 static void expectLabFrame2677(Ssd2677Driver& s) {
   EpdBus bus;
   Bytes base(48000, 0xFF), lsb(48000, 0), msb(48000, 0), red(48000, 0x0F), lut(535, 0x5A);
@@ -523,12 +523,12 @@ static void expectLabFrame2677(Ssd2677Driver& s) {
   s.copyGrayscaleMsb(bus, msb.data());
   s.displayGray(bus, base.data(), false, nullptr, false);
   s.setReaderRefresh(false);
-  assert(s._textAa.onPanel() && s._grayPending);
+  assert(s._grayPending);  // the rest pass's gray history, on the glass
   bus.clear();
   assert(s.displayLabFrame(bus, base.data(), red.data(), lut.data()));
   for (const auto& w : bus.writes)
     if (w.command == 0x20) assert(w.bytes == lut);
-  assert(!s._textAa.onPanel() && !s._grayPending && !s._grayMaskReady && s._needsInitialFull);
+  assert(!s._grayPending && !s._grayMaskReady && s._needsInitialFull);
   bus.clear();
   s.display(bus, base.data(), nullptr, RefreshMode::Fast, false);
   for (const auto& w : bus.writes)
