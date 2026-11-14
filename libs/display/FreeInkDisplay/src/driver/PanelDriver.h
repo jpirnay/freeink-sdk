@@ -120,6 +120,11 @@ class PanelDriver {
     (void)buf;
   }
 
+  // Paint a B/W rectangle over the last absolute gray image, or restore it (fb == nullptr).
+  // Returns false without painting when no retained image is available. May repaint the full panel.
+  virtual bool displayRetainedGrayscaleOverlay(EpdBus& bus, const uint8_t* fb, uint16_t x, uint16_t y,
+                                               uint16_t w, uint16_t h) { return false; }
+
   // --- grayscale (dual-plane LSB/MSB) ---
   virtual GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const {
     (void)mode;
@@ -208,6 +213,8 @@ class PanelDriver {
   // host decides when: setReaderRefresh(true) makes supportsGrayFrame() answer for the frames
   // that follow, and copyGrayscale* stage instead of upload, so a host sets it around a page
   // it will send through displayGrayFrame() and clears it for anything else.
+  // setReaderRefresh() is also the hint that book pages are being presented: drivers with a
+  // reading waveform (the Picco's SSD1677 and SSD2677 panels) pick it while it is set.
   virtual bool supportsOnePassText() const { return false; }
   virtual void setReaderRefresh(bool reading) { (void)reading; }
   // One-pass text where the host composes the planes, for a board with no memory to stage them:
@@ -320,6 +327,9 @@ class PanelDriver {
   // non-flashing. Drivers may use this to widen their drive set (re-blacken
   // the unchanged background each update) or bias their deghost direction.
   virtual void setBackgroundHint(bool darkBackground) { (void)darkBackground; }
+  // Overlay grayscale masks may follow an inverted B/W page. The masks keep
+  // their normal encoding; the facade inverts only B/W frames.
+  virtual bool grayscaleWhileInverted() const { return false; }
   // Capture the cancellation generation at the start of a logical UI render.
   // This must happen before CPU-side composition: input arriving while an old
   // frame is being composed must still cancel its optional post-refresh work.

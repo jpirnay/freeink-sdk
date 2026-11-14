@@ -314,6 +314,7 @@ class FreeInkDisplay {
   // does, whatever this says.
   bool invertsGrayFrame() const;
   bool supportsOnePassText() const;
+  // True while book pages are presented (see PanelDriver::setReaderRefresh).
   void setReaderRefresh(bool reading);
   // One-pass text with no memory beyond the two frame buffers (the X3, the X4). The buffer that holds the
   // frame on screen becomes the old plane: it keeps what was white and stays white, and the write
@@ -353,6 +354,8 @@ class FreeInkDisplay {
 
   // Hint the X3 policy to run a one-shot full resync on next update.
   void requestResync(uint8_t settlePasses = 0);
+  // Physical-pixel rectangle; restore=true removes the overlay from the retained gray image.
+  bool displayRetainedGrayscaleOverlay(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool restore = false);
   void skipInitialResync();
   void beginDisplayWork();
   void abortPostRefresh();
@@ -574,6 +577,8 @@ class FreeInkDisplay {
   bool _singleBufferFastDiff = false;
   bool _fastGrayscaleLut = false;
   bool _inverted = false;
+  // Overlay grayscale passes are allowed in the current polarity.
+  bool grayAllowed() const;
   bool _inversionDirty = false;
 
   // Runtime display geometry (seeded from the driver at begin()).

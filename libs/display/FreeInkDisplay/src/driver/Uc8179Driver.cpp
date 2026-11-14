@@ -638,7 +638,8 @@ void Uc8179Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode 
 
 void Uc8179Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
 #if FREEINK_ONE_PASS_TEXT_AA
-  if (supportsGrayFrame()) {
+  // An image pass begun under reader refresh (Absolute or Direct) uploads its planes as it always did.
+  if (supportsGrayFrame() && !_absoluteInput) {
     _textAa.stage(0, lsb, 0, _h);
     return;
   }
@@ -676,7 +677,8 @@ void Uc8179Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
 
 void Uc8179Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
 #if FREEINK_ONE_PASS_TEXT_AA
-  if (supportsGrayFrame()) {
+  // An image pass begun under reader refresh (Absolute or Direct) uploads its planes as it always did.
+  if (supportsGrayFrame() && !_absoluteInput) {
     _textAa.stage(1, msb, 0, _h);
     return;
   }

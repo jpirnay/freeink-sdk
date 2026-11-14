@@ -707,8 +707,12 @@ bool FreeInkDisplay::supportsAsyncRefresh() const {
 
 bool FreeInkDisplay::ghostsUnderFastRefresh() const { return _driver != nullptr && _driver->ghostsUnderFastRefresh(); }
 
+bool FreeInkDisplay::grayAllowed() const {
+  return !_inverted || (_driver && _driver->grayscaleWhileInverted());
+}
+
 GrayscaleCapabilities FreeInkDisplay::grayscaleCapabilities(GrayscaleMode mode) const {
-  if (_inverted || !_driver) return {};
+  if (!_driver || (_inverted && (mode != GrayscaleMode::Overlay || !grayAllowed()))) return {};
   auto caps = _driver->grayscaleCapabilities(mode);
   if (!caps.supported()) return {};
   if (_inversionDirty) caps.asyncBase = false;
@@ -732,7 +736,8 @@ void FreeInkDisplay::displayBuffer(RefreshMode mode, bool turnOffScreen) {
   _grayPassFailed = false;
   DisplayPmLock pmLock;
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
-  Serial.printf("[EPD] displayBuffer mode=%d off=%d\n", (int)mode, (int)turnOffScreen);
+  Serial.printf("[EPD] displayBuffer mode=%d off=%d inverted=%d dirty=%d\n", (int)mode, (int)turnOffScreen,
+                (int)_inverted, (int)_inversionDirty);
 #endif
   syncPendingAsync();
   if (_inversionDirty && mode == FAST_REFRESH) {
@@ -1114,9 +1119,8 @@ void FreeInkDisplay::displayGrayBuffer(bool turnOffScreen, const unsigned char* 
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
   Serial.printf("[EPD] displayGrayBuffer\n");
 #endif
-  // Inverted mode deliberately renders a crisp BW page. Writing normal
-  // grayscale planes afterward would partially undo the output inversion.
-  if (_inverted) return;
+  // Inverted mode renders a crisp BW page unless the driver overlays masks on it.
+  if (!grayAllowed()) return;
   DisplayPmLock pmLock;
   syncPendingAsync();
   _shadowValid = false;
@@ -1145,12 +1149,26 @@ void FreeInkDisplay::displayGrayCalibration(uint16_t customX, uint16_t customY, 
   _driver->displayGrayCalibration(_bus, frameBuffer, customX, customY, customW, customH);
 }
 
+bool FreeInkDisplay::displayRetainedGrayscaleOverlay(uint16_t x, uint16_t y, uint16_t w, uint16_t h,
+                                                    bool restore) {
+  if (!_driver || _inverted || !frameBuffer || !w || !h || x >= getDisplayWidth() || y >= getDisplayHeight() ||
+      w > getDisplayWidth() - x || h > getDisplayHeight() - y) return false;
+  DisplayPmLock pmLock;
+  syncPendingAsync();
+  cancelGrayscalePass();
+  if (!_driver->displayRetainedGrayscaleOverlay(_bus, restore ? nullptr : frameBuffer, x, y, w, h)) return false;
+  _shadowValid = false;
+  _redRamSynced = false;
+  return true;
+}
+
 void FreeInkDisplay::refreshDisplay(RefreshMode mode, bool turnOffScreen) { displayBuffer(mode, turnOffScreen); }
 
 void FreeInkDisplay::copyGrayscaleBuffers(const uint8_t* lsbBuffer, const uint8_t* msbBuffer) {
   // Inverted, the planes are staged only for a driver whose single push mirrors them (invertsGrayFrame()):
-  // left out, its next push would compose the planes of an earlier page.
-  if (_inverted && !invertsGrayFrame()) return;
+  // left out, its next push would compose the planes of an earlier page. A driver that overlays its masks
+  // on an inverted page (grayscaleWhileInverted()) takes them as well.
+  if (!grayAllowed() && !invertsGrayFrame()) return;
   DisplayPmLock pmLock;
   syncPendingAsync();  // RAM writes must not race a deferred refresh
   if (!acceptGrayscaleRows(0, lsbBuffer, 0, getDisplayHeight())) return;
@@ -1183,13 +1201,14 @@ bool FreeInkDisplay::displayGrayscaleBase(GrayscaleMode mode, RefreshMode fallba
   cancelGrayscalePass();
   const auto caps = grayscaleCapabilities(mode);
   if (!caps.supported()) return false;
-  if (_inversionDirty && (mode == GrayscaleMode::Overlay || caps.base == GrayscaleBase::Separate))
+  if (_inverted || (_inversionDirty && (mode == GrayscaleMode::Overlay || caps.base == GrayscaleBase::Separate)))
     displayBuffer(fallback, turnOffScreen);
   DisplayPmLock pmLock;
   syncPendingAsync();
   _shadowValid = false;
   _grayPassFailed = false;
-  _driver->beginGrayscale(_bus, frameBuffer, mode, toInternal(fallback), turnOffScreen);
+  // The inverted B/W base is already on the panel; only its masks follow.
+  if (!_inverted) _driver->beginGrayscale(_bus, frameBuffer, mode, toInternal(fallback), turnOffScreen);
   _grayscaleMode = mode;
   _grayRows[0] = _grayRows[1] = 0;
   return true;
@@ -1252,7 +1271,7 @@ void FreeInkDisplay::preconditionGrayscale(uint16_t x, uint16_t y, uint16_t w, u
 }
 
 void FreeInkDisplay::copyGrayscaleLsbBuffers(const uint8_t* lsbBuffer) {
-  if (_inverted && !invertsGrayFrame()) return;  // see copyGrayscaleBuffers()
+  if (!grayAllowed() && !invertsGrayFrame()) return;  // see copyGrayscaleBuffers()
   DisplayPmLock pmLock;
   syncPendingAsync();
   if (!acceptGrayscaleRows(0, lsbBuffer, 0, getDisplayHeight())) return;
@@ -1260,7 +1279,7 @@ void FreeInkDisplay::copyGrayscaleLsbBuffers(const uint8_t* lsbBuffer) {
 }
 
 void FreeInkDisplay::copyGrayscaleMsbBuffers(const uint8_t* msbBuffer) {
-  if (_inverted && !invertsGrayFrame()) return;  // see copyGrayscaleBuffers()
+  if (!grayAllowed() && !invertsGrayFrame()) return;  // see copyGrayscaleBuffers()
   DisplayPmLock pmLock;
   syncPendingAsync();
   if (!acceptGrayscaleRows(1, msbBuffer, 0, getDisplayHeight())) return;
@@ -1268,7 +1287,7 @@ void FreeInkDisplay::copyGrayscaleMsbBuffers(const uint8_t* msbBuffer) {
 }
 
 void FreeInkDisplay::writeGrayscalePlaneStrip(GrayPlane plane, const uint8_t* rows, uint16_t yStart, uint16_t numRows) {
-  if (_inverted) return;
+  if (!grayAllowed()) return;
   if (!acceptGrayscaleRows(plane == GRAY_PLANE_LSB ? 0 : 1, rows, yStart, numRows)) return;
   DisplayPmLock pmLock;
   // Paper Mono retains these bytes in PSRAM and performs no bus access here, so
@@ -1297,6 +1316,11 @@ void FreeInkDisplay::cleanupGrayscaleBuffers(const uint8_t* bwBuffer) {
   syncPendingAsync();
   if (!_inverted) {
     _driver->cleanupGrayscaleBuffers(_bus, bwBuffer);
+  } else if (grayAllowed()) {
+    // The driver retains the frame as its next differential baseline.
+    invertBytes(const_cast<uint8_t*>(bwBuffer), bufferSize);
+    _driver->cleanupGrayscaleBuffers(_bus, bwBuffer);
+    invertBytes(const_cast<uint8_t*>(bwBuffer), bufferSize);
   }
   // Restore frameBuffer so subsequent BW draws paint onto a valid BW baseline
   // rather than the stale LSB/MSB grayscale plane data that was there before.
@@ -1336,6 +1360,11 @@ void FreeInkDisplay::cleanupGrayscaleWithPreviousBuffer() {
   if (!_inverted) {
     DisplayPmLock pmLock;
     _driver->cleanupGrayscaleBuffers(_bus, baseline);
+  } else if (grayAllowed()) {
+    DisplayPmLock pmLock;
+    invertBytes(const_cast<uint8_t*>(baseline), bufferSize);
+    _driver->cleanupGrayscaleBuffers(_bus, baseline);
+    invertBytes(const_cast<uint8_t*>(baseline), bufferSize);
   }
   if (!baseline) return;
   if (frameBuffer && frameBuffer != baseline) memcpy(frameBuffer, baseline, bufferSize);
