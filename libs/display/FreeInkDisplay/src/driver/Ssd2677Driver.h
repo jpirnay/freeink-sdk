@@ -30,6 +30,13 @@
 #include "PanelDriver.h"
 #include "X4ProTextAa.h"
 
+// One-pass reader text that rests every pixel already at its target (stays black, stays white, stays
+// the same gray) instead of PR #213's full-target compose. No charge map: one staged gray plane, taken
+// on the first reader page, instead of X4ProTextAa's twelve planes at begin().
+#ifndef FREEINK_PICCO_TEXT_REST
+#define FREEINK_PICCO_TEXT_REST 0
+#endif
+
 namespace freeink {
 
 class Ssd2677Driver : public PanelDriver {
@@ -42,12 +49,12 @@ class Ssd2677Driver : public PanelDriver {
   }
   PanelGeometry geometry() const override;
 
-  void setReaderRefresh(bool reading) override { _readerRefresh = reading; }
+  void setReaderRefresh(bool reading) override;
   // Our host's single push (PanelDriver::supportsGrayFrame): a reader page stages its planes while
   // setReaderRefresh() is on, then displayGrayFrame() sends base and gray as the one combined text pass
   // that displayGray() runs for a combined base. Picco only; the Sticky keeps its OTP waveforms here.
   bool supportsOnePassText() const override;
-  bool supportsGrayFrame() const override { return _readerRefresh && supportsOnePassText(); }
+  bool supportsGrayFrame() const override { return _readerRefresh && textPassReady(); }
   void displayGrayFrame(EpdBus& bus, const uint8_t* fb, RefreshMode mode, bool turnOff) override;
   void setBackgroundHint(bool darkBackground) override { _darkBackground = darkBackground; }
   // BOOX 2959 runs the reader AA overlay after inverted pages too.
@@ -62,7 +69,7 @@ class Ssd2677Driver : public PanelDriver {
   // Both take a complete image in one activation.
   GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const override {
     // Reader pages: base and gray in one activation (lut_picco_se0400_text).
-    if (mode == GrayscaleMode::Overlay && _readerRefresh && _textAa.ready())
+    if (mode == GrayscaleMode::Overlay && _readerRefresh && textPassReady())
       return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Combined, false, false, false};
     if (mode == GrayscaleMode::Overlay)
       return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Separate, false, false, false};
@@ -72,6 +79,7 @@ class Ssd2677Driver : public PanelDriver {
   }
   void requestResync(uint8_t) override {
     _textAa.invalidate();
+    _textBegun = false;
     _absoluteGray = false;
     _grayPending = false;
     if (BoardConfig::ACTIVE.board != BoardConfig::Board::Sticky) _needsInitialFull = true;
@@ -94,8 +102,18 @@ class Ssd2677Driver : public PanelDriver {
   void powerAndRefresh(EpdBus& bus, bool turnOff);
   void refreshWith(EpdBus& bus, const unsigned char* lut, bool turnOff);
   bool presentTextFrame(EpdBus& bus);
+  // The one-pass text path is set up (PR #213's helper, or the rest planes) and may run.
+  bool textPassReady() const;
+  bool ensureRestText(bool withBase);
+  void stageRestText(unsigned plane, const uint8_t* data);
+  bool presentRestText(EpdBus& bus, const uint8_t* base);
+  void sendRestCodes(EpdBus& bus, const uint8_t* base, bool grayKnown);
 
   X4ProTextAa _textAa;
+  uint8_t* _textGray = nullptr;  // rest: the coming page's staged gray (LSB | MSB); swaps with _lsb after a pass
+  uint8_t* _textBase = nullptr;  // rest, combined base only: the page, as the renderer reuses its buffer
+  uint8_t _textStaged = 0;       // rest: bit 0 LSB in, bit 1 MSB in
+  bool _textBegun = false;       // rest: beginGrayscale() took a reader page for the combined pass
   bool _readerRefresh = false;
   bool _afterReader = false;  // last frame presented a book page
   bool _darkBackground = false;  // facade renders inverted frames

@@ -175,7 +175,11 @@ void Ssd2677Driver::latchOtpWaveform(EpdBus& bus, uint8_t code) {
 void Ssd2677Driver::begin(EpdBus& bus) {
   initPanel(bus);
   const PanelGeometry g = geometry();
+#if !FREEINK_PICCO_TEXT_REST
   _textAa.allocate(true, g.widthBytes, g.height);
+#else
+  (void)g;  // the rest planes are taken on the first reader page (setReaderRefresh)
+#endif
 
   _needsInitialFull = true;
   _grayPending = _grayMaskReady = false;
@@ -319,10 +323,17 @@ bool Ssd2677Driver::ensureLsb() {
 
 void Ssd2677Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
   (void)bus;
+#if FREEINK_PICCO_TEXT_REST
+  if (_textBegun || (supportsGrayFrame() && !_absoluteGray)) {
+    stageRestText(0, lsb);
+    return;
+  }
+#else
   if (_textAa.active() || (supportsGrayFrame() && !_absoluteGray)) {
     _textAa.stage(0, lsb, 0, geometry().height);
     return;
   }
+#endif
   if (!lsb) return;
   if (!_absoluteGray) ensureLsb();
   _grayMaskReady = false;
@@ -331,6 +342,18 @@ void Ssd2677Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
 
 void Ssd2677Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback,
                                    bool turnOff) {
+#if FREEINK_PICCO_TEXT_REST
+  _textBegun = false;
+  if (mode == GrayscaleMode::Overlay && _readerRefresh && textPassReady() && ensureRestText(true)) {
+    // The page is presented by displayGray; only a clean needs its own refresh.
+    if (fallback != RefreshMode::Fast || _needsInitialFull) display(bus, fb, nullptr, fallback, false);
+    _absoluteGray = false;
+    memcpy(_textBase, fb, geometry().bufferSize);  // the renderer draws the planes into fb next
+    _textStaged = 0;
+    _textBegun = true;
+    return;
+  }
+#else
   if (mode == GrayscaleMode::Overlay && _readerRefresh && _textAa.ready()) {
     // The page is presented by displayGray; only a clean needs its own refresh.
     if (fallback != RefreshMode::Fast || _needsInitialFull) display(bus, fb, nullptr, fallback, false);
@@ -338,6 +361,7 @@ void Ssd2677Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode
     _textAa.begin(fb);
     return;
   }
+#endif
   _textAa.invalidate();
   _absoluteGray = mode == GrayscaleMode::Absolute;
   if (_absoluteGray) {
@@ -359,10 +383,17 @@ void Ssd2677Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode
 }
 
 void Ssd2677Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
+#if FREEINK_PICCO_TEXT_REST
+  if (_textBegun || (supportsGrayFrame() && !_absoluteGray)) {
+    stageRestText(1, msb);
+    return;
+  }
+#else
   if (_textAa.active() || (supportsGrayFrame() && !_absoluteGray)) {
     _textAa.stage(1, msb, 0, geometry().height);
     return;
   }
+#endif
   if (!msb || !_lsb) return;
   if (_absoluteGray) {
     if (isSticky()) {
@@ -396,7 +427,123 @@ void Ssd2677Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
   }
 }
 
-bool Ssd2677Driver::supportsOnePassText() const { return !isSticky() && _textAa.ready(); }
+#if FREEINK_PICCO_TEXT_REST
+namespace {
+// PR #213's text table with code 10 (its held white, one frame) turned into rest. Codes: 00 to black,
+// 01 gray, 10 rest, 11 to white.
+const unsigned char* restTextLut() {
+  static unsigned char lut[sizeof(lut_picco_se0400_text)];
+  static bool built = false;
+  if (!built) {
+    memcpy(lut, lut_picco_se0400_text, sizeof(lut));
+    lut[7 + 3 * 88 + 1] = lut[7 + 3 * 88 + 2] = 0xFF;  // pixel table 3, group 0: no drive
+    built = true;
+  }
+  return lut;
+}
+}  // namespace
+#endif
+
+bool Ssd2677Driver::supportsOnePassText() const {
+#if FREEINK_PICCO_TEXT_REST
+#if defined(BOARD_HAS_PSRAM)
+  return !isSticky();
+#else
+  return false;
+#endif
+#else
+  return !isSticky() && _textAa.ready();
+#endif
+}
+
+bool Ssd2677Driver::textPassReady() const {
+#if FREEINK_PICCO_TEXT_REST
+  return !isSticky() && _textGray && _lsb && _old;
+#else
+  return _textAa.ready() && (isSticky() || supportsOnePassText());
+#endif
+}
+
+void Ssd2677Driver::setReaderRefresh(const bool reading) {
+  _readerRefresh = reading;
+#if FREEINK_PICCO_TEXT_REST
+  // First use pays for the planes, so a reader who leaves one-pass text off never does.
+  if (reading && supportsOnePassText()) ensureRestText(false);
+#endif
+}
+
+#if FREEINK_PICCO_TEXT_REST
+bool Ssd2677Driver::ensureRestText(const bool withBase) {
+  const uint32_t size = geometry().bufferSize;
+  if (!_textGray) _textGray = static_cast<uint8_t*>(heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (withBase && !_textBase)
+    _textBase = static_cast<uint8_t*>(heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  return _textGray && (!withBase || _textBase) && ensureLsb();
+}
+
+void Ssd2677Driver::stageRestText(const unsigned plane, const uint8_t* data) {
+  if (!data || !_textGray) {
+    _textStaged = 0;
+    return;
+  }
+  const uint32_t size = geometry().bufferSize;
+  if (plane == 0) {
+    memcpy(_textGray, data, size);
+    _textStaged = 1;
+  } else if (_textStaged & 1) {
+    for (uint32_t i = 0; i < size; ++i) _textGray[i] |= data[i];
+    _textStaged |= 2;
+  }
+}
+
+// Per pixel, from the glass (_old, and _lsb's gray when the last pass left it) to the page (base, staged
+// gray): already there rests (10), to white (11), to black (00), new gray (01).
+void Ssd2677Driver::sendRestCodes(EpdBus& bus, const uint8_t* base, const bool grayKnown) {
+  const PanelGeometry g = geometry();
+  static uint8_t chunk[1024];
+  bus.cmd(CMD_DATA);
+  auto txn = bus.beginTxn();
+  uint16_t n = 0;
+  for (uint32_t i = 0; i < g.bufferSize; ++i) {
+    const uint8_t gray = _textGray[i];
+    const uint8_t wasGray = grayKnown ? _lsb[i] : 0;
+    const auto toWhite = static_cast<uint8_t>(base[i] & ~gray);
+    const auto toBlack = static_cast<uint8_t>(~base[i] & ~gray);
+    const auto wasWhite = static_cast<uint8_t>(_old[i] & ~wasGray);
+    const auto wasBlack = static_cast<uint8_t>(~_old[i] & ~wasGray);
+    const auto rest = static_cast<uint8_t>((toWhite & wasWhite) | (toBlack & wasBlack) | (gray & wasGray));
+    const auto driveWhite = static_cast<uint8_t>(toWhite & ~wasWhite);
+    packPixels(static_cast<uint8_t>(rest | driveWhite), static_cast<uint8_t>((gray & ~wasGray) | driveWhite),
+               &chunk[n]);
+    n += 2;
+    if (n == sizeof(chunk)) {
+      txn.writeBytes(chunk, n);
+      n = 0;
+    }
+  }
+  if (n) txn.writeBytes(chunk, n);
+}
+
+bool Ssd2677Driver::presentRestText(EpdBus& bus, const uint8_t* base) {
+  const bool staged = _textStaged == 3;
+  _textStaged = 0;
+  if (!staged || !base || !textPassReady()) return false;
+  // _lsb describes the glass only straight after a gray pass; a B/W frame since drove it to _old.
+  const bool grayKnown = _grayPending;
+  powerOn(bus);
+  sendRestCodes(bus, base, grayKnown);
+  refreshWith(bus, restTextLut(), true);  // stock reader pages power off
+  memcpy(_old, base, geometry().bufferSize);
+  // The page's gray is the glass's now; the old mask's block stages the next page.
+  uint8_t* const glassGray = _textGray;
+  _textGray = _lsb;
+  _lsb = glassGray;
+  _grayPending = true;  // the next B/W frame drives each gray pixel to its target
+  _grayMaskReady = false;
+  _afterReader = true;
+  return true;
+}
+#endif  // FREEINK_PICCO_TEXT_REST
 
 // PR #213's combined text pass, shared by displayGray() (a combined base) and displayGrayFrame()
 // (our single push). False when the planes do not compose; nothing was sent then.
@@ -434,19 +581,32 @@ bool Ssd2677Driver::presentTextFrame(EpdBus& bus) {
 void Ssd2677Driver::displayGrayFrame(EpdBus& bus, const uint8_t* fb, RefreshMode mode, bool turnOff) {
   // A clean refresh, or the first frame after init, goes up in B/W first, as beginGrayscale() does.
   if (mode != RefreshMode::Fast || _needsInitialFull) display(bus, fb, nullptr, mode, false);
+#if FREEINK_PICCO_TEXT_REST
+  // On failure the page still goes up, in B/W.
+  if (!presentRestText(bus, fb)) display(bus, fb, nullptr, RefreshMode::Fast, turnOff);
+#else
   _textAa.beginStaged(fb);
   // On failure the page still goes up, in B/W.
   if (!presentTextFrame(bus)) display(bus, fb, nullptr, RefreshMode::Fast, turnOff);
+#endif
 }
 
 void Ssd2677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut,
                                 bool factoryMode) {
   (void)lut;
   (void)factoryMode;
+#if FREEINK_PICCO_TEXT_REST
+  if (_textBegun) {
+    _textBegun = false;
+    if (!presentRestText(bus, _textBase)) display(bus, _textBase, nullptr, RefreshMode::Fast, turnOff);
+    return;
+  }
+#else
   if (_textAa.active()) {
     presentTextFrame(bus);
     return;
   }
+#endif
   if (_absoluteGray) {
     _absoluteGray = false;
     if (!_lsb || (!isSticky() && !_old)) return;  // beginGrayscale presented the B/W fallback.
@@ -484,7 +644,14 @@ void Ssd2677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
 
 void Ssd2677Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
   // A skipped text pass still owes the caller its deferred B/W page.
+#if FREEINK_PICCO_TEXT_REST
+  if (_textBegun) {
+    _textBegun = false;
+    display(bus, bw ? bw : _textBase, nullptr, RefreshMode::Fast, true);
+  }
+#else
   if (_textAa.active()) display(bus, bw ? bw : _textAa.base(), nullptr, RefreshMode::Fast, true);
+#endif
 }
 
 bool Ssd2677Driver::displayLabFrame(EpdBus& bus, const uint8_t* bw, const uint8_t* red, const uint8_t* lut) {
@@ -504,6 +671,7 @@ bool Ssd2677Driver::displayLabFrame(EpdBus& bus, const uint8_t* bw, const uint8_
 
 void Ssd2677Driver::deepSleep(EpdBus& bus) {
   _textAa.invalidate();
+  _textBegun = false;
   powerOffBetweenFrames(bus);
   // Stock (FUN_4200b608): 0x07 with the 0xA5 check code.
   bus.cmd(CMD_DEEP_SLEEP);

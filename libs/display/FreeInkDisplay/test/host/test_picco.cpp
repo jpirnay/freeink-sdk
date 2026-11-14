@@ -451,6 +451,73 @@ static void expectDarkGray2677(Ssd2677Driver& s) {
 
 // SE0400 reader pages: base and gray in one activation with the panel's text
 // table; leaving the reader drives the gray pixels to the next frame.
+#if FREEINK_PICCO_TEXT_REST
+static const Bytes* lastPacked(const EpdBus& bus) {
+  const Bytes* packed = nullptr;
+  for (const auto& w : bus.writes)
+    if (w.command == 0x10) packed = &w.bytes;
+  return packed;
+}
+
+// Rest variant: every pixel already at its target rests (code 10), on both entries.
+static void expectRestTextAa2677(Ssd2677Driver& s) {
+  EpdBus bus;
+  Bytes base(48000, 0xFF), lsb(48000, 0), msb(48000, 0), next(48000, 0xFF);
+  base[0] = 0x1F;  // 3 px black
+  lsb[0] = 0x18;   // then 2 px gray
+  msb[0] = 0x08;
+  assert(!s._textAa.ready() && !s._textGray);  // nothing taken at begin()
+  s.display(bus, base.data(), nullptr, RefreshMode::Full, false);
+  assert(s.supportsOnePassText() && !s.supportsGrayFrame());
+  s.setReaderRefresh(true);
+  assert(s._textGray && s.supportsGrayFrame() && !s._textBase);  // single push: one plane
+  for (int page = 0; page < 2; ++page) {
+    bus.clear();
+    s.copyGrayscaleLsb(bus, lsb.data());
+    s.copyGrayscaleMsb(bus, msb.data());
+    assert(bus.writes.empty());
+    s.displayGrayFrame(bus, base.data(), RefreshMode::Fast, false);
+    unsigned refreshes = 0;
+    for (const auto& w : bus.writes) {
+      refreshes += w.command == 0x12;
+      if (w.command == 0x20) {
+        assert(w.bytes[7 + 3 * 88 + 1] == 0xFF && w.bytes[7 + 3 * 88 + 2] == 0xFF);  // table 3 rests
+        assert(w.bytes[7 + 1 * 88 + 1] == 0xBA && w.bytes[7 + 4 * 88 + 1] == 0xD5);  // black, white as PR #213
+      }
+    }
+    const Bytes* packed = lastPacked(bus);
+    assert(refreshes == 1 && packed);
+    if (page == 0) {
+      // Black stays black (10), 2 px new gray (01), white stays (10).
+      assert((*packed)[0] == 0xA9 && (*packed)[1] == 0x6A && (*packed)[2] == 0xAA);
+    } else {
+      // The same page again: the gray is on the glass, so everything rests.
+      assert((*packed)[0] == 0xAA && (*packed)[1] == 0xAA);
+    }
+    assert(s._grayPending && s._lsb[0] == 0x18);
+  }
+  // Leaving the reader: black and gray both driven white by the B/W frame.
+  s.setReaderRefresh(false);
+  bus.clear();
+  s.display(bus, next.data(), nullptr, RefreshMode::Fast, false);
+  const Bytes* packed = lastPacked(bus);
+  assert(packed && (*packed)[0] == 0x55 && (*packed)[1] == 0x7F);
+  // A combined-base caller (PR #213's entry) gets the same pass, with one more plane for the base.
+  s.display(bus, base.data(), nullptr, RefreshMode::Full, false);
+  s.setReaderRefresh(true);
+  bus.clear();
+  s.beginGrayscale(bus, base.data(), GrayscaleMode::Overlay, RefreshMode::Fast, false);
+  assert(s._textBegun && s._textBase && bus.writes.empty());
+  Bytes scribbled(48000, 0x00);  // the renderer reuses fb for the planes
+  s.copyGrayscaleLsb(bus, lsb.data());
+  s.copyGrayscaleMsb(bus, msb.data());
+  s.displayGray(bus, scribbled.data(), false, nullptr, false);
+  packed = lastPacked(bus);
+  assert(packed && (*packed)[0] == 0xA9 && (*packed)[1] == 0x6A && !s._textBegun);
+  s.setReaderRefresh(false);
+}
+#endif
+
 // Our host's single push: planes staged under setReaderRefresh() before the page, then one
 // displayGrayFrame() sends base and gray in one activation with the same text table.
 static void expectSinglePushTextAa2677(Ssd2677Driver& s) {
@@ -626,6 +693,13 @@ int main(int argc, char** argv) {
     EpdBus bus;
     s.begin(bus);
     assert(lastRegister(bus, 0x00) == 0x27 && lastRegister(bus, 0xE9) == 0x01);
+#if FREEINK_PICCO_TEXT_REST
+    if (argc > 2 && !strcmp(argv[2], "textrest")) {
+      expectRestTextAa2677(s);
+      std::printf("Picco se0400: rest one-pass text passed\n");
+      return 0;
+    }
+#endif
     if (argc > 2 && !strcmp(argv[2], "textaa")) {
       expectOnePassTextAa2677(s);
       expectSinglePushTextAa2677(s);
