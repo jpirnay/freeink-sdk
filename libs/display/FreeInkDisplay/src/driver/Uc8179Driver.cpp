@@ -821,7 +821,7 @@ bool Uc8179Driver::supportsOnePassText() const {
 
 void Uc8179Driver::setReaderRefresh(const bool reading) {
   // First use pays for the block, so a reader who leaves the option off never does.
-  if (reading && !_textAa.ready() && supportsOnePassText()) _textAa.allocate(true);
+  if (reading && !_textAa.ready() && supportsOnePassText()) _textAa.allocate(true, _wb, _h);
   _readerRefresh = reading;
 }
 
