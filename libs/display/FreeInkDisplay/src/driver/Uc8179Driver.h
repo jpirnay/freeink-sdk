@@ -105,6 +105,9 @@ class Uc8179Driver : public PanelDriver {
   void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;
   void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;
   void cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) override;
+  // Lab (development builds): `red` goes to DTM1 and `bw` to DTM2, and `lut` is the five 42-byte tables
+  // for 0x20..0x24 (VCOM, then one per pixel code), loaded and run as the one-pass text frame runs them.
+  bool displayLabFrame(EpdBus& bus, const uint8_t* bw, const uint8_t* red, const uint8_t* lut) override;
 
 #if FREEINK_ONE_PASS_TEXT_AA
   // --- One-pass text AA: see X4ProTextAa.h and PanelDriver::setOnePassText() ---

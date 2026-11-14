@@ -898,6 +898,52 @@ void Uc8179Driver::finishTextFrame(EpdBus& bus) {
 }
 #endif
 
+bool Uc8179Driver::displayLabFrame(EpdBus& bus, const uint8_t* bw, const uint8_t* red, const uint8_t* lut) {
+  if (!bw || !red || !lut) return false;
+  bus.waitBusy(" 8179_lab_ready");
+  restoreBwConfiguration(bus);
+  _directGrayPass = false;
+  _directGrayPlanes = 0;
+  _absoluteInput = false;
+  // The register sequence of displayGrayFrameStart(), with the lab's planes and tables.
+  streamPlane(bus, CMD_DTM1, red);
+  streamPlane(bus, CMD_DTM2, bw);
+  bus.cmd(CMD_PANEL_SETTING);
+  bus.data(_cfg.psr0);
+  bus.data(_cfg.psr1);
+  bus.cmd(CMD_PFS);
+  bus.data(0x20);
+  bus.cmd(CMD_GATE_SCAN);
+  bus.data(2);
+  for (unsigned i = 0; i < 5; ++i) {
+    bus.cmd(0x20 + i);
+    bus.data(lut + i * GRAY_LUT_LEN, GRAY_LUT_LEN);
+  }
+  bus.cmd(CMD_VCOM_DATA_INTERVAL);
+  bus.data(0x29);
+  bus.data(CDI_INTERVAL);
+  if (!_isScreenOn) {
+    bus.cmd(CMD_POWER_ON);
+    bus.waitBusy(" 8179_lab_PON");
+    _isScreenOn = true;
+  }
+  bus.cmd(CMD_DISPLAY_REFRESH);
+  bus.waitRefreshComplete(" 8179_lab_DRF");
+  bus.cmd(CMD_POWER_OFF);
+  bus.waitBusy(" 8179_lab_POF");
+  _isScreenOn = false;
+  // The glass holds whatever the lab's tables made of each code, which no retained plane describes: no
+  // text history survives, and the next frame is a full one.
+#if FREEINK_ONE_PASS_TEXT_AA
+  _textAa.invalidate();
+#endif
+  _needFullClear = true;
+  _oldPlaneValid = false;
+  _bwPlanesSynced = false;
+  _redriveAfterGray = false;
+  return true;
+}
+
 void Uc8179Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
   bus.waitBusy(" 8179_gray_cleanup");
   _absoluteInput = false;
