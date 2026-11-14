@@ -498,6 +498,33 @@ static void expectOnePassTextAa2677(Ssd2677Driver& s) {
   s.setReaderRefresh(false);
 }
 
+// A lab's frame (development builds) after a combined text pass: the LUT goes out as given, and nothing the
+// pass left behind (charge history, the gray mask for the next B/W frame) survives it; that frame is a full one.
+static void expectLabFrame2677(Ssd2677Driver& s) {
+  EpdBus bus;
+  Bytes base(48000, 0xFF), lsb(48000, 0), msb(48000, 0), red(48000, 0x0F), lut(535, 0x5A);
+  base[0] = 0x1F;
+  lsb[0] = 0x18;
+  msb[0] = 0x08;
+  s.display(bus, base.data(), nullptr, RefreshMode::Full, false);
+  s.setReaderRefresh(true);
+  s.beginGrayscale(bus, base.data(), GrayscaleMode::Overlay, RefreshMode::Fast, false);
+  s.copyGrayscaleLsb(bus, lsb.data());
+  s.copyGrayscaleMsb(bus, msb.data());
+  s.displayGray(bus, base.data(), false, nullptr, false);
+  s.setReaderRefresh(false);
+  assert(s._textAa.onPanel() && s._grayPending);
+  bus.clear();
+  assert(s.displayLabFrame(bus, base.data(), red.data(), lut.data()));
+  for (const auto& w : bus.writes)
+    if (w.command == 0x20) assert(w.bytes == lut);
+  assert(!s._textAa.onPanel() && !s._grayPending && !s._grayMaskReady && s._needsInitialFull);
+  bus.clear();
+  s.display(bus, base.data(), nullptr, RefreshMode::Fast, false);
+  for (const auto& w : bus.writes)
+    if (w.command == 0x20) assert(w.bytes == Bytes(lut_picco_se0400_full, lut_picco_se0400_full + 535));
+}
+
 // DEPG0397 reader pages: one combined activation, no separate B/W base. Other
 // SSD1677 panels keep the two-pass overlay.
 static void expectOnePassTextAa(Ssd1677Driver& d, bool expected) {
@@ -571,7 +598,8 @@ int main(int argc, char** argv) {
     assert(lastRegister(bus, 0x00) == 0x27 && lastRegister(bus, 0xE9) == 0x01);
     if (argc > 2 && !strcmp(argv[2], "textaa")) {
       expectOnePassTextAa2677(s);
-      std::printf("Picco se0400: one-pass text AA passed\n");
+      expectLabFrame2677(s);
+      std::printf("Picco se0400: one-pass text AA and lab frame passed\n");
       return 0;
     }
     // Stock reader table: 24-frame drives, 1-frame top-ups. Text table: black, gray, held white, white.
