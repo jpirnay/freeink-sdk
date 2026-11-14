@@ -58,6 +58,8 @@ class Ssd2677Driver : public PanelDriver {
   void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
   void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;
   void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;
+  // Lab (development builds): code = red * 2 + bw selects pixel table 1..4 of `lut`, a full 535-byte LUT.
+  bool displayLabFrame(EpdBus& bus, const uint8_t* bw, const uint8_t* red, const uint8_t* lut) override;
 
  private:
   void initPanel(EpdBus& bus);

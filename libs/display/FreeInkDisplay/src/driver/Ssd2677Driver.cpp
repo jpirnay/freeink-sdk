@@ -343,6 +343,17 @@ void Ssd2677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
   // AA-edge residual (stock does the same — its gray present sets no full flag).
 }
 
+bool Ssd2677Driver::displayLabFrame(EpdBus& bus, const uint8_t* bw, const uint8_t* red, const uint8_t* lut) {
+  // The Sticky runs OTP waveforms and latches them; only the Picco takes a RAM LUT per frame.
+  if (isSticky() || !bw || !red || !lut) return false;
+  // packPixels puts its first plane in the high bit: (red, bw) gives code red * 2 + bw.
+  sendPacked(bus, red, bw);
+  refreshWith(bus, lut, true);
+  // The glass holds whatever the lab's LUT made of each code, which no retained plane describes.
+  _needsInitialFull = true;
+  return true;
+}
+
 void Ssd2677Driver::deepSleep(EpdBus& bus) {
   powerOffBetweenFrames(bus);
   // Stock (FUN_4200b608): 0x07 with the 0xA5 check code.
