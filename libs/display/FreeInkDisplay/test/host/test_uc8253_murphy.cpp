@@ -379,8 +379,10 @@ void testOnePassPicksEachPixelsDrive() {
       {&black, false, &white, &black, 0x00, 0xFF},  // to white
       {&white, false, &black, &black, 0x00, 0x00},  // to black
       {&white, false, &black, &white, 0xFF, 0x00},  // gray, from anything
+      {&black, false, &black, &white, 0xFF, 0x00},
       {&black, true, &black, &black, 0x00, 0x00},   // gray on the glass is not black: driven
       {&black, true, &white, &black, 0x00, 0xFF},   // and to white
+      {&black, true, &black, &white, 0xFF, 0x00},   // gray that stays gray takes the gray row again
   };
   for (const auto& c : cases) {
     Uc8253MurphyDriver driver(cfg);

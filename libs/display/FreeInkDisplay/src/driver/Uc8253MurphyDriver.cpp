@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "../lut/Uc8253MurphyLuts.h"
+#include "RestTextCodes.h"
 
 namespace freeink {
 namespace {
@@ -234,16 +235,14 @@ void Uc8253MurphyDriver::displayGrayFrame(EpdBus& bus, const uint8_t* fb, Refres
   _lsbStaged = _msbStaged = false;
 
   // The page is white, black, or black under a gray mask. DTM1 says rest or gray, DTM2 says the pixel
-  // ends white or rests: (1,1) rests, (0,1) to white, (1,0) gray, (0,0) to black.
+  // ends white or rests: (1,1) rests, (0,1) to white, (1,0) gray, (0,0) to black. Gray that stays gray
+  // takes the gray row again, as the text bank was tuned.
   const size_t size = static_cast<size_t>(_fbWb) * _fbH;
   for (size_t i = 0; i < size; i++) {
-    const uint8_t gray = static_cast<uint8_t>(_lsb[i] | _msb[i]);
-    const uint8_t white = fb[i];
-    const uint8_t black = static_cast<uint8_t>(~white & ~gray);
-    const uint8_t wasBlack = static_cast<uint8_t>(~_shown[i] & ~(_grayOnGlass ? _gray[i] : 0));
-    const uint8_t rests = static_cast<uint8_t>((white & _shown[i]) | (black & wasBlack));
-    _textOld[i] = static_cast<uint8_t>(rests | gray);
-    _textNew[i] = static_cast<uint8_t>(white | (black & wasBlack));
+    const auto gray = static_cast<uint8_t>(_lsb[i] | _msb[i]);
+    const RestTextDrives d = restTextDrives(fb[i], gray, _shown[i], _grayOnGlass ? _gray[i] : 0, false);
+    _textOld[i] = static_cast<uint8_t>(d.rest | d.toGray);
+    _textNew[i] = static_cast<uint8_t>(d.rest | d.toWhite);
   }
 
   bus.reset(200);  // see display(); a cold start also keeps DTM1 and DTM2 in their roles
