@@ -11,6 +11,9 @@ after partial output, premature EOF, zero-progress reads, short reads, 64-bit
 file sizes, file closure, uninitialized/open-failure paths, watchdog subscription
 and time-budgeted yields during both ordinary transfers and partial writes.
 The timer rollover case checks unsigned elapsed-time arithmetic.
+`removeDir()` runs over a small directory model: depth-first order, a 127-byte
+name that fits its buffer, and a 128-byte folder or file name, which must be
+refused without reopening the folder being removed.
 
 For host sanitizers:
 

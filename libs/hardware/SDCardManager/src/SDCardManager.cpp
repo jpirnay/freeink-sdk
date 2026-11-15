@@ -624,7 +624,9 @@ bool SDCardManager::removeDir(const char* path) {
     if (!filePath.endsWith("/")) {
       filePath += "/";
     }
-    file.getName(name, sizeof(name));
+    // From Free-Ink PR #212 by Justin Mitchell. SdFat yields "" for a name longer than the buffer, and
+    // recursing on "dir/" would reopen this directory until the stack ran out.
+    if (file.getName(name, sizeof(name)) == 0) return false;
     filePath += name;
 
     if (file.isDirectory()) {
