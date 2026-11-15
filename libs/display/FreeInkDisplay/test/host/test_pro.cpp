@@ -569,6 +569,54 @@ static void testUltraChipAbsolute(bool reverse, unsigned gateOffset, bool invert
     }
 }
 
+// Dark Mode, then a screen that keeps normal polarity (the sleep cover, the BMP viewer): the polarity switches back
+// before that screen draws, and it asks for an absolute pass over the image it drew. On a panel that pushes its B/W
+// base separately, the pending inversion change once went out through displayBuffer(): that showed the image, swapped
+// the buffers, and beginGrayscale() then pushed the frame from two refreshes ago, the Dark Mode page, as the base the
+// gray planes land on. The base must be the image, pushed once and never FAST (the polarity flips every pixel, as
+// displayBuffer() knows), and the caller's write buffer must stay the one it drew into.
+template <class Driver>
+static void testSeparateBaseAfterInversion() {
+  const auto darkPage = frame(51), image = frame(77);
+  for (const auto fallback : {FreeInkDisplay::FAST_REFRESH, FreeInkDisplay::HALF_REFRESH}) {
+    Driver driver;
+    FreeInkDisplay display(1, 2, 3, 4, 5, 6);
+    display._driver = &driver;
+    display.begin();
+    assert(display.grayscaleCapabilities(GrayscaleMode::Absolute).base == GrayscaleBase::Separate);
+    display.setInverted(true);
+    std::memcpy(display.getFrameBuffer(), darkPage.data(), darkPage.size());
+    display.displayBuffer(FreeInkDisplay::FAST_REFRESH);
+    display.setInverted(false);
+    uint8_t* const write = display.getFrameBuffer();
+    std::memcpy(write, image.data(), image.size());
+    EpdBus expected;
+    driver.streamPlane(expected, 0x13, image.data());
+    driver.streamPlane(expected, 0x10, image.data(), /*invert=*/true);
+    display._bus.clear();
+    assert(display.displayGrayscaleBase(GrayscaleMode::Absolute, fallback));
+    const auto& writes = display._bus.writes;
+    assert(std::count_if(writes.begin(), writes.end(), [](const auto& w) { return w.command == 0x12; }) == 1);
+    for (const auto& w : writes)
+      if (w.command == 0x13) assert(w.bytes == expected.writes[0].bytes);
+    // The clearing scrub (OLD = the image's complement) shows the base went out HALF, not FAST.
+    assert(std::any_of(writes.begin(), writes.end(),
+                       [&](const auto& w) { return w.command == 0x10 && w.bytes == expected.writes[1].bytes; }));
+    assert(!display._inversionDirty);
+    assert(display.getFrameBuffer() == write && std::equal(image.begin(), image.end(), write));
+    // The pass completes over the image as on any other screen.
+    const auto lsb = frame(13), msb = frame(29);
+    display.copyGrayscaleBuffers(lsb.data(), msb.data());
+    display._bus.clear();
+    display.displayGrayBuffer(false);
+    assert(std::count_if(writes.begin(), writes.end(), [](const auto& w) { return w.command == 0x12; }) == 1);
+    assert(driver._needFullClear && !driver._absoluteInput);
+    display.releaseBuffers();
+    free(driver._grayBase);
+    driver._grayBase = nullptr;
+  }
+}
+
 static void testUc8179GrayShadeSplit() {
   Uc8179Driver driver;
   freeink::EpdBus bus;
@@ -1517,9 +1565,11 @@ int main(int argc, char** argv) {
   testDirectSleep<Uc8179Driver>();
   testDirectSleep<Uc8279X4Driver>();
   testUltraChipAbsolute<Uc8179Driver>(true, 0, false);
+  testSeparateBaseAfterInversion<Uc8179Driver>();
   for (uint8_t variant : {0x02, 0x68, 0x69}) {
     BoardConfig::ACTIVE.displayControllerVariant = variant;
     testUltraChipAbsolute<Uc8279X4Driver>(false, 120, true);
+    testSeparateBaseAfterInversion<Uc8279X4Driver>();
   }
   testAbsolutePipeline();
   testCapabilities();

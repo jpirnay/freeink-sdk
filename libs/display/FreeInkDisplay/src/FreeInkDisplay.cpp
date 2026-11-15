@@ -1205,14 +1205,21 @@ bool FreeInkDisplay::displayGrayscaleBase(GrayscaleMode mode, RefreshMode fallba
   cancelGrayscalePass();
   const auto caps = grayscaleCapabilities(mode);
   if (!caps.supported()) return false;
-  if (_inverted || (_inversionDirty && (mode == GrayscaleMode::Overlay || caps.base == GrayscaleBase::Separate)))
-    displayBuffer(fallback, turnOffScreen);
+  // From Free-Ink PR #212 by Justin Mitchell. A pending polarity change used to go out through displayBuffer()
+  // first, whose swap then handed beginGrayscale() the frame from two refreshes ago: after Dark Mode, the sleep
+  // cover and the BMP viewer laid their gray planes over the Dark Mode page on every Separate-base panel. The
+  // base push crosses the change itself instead, never FAST, as displayBuffer() would have taken it.
+  const bool dirtyBase =
+      !_inverted && _inversionDirty && (mode == GrayscaleMode::Overlay || caps.base == GrayscaleBase::Separate);
+  if (_inverted) displayBuffer(fallback, turnOffScreen);
+  if (dirtyBase && fallback == FAST_REFRESH) fallback = HALF_REFRESH;
   DisplayPmLock pmLock;
   syncPendingAsync();
   _shadowValid = false;
   _grayPassFailed = false;
   // The inverted B/W base is already on the panel; only its masks follow.
   if (!_inverted) _driver->beginGrayscale(_bus, frameBuffer, mode, toInternal(fallback), turnOffScreen);
+  if (dirtyBase) _inversionDirty = false;
   _grayscaleMode = mode;
   _grayRows[0] = _grayRows[1] = 0;
   return true;
