@@ -307,15 +307,18 @@ static void testComposedOnePass() {
   display.begin();
   assert(display.composesOnePassText());
   assert(display.beginOnePassMask() == nullptr);  // nothing of ours on the glass yet
+  assert(!display.secondaryHoldsFrameOnScreen());
   Bytes before(48000, 0xFF), page(48000, 0xFF);
   before[0] = 0x0F;  // left half black on screen
   page[0] = 0xF0;    // right half black on the new page
   page[1] = 0x00;
   std::memcpy(display.getFrameBuffer(), before.data(), before.size());
   display.displayBuffer(FreeInkDisplay::FAST_REFRESH);
+  assert(display.secondaryHoldsFrameOnScreen());  // the swap left the frame shown there
   std::memcpy(display.getFrameBuffer(), page.data(), page.size());
   uint8_t* mask = display.beginOnePassMask();
   assert(mask && mask == display.getFrameBuffer());
+  assert(!display.secondaryHoldsFrameOnScreen());  // the mask is beside the page now
   assert(mask[0] == 0x00 && mask[1] == 0x00 && mask[2] == 0xFF);  // only white before and after rests
   mask[1] = 0x01;                                                  // the host's gray
   display.displayOnePassFrame(FreeInkDisplay::FAST_REFRESH);
@@ -323,15 +326,19 @@ static void testComposedOnePass() {
   assert(driver.old[0] == 0x00 && driver.old[1] == 0x01 && driver.old[2] == 0xFF);
   assert(std::equal(page.begin(), page.end(), display.getFrameBuffer()));     // the write buffer keeps the page
   assert(std::equal(page.begin(), page.end(), display.frameBufferActive));    // and it is the frame on screen
+  assert(display.secondaryHoldsFrameOnScreen());
   assert(display.beginOnePassMask() != nullptr);                              // so the next page may use it
   display.displayOnePassFrame(FreeInkDisplay::FAST_REFRESH);
   assert(driver.frames == 2);
 
   assert(display.borrowSecondaryBuffer(nullptr) != nullptr);
+  assert(!display.secondaryHoldsFrameOnScreen());
   assert(display.beginOnePassMask() == nullptr);
   assert(display.returnSecondaryBuffer());
+  assert(!display.secondaryHoldsFrameOnScreen());  // seeded from the write buffer, not the glass
   assert(display.beginOnePassMask() == nullptr);  // the borrower wrote over it
   display.displayBuffer(FreeInkDisplay::FAST_REFRESH);
+  assert(display.secondaryHoldsFrameOnScreen());
   assert(display.beginOnePassMask() != nullptr);
   display.displayOnePassFrame(FreeInkDisplay::FAST_REFRESH);
   assert(driver.frames == 3);

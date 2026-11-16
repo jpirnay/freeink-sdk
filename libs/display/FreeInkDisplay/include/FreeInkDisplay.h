@@ -282,6 +282,13 @@ class FreeInkDisplay {
   // On FreeInk the SSD1677 driver already re-seeds RED after each single-buffer
   // refresh, so this only refreshes the advisory flag; kept for API parity.
   void syncRedRamFromFrameBuffer();
+  // True while the secondary buffer holds the frame on the glass: a display left it there, and
+  // nothing has changed either since (a lend, its return, a canvas push, a mask, an inversion).
+  // syncRedRamFromFrameBuffer() seeds RED from this buffer, so a host about to lend it and keep
+  // FAST refreshes on the seeded RED asks first whether the seed would be the frame on screen:
+  // after a lend has come back the buffer holds whatever the write buffer held. Always false
+  // without a secondary buffer, and while the output is inverted.
+  bool secondaryHoldsFrameOnScreen() const;
 
   // Opt in to X4 fast differential against the controller's retained RED-RAM baseline
   // while the secondary buffer is released. When set, a FAST refresh with no secondary
