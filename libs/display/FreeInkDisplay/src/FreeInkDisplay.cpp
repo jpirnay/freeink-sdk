@@ -892,6 +892,14 @@ void FreeInkDisplay::finishDisplayAsync() { syncPendingAsync(); }
 
 void FreeInkDisplay::completeDisplay() { syncPendingAsync(); }
 
+bool FreeInkDisplay::secondaryHoldsFrameOnScreen() const {
+#ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
+  return false;
+#else
+  return frameBufferActive && _activeMatchesGlass;
+#endif
+}
+
 void FreeInkDisplay::syncRedRamFromFrameBuffer() {
   // X3 has no host-managed previous-frame plane (its baseline lives in DTM1); the
   // advisory flag is meaningless there.
