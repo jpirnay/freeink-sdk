@@ -306,6 +306,16 @@ void Uc8253MurphyDriver::displayGray(EpdBus& bus, const uint8_t*, bool turnOff, 
   _grayOnGlass = true;
 }
 
+void Uc8253MurphyDriver::powerOffBetweenFrames(EpdBus& bus) {
+  // A gray pass after this one takes the cold path (reset and init): the warm one relies on the controller still
+  // being up from the page before it, and display() resets anyway, so the next refresh powers on as it always does.
+  _rolesTraded = false;
+  if (!_isScreenOn) return;
+  bus.cmd(CMD_POWER_OFF);
+  bus.waitBusy(" M3_POF");
+  _isScreenOn = false;
+}
+
 void Uc8253MurphyDriver::deepSleep(EpdBus& bus) {
   _rolesTraded = false;
   if (_isScreenOn) {

@@ -221,9 +221,11 @@ class FreeInkDisplay {
   // See PanelDriver::ghostsUnderFastRefresh(). False before begin().
   bool ghostsUnderFastRefresh() const;
 
-  // End-of-frame idle power policy, currently Picco only. Call under the same
-  // bus/render lock as drawing, after ALL grayscale uploads and cleanup.
-  // Completes pending refreshes, then powers down analog circuitry, not RAM.
+  // End-of-frame idle power policy, for the drivers that implement it (Picco's
+  // SSD2677, the SSD1677, the Murphy's UC8253); a no-op on the others. Call
+  // under the same bus/render lock as drawing, after ALL grayscale uploads and
+  // cleanup. Completes pending refreshes, then powers down analog circuitry,
+  // not RAM.
   void powerOffBetweenFrames();
   // True when the selected driver can use an ordinary deferred B/W refresh as
   // the base for a following grayscale pass.
