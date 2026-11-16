@@ -21,6 +21,8 @@
 // to the generic FsBlockDeviceInterface (set in the Silkscreen build env).
 #include <SdFat.h>  // FsBlockDeviceInterface, Sector_t
 
+#include "SectorReadAhead.h"
+
 namespace freeink {
 
 class SdmmcBlockDevice : public FsBlockDeviceInterface {
@@ -41,12 +43,16 @@ class SdmmcBlockDevice : public FsBlockDeviceInterface {
  private:
   static constexpr size_t kSectorSize = 512;
   static constexpr size_t kMaxTransferSectors = 8;
+  static_assert(SectorReadAhead::kSectors == kMaxTransferSectors && SectorReadAhead::kSectorSize == kSectorSize,
+                "the read-ahead window is the bounce buffer");
 
   // esp-idf's sdmmc_card_t is a typedef of an anonymous struct, so it can't be
   // forward-declared here (a `struct sdmmc_card_t;` tag is a different, conflicting
   // type). Hold it opaquely and cast in the .cpp, where the esp-idf header is included.
   void* _card = nullptr;
   uint8_t* _dmaBuffer = nullptr;
+  // Single-sector reads, served from the bounce buffer; dropped before anything else uses it.
+  SectorReadAhead _readAhead;
 };
 
 }  // namespace freeink

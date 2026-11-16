@@ -19,3 +19,5 @@ c++ -std=c++17 -Wall -Wextra -Werror ${CXXFLAGS:-} \
   -Istubs -I../../include test_remove_dir.cpp ../../src/SDCardManager.cpp \
   -o "$BUILD_DIR/test_remove_dir"
 "$BUILD_DIR/test_remove_dir"
+c++ -std=c++17 -Wall -Wextra -Werror ${CXXFLAGS:-} test_read_ahead.cpp -o "$BUILD_DIR/test_read_ahead"
+"$BUILD_DIR/test_read_ahead"

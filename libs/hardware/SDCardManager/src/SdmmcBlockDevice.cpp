@@ -139,10 +139,12 @@ bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
     return false;
   }
   _card = card;
+  _readAhead.invalidate();  // a new bounce buffer holds no window yet
   return true;
 }
 
 void SdmmcBlockDevice::end() {
+  _readAhead.invalidate();
   if (_card) {
     free(_card);
     _card = nullptr;
@@ -160,6 +162,14 @@ void SdmmcBlockDevice::end() {
 // through a DMA-capable buffer. (heap_caps_aligned_alloc via MALLOC_CAP_DMA.)
 bool SdmmcBlockDevice::readSectors(Sector_t sector, uint8_t* dst, size_t ns) {
   if (!_card || !_dmaBuffer || !dst || ns == 0) return false;
+  if (ns == 1) {
+    auto* const card = static_cast<sdmmc_card_t*>(_card);
+    return _readAhead.read(static_cast<uint32_t>(sector), dst, static_cast<uint32_t>(sectorCount()), _dmaBuffer,
+                           [card](const uint32_t first, uint8_t* to, const uint32_t count) {
+                             return sdmmc_read_sectors(card, to, first, count) == ESP_OK;
+                           });
+  }
+  _readAhead.invalidate();  // the loop below reuses the buffer the window is kept in
   while (ns > 0) {
     const size_t count = ns > kMaxTransferSectors ? kMaxTransferSectors : ns;
     const size_t bytes = count * kSectorSize;
@@ -174,6 +184,7 @@ bool SdmmcBlockDevice::readSectors(Sector_t sector, uint8_t* dst, size_t ns) {
 
 bool SdmmcBlockDevice::writeSectors(Sector_t sector, const uint8_t* src, size_t ns) {
   if (!_card || !_dmaBuffer || !src || ns == 0) return false;
+  _readAhead.invalidate();  // the buffer is reused, and the sectors written may be in the window
   while (ns > 0) {
     const size_t count = ns > kMaxTransferSectors ? kMaxTransferSectors : ns;
     const size_t bytes = count * kSectorSize;
