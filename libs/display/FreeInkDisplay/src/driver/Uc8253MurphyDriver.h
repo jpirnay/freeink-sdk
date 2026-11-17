@@ -77,6 +77,8 @@ class Uc8253MurphyDriver : public PanelDriver {
 
   void begin(EpdBus& bus) override;
   void deepSleep(EpdBus& bus) override;
+  // The booster stays up after a refresh unless turnOff asked for POF; this takes it down between frames.
+  void powerOffBetweenFrames(EpdBus& bus) override;
   void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
   GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const override {
     if (mode != GrayscaleMode::Overlay || !_cfg.gray.vcom) return {};

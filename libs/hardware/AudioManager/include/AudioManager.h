@@ -62,6 +62,14 @@ class AudioManager {
   // bus; microphone capture may continue. begin() restores it.
   void powerDown();
 
+  // Powers down an ES8388 that nothing began, as powerDown() does (CHIPPOWER
+  // 0xFF): the Murphy M3's codec sits on a rail that stays up for touch, and an
+  // application that plays no sound would otherwise leave it as it powered up.
+  // The caller has started Wire on the codec's bus and holds that bus. False
+  // when the board has no ES8388, or the codec did not ACK. begin() still works
+  // after it.
+  static bool parkCodec();
+
  private:
   struct WavInfo {
     uint32_t sampleRate = 0;

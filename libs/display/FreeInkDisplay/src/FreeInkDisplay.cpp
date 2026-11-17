@@ -693,12 +693,11 @@ void FreeInkDisplay::syncPendingAsync() {
 }
 
 void FreeInkDisplay::powerOffBetweenFrames() {
-#if FREEINK_DEVICE_PICCO
-  if (!_driver || !BoardConfig::isPicco()) return;
+  // Any board: a driver without its own powerOffBetweenFrames() does nothing, and the host decides whether to ask.
+  if (!_driver) return;
   DisplayPmLock pmLock;
   waitRefreshComplete();
   _driver->powerOffBetweenFrames(_bus);
-#endif
 }
 
 bool FreeInkDisplay::supportsAsyncRefresh() const {

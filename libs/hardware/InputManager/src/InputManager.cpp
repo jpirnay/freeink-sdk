@@ -816,6 +816,54 @@ bool InputManager::touchWakeIrqActiveLow() const {
 #endif
 }
 
+#if FREEINK_TOUCH_CHSC6X
+namespace {
+volatile bool chsc6xInterrupt = false;
+void IRAM_ATTR chsc6xTouchInterrupt() { chsc6xInterrupt = true; }
+// The pin armTouchPulseWake() armed, so touchPulseWakeDone() restores exactly that one even if the
+// controller dropped out in between (touchPulseWakePin() would then answer -1).
+int8_t chsc6xArmedPin = -1;
+}  // namespace
+#endif
+
+int8_t InputManager::touchPulseWakePin() const {
+#if FREEINK_TOUCH_CHSC6X
+  const auto& t = BoardConfig::ACTIVE.touch;
+  if (touchDataEnabled && t.controller == BoardConfig::TouchController::Chsc6x && t.irq >= 0) return t.irq;
+#endif
+  return -1;
+}
+
+bool InputManager::armTouchPulseWake() const {
+#if FREEINK_TOUCH_CHSC6X
+  const int8_t pin = touchPulseWakePin();
+  if (pin < 0) return false;
+  const auto gpio = static_cast<gpio_num_t>(pin);
+  gpio_intr_disable(gpio);  // before the level type below: never a level type with the interrupt live
+  gpio_wakeup_enable(gpio, GPIO_INTR_LOW_LEVEL);
+  chsc6xArmedPin = pin;
+  return true;
+#else
+  return false;
+#endif
+}
+
+void InputManager::touchPulseWakeDone(const bool gpioWake) const {
+#if FREEINK_TOUCH_CHSC6X
+  if (chsc6xArmedPin < 0) return;
+  const auto gpio = static_cast<gpio_num_t>(chsc6xArmedPin);
+  chsc6xArmedPin = -1;
+  gpio_wakeup_disable(gpio);
+  gpio_set_intr_type(gpio, GPIO_INTR_NEGEDGE);  // beginTouch()'s FALLING
+  // A pulse during the sleep latched the pin's status bit under the level type, so the ISR may run
+  // once now: one extra read, which finds that report.
+  gpio_intr_enable(gpio);
+  if (gpioWake) chsc6xInterrupt = true;  // or the power key woke it: one read that finds no report
+#else
+  (void)gpioWake;
+#endif
+}
+
 InputManager::TouchPoint InputManager::getTouchPoint() const { return touchPoint; }
 
 bool InputManager::supportsMultiTouch() const {
@@ -1420,13 +1468,6 @@ bool InputManager::wasHomeKeyTapped() const { return touchHomeKeyTapEvent; }
 bool InputManager::wasHomeKeyLongPressed() const { return touchHomeKeyLongEvent; }
 
 bool InputManager::isHomeKeyDown() const { return touchHomeKeyDown; }
-
-#if FREEINK_TOUCH_CHSC6X
-namespace {
-volatile bool chsc6xInterrupt = false;
-void IRAM_ATTR chsc6xTouchInterrupt() { chsc6xInterrupt = true; }
-}  // namespace
-#endif
 
 void InputManager::beginTouch() {
 #if FREEINK_CAP_TOUCH

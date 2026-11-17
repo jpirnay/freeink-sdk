@@ -203,6 +203,15 @@ void AudioManager::powerDown() {
   begun_ = false;
 }
 
+bool AudioManager::parkCodec() {
+  const auto& cfg = BoardConfig::ACTIVE.audio;
+  if (cfg.output != BoardConfig::AudioOutput::I2sEs8388 || cfg.codecAddr == 0) return false;
+  Wire.beginTransmission(cfg.codecAddr);
+  Wire.write(0x02);  // ES8388 CHIPPOWER: everything off, as powerDown()
+  Wire.write(0xff);
+  return Wire.endTransmission() == 0;
+}
+
 bool AudioManager::parseWavHeader(const WavSource& source, WavInfo& info) {
   uint8_t hdr[12];
   if (!source.seek(0)) return false;
@@ -574,6 +583,7 @@ bool AudioManager::play(const WavSource&, bool) { return false; }
 bool AudioManager::playBuffer(const uint8_t*, size_t, bool) { return false; }
 void AudioManager::stop() {}
 void AudioManager::powerDown() {}
+bool AudioManager::parkCodec() { return false; }
 bool AudioManager::parseWavHeader(const WavSource&, WavInfo&) { return false; }
 bool AudioManager::ensureI2s(uint32_t) { return false; }
 void AudioManager::teardownI2s() {}
