@@ -2,3 +2,5 @@
 using gpio_num_t=int;
 inline void gpio_hold_dis(int) {}
 inline void gpio_hold_en(int) {}
+// BoardConfig::driveReleasingHold() sets the level before it releases the hold on the Picco (Free-Ink fcadb76).
+inline void gpio_set_level(int, unsigned) {}
