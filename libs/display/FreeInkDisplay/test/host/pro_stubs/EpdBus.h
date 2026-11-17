@@ -39,7 +39,10 @@ class EpdBus {
   bool transaction=false;
   unsigned waits=0;
   std::vector<size_t> busyWaitWriteCounts;
-  void clear() { assert(!transaction); writes.clear(); waits=0; busyWaitWriteCounts.clear(); }
+  // waitRefreshComplete() calls, each with the number of writes before it; what isBusy() answers.
+  std::vector<size_t> refreshWaitWriteCounts;
+  bool busy=false;
+  void clear() { assert(!transaction); writes.clear(); waits=0; busyWaitWriteCounts.clear(); refreshWaitWriteCounts.clear(); }
   void begin(const EpdPins&, uint32_t, BusyPolarity, int8_t=-1, int8_t=-1) {}
   void cmd(uint8_t c) { assert(!transaction); writes.push_back({c,{}}); }
   void data(uint8_t b) { data(&b,1); }
@@ -55,8 +58,8 @@ class EpdBus {
   void cmdData(uint8_t c, const uint8_t* p, uint16_t n) { cmd(c); data(p,n); }
   void reset(uint16_t=0) {}
   void waitBusy(const char* =nullptr) { assert(!transaction); ++waits; busyWaitWriteCounts.push_back(writes.size()); }
-  void waitRefreshComplete(const char* =nullptr) { assert(!transaction); ++waits; }
-  bool isBusy() const { return false; }
+  void waitRefreshComplete(const char* =nullptr) { assert(!transaction); ++waits; refreshWaitWriteCounts.push_back(writes.size()); }
+  bool isBusy() const { return busy; }
   EpdPins pins() const { return {}; }
   void setBusyWaitHooks(void (*)(), void (*)()) {}
   void setBusyWaitSliceHook(bool (*)(int8_t,uint8_t)) {}
