@@ -8,8 +8,11 @@
 #include <new>
 #include <utility>
 
-#include "ContentMinizConfig.h"
 #include "Util.h"
+
+#if !defined(CONTENT_NO_DEFAULT_INFLATER)
+#include "MinizInflater.h"
+#endif
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO_ARCH_ESP32)
 #include <sdkconfig.h>
@@ -56,6 +59,95 @@ bool tagAttr(const char* tag, size_t len, const char* attr, std::string* out) {
   }
   return false;
 }
+
+// An encrypted entry's plaintext, decrypted one CBC chunk at a time into the read path's own
+// buffers: the input of the inflate stage, or what a STORED entry hands to the sink as it is.
+struct EntryDecryptor {
+  ByteSource& source;
+  Crypto& crypto;
+  const uint8_t* key;
+  bool aes256;
+  size_t chunk;
+  uint64_t offset;
+  uint32_t remaining;
+  uint8_t iv[16];
+  uint8_t* cipher = nullptr;
+  uint8_t* plain = nullptr;
+  const char* error = nullptr;
+
+  // Decrypts the next chunk into `plain`: returns its plaintext size (the last one without its
+  // padding), 0 at the end, or -1 with `error` set.
+  int32_t next() {
+    if (remaining == 0) return 0;
+    const size_t amount = remaining < chunk ? remaining : chunk;
+    if (source.readAt(offset, cipher, amount) != static_cast<int32_t>(amount)) {
+      error = "entry read failed";
+      return -1;
+    }
+    uint8_t nextIv[16];
+    memcpy(nextIv, cipher + amount - sizeof(nextIv), sizeof(nextIv));
+    const bool decrypted = aes256 ? crypto.aes256CbcDecrypt(key, iv, cipher, amount, plain)
+                                  : crypto.aes128CbcDecrypt(key, iv, cipher, amount, plain);
+    if (!decrypted) {
+      error = "content read failed";
+      return -1;
+    }
+    memcpy(iv, nextIv, sizeof(iv));
+
+    size_t plainSize = amount;
+    if (amount == remaining) {
+      const uint8_t pad = plain[plainSize - 1];
+      if (pad >= 1 && pad <= 16 && pad <= plainSize) {
+        if (aes256) {
+          // W3C xmlenc padding (LCP): the fill bytes are random; only the
+          // count byte is meaningful.
+          plainSize -= pad;
+        } else {
+          bool valid = true;
+          for (size_t i = plainSize - pad; i < plainSize; i++) valid = valid && plain[i] == pad;
+          if (valid) plainSize -= pad;
+        }
+      }
+    }
+    offset += amount;
+    remaining -= static_cast<uint32_t>(amount);
+    return static_cast<int32_t>(plainSize);
+  }
+
+  static int32_t input(void* context, const uint8_t** data) {
+    auto& self = *static_cast<EntryDecryptor*>(context);
+    *data = self.plain;
+    return self.next();
+  }
+};
+
+// A zip entry's raw bytes, read a chunk at a time into the caller's buffer.
+struct RawEntryInput {
+  ByteSource& source;
+  uint8_t* buffer;
+  size_t chunk;
+  uint64_t at;
+  uint32_t remaining;
+
+  static int32_t input(void* context, const uint8_t** data) {
+    auto& self = *static_cast<RawEntryInput*>(context);
+    if (self.remaining == 0) return 0;
+    const size_t amount = self.remaining < self.chunk ? self.remaining : self.chunk;
+    if (self.source.readAt(self.at, self.buffer, amount) != static_cast<int32_t>(amount)) return -1;
+    self.at += amount;
+    self.remaining -= static_cast<uint32_t>(amount);
+    *data = self.buffer;
+    return static_cast<int32_t>(amount);
+  }
+};
+
+// Ends an inflate stream on every way out of a read.
+struct InflateGuard {
+  Inflater* inflater = nullptr;
+  ~InflateGuard() {
+    if (inflater) inflater->end();
+  }
+};
 }  // namespace
 
 void ProtectedBook::reserveErrorBuffer() {
@@ -66,6 +158,7 @@ void ProtectedBook::reserveErrorBuffer() {
 bool ProtectedBook::open(ByteSource& source) {
   reserveErrorBuffer();
   protected_ = false;
+  index_ = nullptr;
 
   if (!zip_.open(source)) {
     lastError_ = "not a zip container";
@@ -78,13 +171,34 @@ bool ProtectedBook::open(ByteSource& source) {
 bool ProtectedBook::openFromScan(ByteSource& source, ZipScan&& scan) {
   reserveErrorBuffer();
   protected_ = false;
+  index_ = nullptr;
   zip_ = std::move(scan);
   return finishOpen(source);
 }
 
+bool ProtectedBook::openWithIndex(ByteSource& source, EntryIndex& index) {
+  reserveErrorBuffer();
+  protected_ = false;
+  zip_ = ZipScan{};  // nothing per entry held here
+  index_ = &index;
+  return finishOpen(source);
+}
+
+bool ProtectedBook::findEntry(const std::string& name, ZipEntryInfo* out) const {
+  if (index_) return index_->find(name, out);
+  const ZipEntryInfo* entry = zip_.find(name);
+  if (!entry) return false;
+  *out = *entry;
+  return true;
+}
+
+bool ProtectedBook::entryDataOffset(ByteSource& source, const ZipEntryInfo& entry, uint64_t* out) const {
+  return index_ ? index_->dataOffset(entry, out) : zip_.dataOffset(source, entry, out);
+}
+
 bool ProtectedBook::finishOpen(ByteSource& source) {
-  const ZipEntryInfo* encEntry = zip_.find(kEncryptionXml);
-  if (!encEntry) {
+  ZipEntryInfo encEntry;
+  if (!findEntry(kEncryptionXml, &encEntry)) {
     return true;  // plain EPUB; nothing to do
   }
 
@@ -92,7 +206,7 @@ bool ProtectedBook::finishOpen(ByteSource& source) {
   // encrypted resource, so its size scales with the container's file count
   // (measured ~60KB for a many-hundred-entry book) and materializing it
   // whole was OOM-aborting small-heap devices at open.
-  if (!scanEncryptionXml(source, *encEntry)) {
+  if (!scanEncryptionXml(source, encEntry)) {
     if (lastError_.empty()) lastError_ = "failed to read encryption.xml";
     return false;
   }
@@ -120,8 +234,8 @@ size_t ProtectedBook::decryptedSize(const std::string& name) const {
   const uint64_t hash = fnv1a64(name.data(), name.size());
   const auto it = std::lower_bound(originalSizes_.begin(), originalSizes_.end(), std::make_pair(hash, uint32_t{0}));
   if (it != originalSizes_.end() && it->first == hash) return it->second;
-  const ZipEntryInfo* entry = zip_.find(name);
-  return entry ? entry->uncompressedSize : 0;
+  ZipEntryInfo entry;
+  return findEntry(name, &entry) ? entry.uncompressedSize : 0;
 }
 
 bool ProtectedBook::decryptEntryToSink(ByteSource& source, Crypto& crypto, const std::string& name,
@@ -130,8 +244,8 @@ bool ProtectedBook::decryptEntryToSink(ByteSource& source, Crypto& crypto, const
     lastError_ = "no content key";
     return false;
   }
-  const ZipEntryInfo* entry = zip_.find(name);
-  if (!entry) {
+  ZipEntryInfo entry;
+  if (!findEntry(name, &entry)) {
     // The concat allocates a temporary; fall back to the SSO-sized literal
     // (never allocates) when the heap cannot take it.
     if (heapProbe(name.size() + 48)) {
@@ -141,20 +255,14 @@ bool ProtectedBook::decryptEntryToSink(ByteSource& source, Crypto& crypto, const
     }
     return false;
   }
-  if (entry->compressedSize < 32 || (entry->compressedSize - 16) % 16 != 0) {
+  if (entry.compressedSize < 32 || (entry.compressedSize - 16) % 16 != 0) {
     lastError_ = "entry size not AES-shaped";
     return false;
   }
 
   uint64_t offset = 0;
-  if (!zip_.dataOffset(source, *entry, &offset)) {
+  if (!entryDataOffset(source, entry, &offset)) {
     lastError_ = "entry offset unavailable";
-    return false;
-  }
-
-  uint8_t iv[16];
-  if (source.readAt(offset, iv, sizeof(iv)) != sizeof(iv)) {
-    lastError_ = "entry IV read failed";
     return false;
   }
 
@@ -167,116 +275,72 @@ bool ProtectedBook::decryptEntryToSink(ByteSource& source, Crypto& crypto, const
 #endif
   static_assert(kCipherChunk % 16 == 0, "CBC chunks must contain whole AES blocks");
 
-  // Allocate the contiguous inflate state before the smaller streaming buffers.
+  EntryDecryptor decryptor{source, crypto, bookKey_, aes256_, kCipherChunk, offset + 16, entry.compressedSize - 16, {}};
+  if (source.readAt(offset, decryptor.iv, sizeof(decryptor.iv)) != sizeof(decryptor.iv)) {
+    lastError_ = "entry IV read failed";
+    return false;
+  }
+
   // LCP marks already-uncompressed resources Compression Method="0":
   // decrypt-only, no inflate stage.
   const bool stored =
       std::binary_search(storedUriHashes_.begin(), storedUriHashes_.end(), fnv1a64(name.data(), name.size()));
 
-  mz_stream stream;
-  memset(&stream, 0, sizeof(stream));
-  if (!stored && mz_inflateInit2(&stream, -15) != MZ_OK) {
-    lastError_ = "inflate setup failed";
-    return false;
+#if !defined(CONTENT_NO_DEFAULT_INFLATER)
+  MinizInflater fallback;
+  Inflater* inflater = inflater_ ? inflater_ : &fallback;
+#else
+  Inflater* inflater = inflater_;
+#endif
+  InflateGuard guard;
+  if (!stored) {
+    if (!inflater) {
+      lastError_ = "no inflater for a deflated entry";
+      return false;
+    }
+    // Start the inflate stage before the smaller streaming buffers: its state is the largest
+    // contiguous block.
+    guard.inflater = inflater;
+    if (!inflater->begin(&EntryDecryptor::input, &decryptor, static_cast<uint32_t>(decryptedSize(name)))) {
+      lastError_ = "inflate setup failed";
+      return false;
+    }
   }
 
   auto* buffers = static_cast<uint8_t*>(malloc(kCipherChunk * 2 + kOutputChunk));
   if (!buffers) {
-    if (!stored) mz_inflateEnd(&stream);
     lastError_ = "insufficient memory for content stream";
     return false;
   }
-  uint8_t* cipher = buffers;
-  uint8_t* plain = cipher + kCipherChunk;
-  uint8_t* output = plain + kCipherChunk;
+  decryptor.cipher = buffers;
+  decryptor.plain = buffers + kCipherChunk;
+  uint8_t* output = decryptor.plain + kCipherChunk;
 
-  bool ended = false;
-  auto inflateChunk = [&](const uint8_t* data, size_t size) {
-    stream.next_in = data;
-    stream.avail_in = static_cast<unsigned int>(size);
-    size_t produced = 0;
-    do {
-      const unsigned int before = stream.avail_in;
-      stream.next_out = output;
-      stream.avail_out = kOutputChunk;
-      const int status = mz_inflate(&stream, MZ_NO_FLUSH);
-      produced = kOutputChunk - stream.avail_out;
-      if (produced && (!sink || !sink(context, output, produced))) return false;
-      if (status == MZ_STREAM_END) {
-        ended = true;
-        return true;
-      }
-      if (status != MZ_OK && status != MZ_BUF_ERROR) return false;
-      if (status == MZ_BUF_ERROR && produced == 0 && stream.avail_in == before) {
-        return stream.avail_in == 0;
-      }
-    } while (stream.avail_in > 0 || produced == kOutputChunk);
-    return true;
-  };
-
-  auto emitChunk = [&](const uint8_t* data, size_t size) {
-    if (!stored) return inflateChunk(data, size);
-    if (size > 0 && (!sink || !sink(context, data, size))) return false;
-    return true;
-  };
-
-  uint32_t remaining = entry->compressedSize - 16;
-  offset += 16;
   bool ok = true;
-  while (remaining > 0 && !ended) {
-    const size_t amount = remaining < kCipherChunk ? remaining : kCipherChunk;
-    if (source.readAt(offset, cipher, amount) != static_cast<int32_t>(amount)) {
+  for (;;) {
+    int32_t size;
+    const uint8_t* data;
+    if (stored) {
+      size = decryptor.next();
+      data = decryptor.plain;
+    } else {
+      size = inflater->read(output, kOutputChunk);
+      data = output;
+    }
+    if (size == 0) break;
+    if (size < 0) {
       ok = false;
-      lastError_ = "entry read failed";
+      lastError_ = decryptor.error ? decryptor.error : "inflate failed";
       break;
     }
-    uint8_t nextIv[16];
-    memcpy(nextIv, cipher + amount - sizeof(nextIv), sizeof(nextIv));
-    const bool decrypted = aes256_ ? crypto.aes256CbcDecrypt(bookKey_, iv, cipher, amount, plain)
-                                   : crypto.aes128CbcDecrypt(bookKey_, iv, cipher, amount, plain);
-    if (!decrypted) {
-      ok = false;
-      lastError_ = "content read failed";
-      break;
-    }
-    memcpy(iv, nextIv, sizeof(iv));
-
-    size_t plainSize = amount;
-    if (amount == remaining) {
-      const uint8_t pad = plain[plainSize - 1];
-      if (pad >= 1 && pad <= 16 && pad <= plainSize) {
-        if (aes256_) {
-          // W3C xmlenc padding (LCP): the fill bytes are random; only the
-          // count byte is meaningful.
-          plainSize -= pad;
-        } else {
-          bool valid = true;
-          for (size_t i = plainSize - pad; i < plainSize; i++) valid = valid && plain[i] == pad;
-          if (valid) plainSize -= pad;
-        }
-      }
-    }
-    if (!emitChunk(plain, plainSize)) {
+    if (!sink || !sink(context, data, static_cast<size_t>(size))) {
       ok = false;
       lastError_ = stored ? "content sink failed" : "inflate failed";
       break;
     }
-    offset += amount;
-    remaining -= amount;
-  }
-
-  if (stored) {
-    ended = ok;
-  } else {
-    if (ok && !ended) {
-      const uint8_t trailing = 'Z';
-      ok = inflateChunk(&trailing, 1) && ended;
-      if (!ok) lastError_ = "inflate failed";
-    }
-    mz_inflateEnd(&stream);
   }
   free(buffers);
-  return ok && ended;
+  return ok;
 }
 
 bool ProtectedBook::scanEncryptionXml(ByteSource& source, const ZipEntryInfo& entry) {
@@ -286,39 +350,45 @@ bool ProtectedBook::scanEncryptionXml(ByteSource& source, const ZipEntryInfo& en
   aes256_ = false;
 
   uint64_t at = 0;
-  if (!zip_.dataOffset(source, entry, &at)) {
+  if (!entryDataOffset(source, entry, &at)) {
     lastError_ = "entry offset unavailable";
     return false;
   }
   if (entry.method != 0 && entry.method != 8) return false;
-
-  struct InflateGuard {
-    mz_stream stream{};
-    ~InflateGuard() {
-      if (stream.state) mz_inflateEnd(&stream);
-    }
-  } inflater;
-  auto& stream = inflater.stream;
-  // Reserve the contiguous inflate state before smaller parser allocations.
-  if (entry.method == 8) {
-    const int inflateResult = mz_inflateInit2(&stream, -15);
-    if (inflateResult != MZ_OK) {
-      lastError_ = inflateResult == MZ_MEM_ERROR ? "manifest inflate out of memory" : "manifest inflate init failed";
-      return false;
-    }
-  }
 
 #if defined(CONFIG_IDF_TARGET_ESP32C3) && CONFIG_IDF_TARGET_ESP32C3
   constexpr size_t kChunk = 512;
 #else
   constexpr size_t kChunk = 2048;
 #endif
+  RawEntryInput raw{source, nullptr, kChunk, at, entry.compressedSize};
+
+#if !defined(CONTENT_NO_DEFAULT_INFLATER)
+  MinizInflater fallback;
+  Inflater* inflater = inflater_ ? inflater_ : &fallback;
+#else
+  Inflater* inflater = inflater_;
+#endif
+  InflateGuard guard;
+  // Start the inflate stage before smaller parser allocations: its state is the largest
+  // contiguous block.
+  if (entry.method == 8) {
+    if (!inflater) {
+      lastError_ = "no inflater for a deflated encryption.xml";
+      return false;
+    }
+    guard.inflater = inflater;
+    if (!inflater->begin(&RawEntryInput::input, &raw, entry.uncompressedSize)) {
+      lastError_ = "manifest inflate init failed";
+      return false;
+    }
+  }
   auto* bufs = static_cast<uint8_t*>(malloc(kChunk * 2));  // freed below; kept raw for the single free
   if (!bufs) {
     lastError_ = "manifest scratch out of memory";
     return false;
   }
-  uint8_t* inBuf = bufs;
+  raw.buffer = bufs;
   uint8_t* outBuf = bufs + kChunk;
 
   // Tag-level scan. Inter-tag text is discarded; only element attributes
@@ -427,49 +497,14 @@ bool ProtectedBook::scanEncryptionXml(ByteSource& source, const ZipEntryInfo& en
   };
 
   bool ok = true;
-  uint32_t remaining = entry.compressedSize;
-  if (entry.method == 0) {
-    while (remaining > 0 && ok) {
-      const size_t amount = remaining < kChunk ? remaining : kChunk;
-      ok = source.readAt(at, inBuf, amount) == static_cast<int32_t>(amount) && feed(inBuf, amount);
-      at += amount;
-      remaining -= static_cast<uint32_t>(amount);
+  for (;;) {
+    const uint8_t* data = outBuf;
+    const int32_t size = entry.method == 0 ? RawEntryInput::input(&raw, &data) : inflater->read(outBuf, kChunk);
+    if (size == 0) break;
+    if (size < 0 || !feed(data, static_cast<size_t>(size))) {
+      ok = false;
+      break;
     }
-  } else {
-    bool ended = false;
-    while (remaining > 0 && ok && !ended) {
-      const size_t amount = remaining < kChunk ? remaining : kChunk;
-      if (source.readAt(at, inBuf, amount) != static_cast<int32_t>(amount)) {
-        ok = false;
-        break;
-      }
-      at += amount;
-      remaining -= static_cast<uint32_t>(amount);
-      stream.next_in = inBuf;
-      stream.avail_in = static_cast<unsigned int>(amount);
-      size_t produced;
-      do {
-        const unsigned int before = stream.avail_in;
-        stream.next_out = outBuf;
-        stream.avail_out = kChunk;
-        const int status = mz_inflate(&stream, MZ_NO_FLUSH);
-        produced = kChunk - stream.avail_out;
-        if (produced && !feed(outBuf, produced)) {
-          ok = false;
-          break;
-        }
-        if (status == MZ_STREAM_END) {
-          ended = true;
-          break;
-        }
-        if (status != MZ_OK && status != MZ_BUF_ERROR) {
-          ok = false;
-          break;
-        }
-        if (status == MZ_BUF_ERROR && produced == 0 && stream.avail_in == before) break;
-      } while (stream.avail_in > 0 || produced == kChunk);
-    }
-    ok = ok && ended;
   }
   free(bufs);
 

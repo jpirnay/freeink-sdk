@@ -19,14 +19,23 @@ c++ -std=c++17 -fno-exceptions -Wall -Wextra -Werror -I../../include \
 
 cc -w -I../../include -I../../third_party/miniz -c ../../src/vendor/miniz_impl.c -o "$BUILD_DIR/miniz.o"
 c++ -std=c++17 -fno-exceptions -Wall -Wextra -Werror -I../../include -I../../third_party/miniz \
-  ../../src/ProtectedBook.cpp ../../src/Zip.cpp "$BUILD_DIR/miniz.o" test_protected.cpp \
+  ../../src/ProtectedBook.cpp ../../src/MinizInflater.cpp ../../src/Zip.cpp "$BUILD_DIR/miniz.o" test_protected.cpp \
   -o "$BUILD_DIR/test_protected"
 "$BUILD_DIR/test_protected"
+
+# The seams, with the default inflater and then with none: the second links no miniz at all.
+c++ -std=c++17 -fno-exceptions -Wall -Wextra -Werror -I../../include -I../../third_party/miniz \
+  ../../src/ProtectedBook.cpp ../../src/MinizInflater.cpp ../../src/Zip.cpp "$BUILD_DIR/miniz.o" test_seams.cpp \
+  -o "$BUILD_DIR/test_seams"
+"$BUILD_DIR/test_seams"
+c++ -std=c++17 -fno-exceptions -Wall -Wextra -Werror -DCONTENT_NO_DEFAULT_INFLATER -I../../include \
+  ../../src/ProtectedBook.cpp ../../src/Zip.cpp test_seams.cpp -o "$BUILD_DIR/test_seams_no_default"
+"$BUILD_DIR/test_seams_no_default"
 
 for TARGET in ESP32C3 ESP32S3; do
   c++ -std=c++17 -fno-exceptions -Wall -Wextra -Werror -I../../include -I../../third_party/miniz \
     "-DCONFIG_IDF_TARGET_$TARGET=1" \
-    ../../src/Zip.cpp "$BUILD_DIR/miniz.o" test_manifest_reserve.cpp \
+    ../../src/Zip.cpp ../../src/MinizInflater.cpp "$BUILD_DIR/miniz.o" test_manifest_reserve.cpp \
     -o "$BUILD_DIR/test_manifest_reserve_$TARGET"
   "$BUILD_DIR/test_manifest_reserve_$TARGET"
 done

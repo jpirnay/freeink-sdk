@@ -23,5 +23,5 @@
       "test"
     ]
   },
-  "notes": "Inflate provider: define CONTENT_EXTERNAL_MINIZ to bind to the host application's already-linked miniz (no second copy in the image); omit it to compile the vendored content_-prefixed copy for standalone host tests."
+  "notes": "Inflate: ProtectedBook::setInflater() takes any pull inflater (Inflate.h); without one it uses MinizInflater. Define CONTENT_EXTERNAL_MINIZ to bind MinizInflater to the host application's already-linked miniz (no second copy in the image); omit it to compile the vendored content_-prefixed copy for standalone host tests; define CONTENT_NO_DEFAULT_INFLATER to leave miniz out entirely and inject your own. Entries: ProtectedBook::openWithIndex() takes the embedder's own zip lookup (EntryIndex.h) instead of a central-directory scan held in memory."
 }

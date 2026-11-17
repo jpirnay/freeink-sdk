@@ -19,6 +19,8 @@
 #include "ByteSource.h"
 #include "ContentProtection.h"
 #include "Crypto.h"
+#include "EntryIndex.h"
+#include "Inflate.h"
 #include "Zip.h"
 
 namespace freeink {
@@ -35,6 +37,16 @@ class ProtectedBook {
   // transfer ownership of that same index instead of scanning the central
   // directory a second time.
   bool openFromScan(ByteSource& source, ZipScan&& scan);
+
+  // Completes open with entries found through the embedder's own zip reader instead of a scan of
+  // the central directory, so nothing per entry is held here (EntryIndex.h). `index` must outlive
+  // every later call on this book.
+  bool openWithIndex(ByteSource& source, EntryIndex& index);
+
+  // The inflate stage for deflated entries and a deflated encryption.xml (Inflate.h). Without
+  // one, MinizInflater is used, or, built with CONTENT_NO_DEFAULT_INFLATER, a deflated item fails
+  // to read. `inflater` must outlive every later read; nullptr goes back to the default.
+  void setInflater(Inflater* inflater) { inflater_ = inflater; }
 
   // True when the container has encrypted entries (font obfuscation alone
   // does not count).
@@ -63,12 +75,17 @@ class ProtectedBook {
   // points must call it before anything that can fail.
   void reserveErrorBuffer();
   bool finishOpen(ByteSource& source);
+  // Entry lookups through the injected index, or the scan when there is none.
+  bool findEntry(const std::string& name, ZipEntryInfo* out) const;
+  bool entryDataOffset(ByteSource& source, const ZipEntryInfo& entry, uint64_t* out) const;
   // Stream-parses encryption.xml out of the zip in chunks, keeping only path
   // hashes. The manifest scales with the container's file count, so it is
   // never materialized whole.
   bool scanEncryptionXml(ByteSource& source, const ZipEntryInfo& entry);
 
   ZipScan zip_;
+  EntryIndex* index_ = nullptr;
+  Inflater* inflater_ = nullptr;
   // Sorted FNV-1a hashes of the encrypted entry paths (aes128-cbc or
   // aes256-cbc; a container uses one cipher, recorded in aes256_).
   std::vector<uint64_t> encryptedUriHashes_;
