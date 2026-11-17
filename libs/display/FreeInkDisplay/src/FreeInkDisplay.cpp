@@ -638,14 +638,17 @@ uint8_t* FreeInkDisplay::borrowSecondaryBuffer(size_t* size) {
 }
 
 uint8_t* FreeInkDisplay::borrowSecondaryBufferDuringRefresh(size_t* size) {
-  if (!_refreshPending || !asyncRefreshHoldsFrameBuffer()) return borrowSecondaryBuffer(size);
+  if (!_refreshPending) return borrowSecondaryBuffer(size);
   _activeMatchesGlass = false;
   if (!frameBufferActive || !frameBuffer || _secondaryLent) return nullptr;
-  // triggerDisplay() swapped the frame being painted into frameBufferActive, and
-  // the pending finish re-reads that frame alone. frameBuffer holds an older one,
-  // read by nothing: lend it, and keep the painted frame as the single buffer.
-  // syncPendingAsync() then hands the driver frameBuffer (frameBufferActive is
-  // null), which is the same frame, and a framebuffer that matches the glass.
+  // The display that started the refresh swapped the frame being painted into
+  // frameBufferActive, and the pending finish reads that frame alone, if anything:
+  // the X3's controllers and the X4's UltraChip ones re-sync it into DTM1, the
+  // SSD1677 takes it only for a one-pass page's plane sync. Its start has taken
+  // `prev` already. frameBuffer holds an older frame, read by nothing: lend it,
+  // and keep the painted frame as the single buffer. syncPendingAsync() then hands
+  // the driver frameBuffer (frameBufferActive is null), which is the same frame,
+  // and a framebuffer that matches the glass.
   _secondaryLent = frameBuffer;
   frameBuffer = frameBufferActive;
   frameBufferActive = nullptr;

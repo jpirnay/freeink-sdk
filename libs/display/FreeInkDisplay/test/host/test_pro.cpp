@@ -1148,10 +1148,11 @@ static void testOnePassFrame() {
 }
 
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
-// A deferred refresh whose finish re-reads the frame it painted (the X3's DTM1 sync): a host can take
-// the other buffer while the panel paints, and the finish still gets the painted frame.
+// A deferred refresh whose finish re-reads the frame it painted (the X3's DTM1 sync, the X4's UltraChip panels): a host
+// can take the other buffer while the panel paints, and the finish still gets the painted frame.
 class DeferredDriver : public BwOnlyDriver {
  public:
+  bool supportsAsyncDisplay() const override { return true; }
   bool displayStart(EpdBus&, const uint8_t* fb, const uint8_t*, RefreshMode, bool) override {
     started.assign(fb, fb + 48000);
     return true;
@@ -1187,12 +1188,26 @@ static void testLendDuringRefresh() {
   assert(std::equal(popup.begin(), popup.end(), display.getFrameBuffer()));
   assert(display.returnSecondaryBuffer());
   assert(std::equal(popup.begin(), popup.end(), display.frameBufferActive));  // seeded from the live frame
-  // Elsewhere it is borrowSecondaryBuffer(): the refresh is drained first.
+  // The X4's panels the same: the start has taken the previous frame, the finish reads the painted one, if anything.
   display._panelSel = FreeInkDisplay::PanelSel::X4;
-  display.triggerDisplay(FreeInkDisplay::FAST_REFRESH, false);
-  assert(display.isRefreshPending());
-  assert(display.borrowSecondaryBufferDuringRefresh(nullptr) != nullptr);
-  assert(!display.isRefreshPending() && driver.finishes == 2);
+  const auto page = frame(9);
+  std::memcpy(display.getFrameBuffer(), page.data(), page.size());
+  display.triggerDisplayAsync(FreeInkDisplay::FAST_REFRESH, false);
+  assert(display.isRefreshPending() && driver.started == page);
+  uint8_t* const painted = display.frameBufferActive;
+  uint8_t* const lent4 = display.borrowSecondaryBufferDuringRefresh(&size);
+  assert(lent4 != nullptr && lent4 != painted && size == 48000);
+  assert(display.isRefreshPending() && driver.finishes == 1);  // nothing waited for the waveform
+  assert(display.getFrameBuffer() == painted && !display.hasSecondaryBuffer());
+  std::memset(lent4, 0xAA, size);
+  display.finishDisplayAsync();
+  assert(driver.finishes == 2 && driver.finished == page);
+  assert(display.returnSecondaryBuffer());
+  assert(std::equal(page.begin(), page.end(), display.frameBufferActive));
+  // With nothing pending it is borrowSecondaryBuffer().
+  assert(!display.isRefreshPending());
+  uint8_t* const idle = display.borrowSecondaryBufferDuringRefresh(nullptr);
+  assert(idle == display._secondaryLent && display.getFrameBuffer() != idle && driver.finishes == 2);
   assert(display.returnSecondaryBuffer());
   display.releaseBuffers();
 }

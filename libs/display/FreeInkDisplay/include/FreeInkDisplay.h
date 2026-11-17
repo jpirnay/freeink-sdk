@@ -477,14 +477,17 @@ class FreeInkDisplay {
   uint8_t* borrowSecondaryBuffer(size_t* size);
 
   // borrowSecondaryBuffer() for a host that works while the refresh it just
-  // started is still painting. Where that refresh's finish reads only the frame
-  // it displays (asyncRefreshHoldsFrameBuffer(): the X3, whose displayStart()
-  // ignores prev and whose displayFinish() re-syncs DTM1 from that frame), the
-  // block lent is the one the host would have drawn into next, and the displayed
-  // frame becomes the single framebuffer, so nothing waits for the waveform.
-  // getFrameBuffer() then returns another pointer, and the caller owes
-  // finishDisplayAsync() before it next writes the framebuffer. With no refresh
-  // pending, or on any other panel, it is borrowSecondaryBuffer().
+  // started is still painting. A pending refresh's finish reads only the frame it
+  // displays, if anything (the X3's and the X4's UltraChip controllers re-sync
+  // DTM1 from it; the SSD1677 reads nothing after its start but a one-pass page),
+  // so the block lent is the one the host would have drawn into next, and the
+  // displayed frame becomes the single framebuffer: nothing waits for the
+  // waveform. getFrameBuffer() then returns another pointer, and the caller owes
+  // finishDisplayAsync() before it next writes the framebuffer. On a panel whose
+  // FAST diffs against a host frame (fastRefreshNeedsHostFrame()), the start took
+  // the previous frame into RED; the caller seeds RED from the displayed frame
+  // after the finish (syncRedRamFromFrameBuffer) before a single-buffer FAST. With
+  // no refresh pending it is borrowSecondaryBuffer().
   uint8_t* borrowSecondaryBufferDuringRefresh(size_t* size);
 
   // Take the lent block back and restore dual-buffer mode. Seeds the buffer
