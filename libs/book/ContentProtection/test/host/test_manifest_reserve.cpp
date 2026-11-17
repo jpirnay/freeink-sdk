@@ -1,3 +1,7 @@
+// Before the malloc macro below: GCC 15's <stdlib.h> declares `using std::malloc`, which the macro
+// would rewrite if ProtectedBook.cpp included it first.
+#include <stdlib.h>
+
 #include <algorithm>
 #include <cstdlib>
 #include <memory>

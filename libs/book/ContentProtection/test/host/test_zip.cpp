@@ -19,6 +19,8 @@ void* operator new[](size_t size, const std::nothrow_t&) noexcept {
   return size <= allocationLimit ? std::malloc(size) : nullptr;
 }
 void operator delete[](void* ptr) noexcept { std::free(ptr); }
+// GCC 15 wants the sized form alongside (-Wsized-deallocation, an error under -Werror).
+void operator delete[](void* ptr, size_t) noexcept { std::free(ptr); }
 
 struct Source : freeink::content::ByteSource {
   std::vector<uint8_t> bytes;
