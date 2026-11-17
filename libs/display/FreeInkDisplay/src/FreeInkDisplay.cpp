@@ -1375,6 +1375,7 @@ void FreeInkDisplay::cleanupGrayscaleWithPreviousBuffer() {
   //
   // Host test: test_pro.cpp testGrayCleanupBaseline -- released and lent stream nothing into
   // controller RAM and leave the driver needing a clean sync; it fails on the fallback above.
+  syncPendingAsync();  // RAM writes must not race a deferred refresh, as in cleanupGrayscaleBuffers()
   const uint8_t* baseline = frameBufferActive;
   if (!_inverted) {
     DisplayPmLock pmLock;
