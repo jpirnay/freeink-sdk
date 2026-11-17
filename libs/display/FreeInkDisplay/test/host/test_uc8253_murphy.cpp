@@ -452,6 +452,345 @@ void testAFastAfterOnePassDrivesItsGrayAway() {
   assert(uniformPlane(bus, 0x10, 0xFF));  // gray told it was white, so it takes the drive to black
 }
 
+// The stub counts a waitBusy() with the number of writes before it: `fired` is that number right after the refresh
+// command, so a wait recorded at `fired` is the waveform's.
+bool waitedAt(const EpdBus& bus, size_t writes) {
+  for (size_t at : bus.busyWaitWriteCounts) {
+    if (at == writes) return true;
+  }
+  return false;
+}
+
+void testADeferredPageReturnsOnceFiredAndItsFinishWaitsAndPowersOff() {
+  EpdBus bus;
+  Uc8253MurphyDriver driver;
+  driver.begin(bus);
+  assert(driver.supportsAsyncDisplay());
+  Bits page = blank(0xFF), next = blank(0xFF);
+  next.set(3, 3, false);
+  driver.display(bus, page.data(), nullptr, RefreshMode::Half, false);
+
+  bus.clear();
+  assert(driver.displayStart(bus, next.data(), page.data(), RefreshMode::Fast, true));
+  assert(count(bus, 0x12) == 1 && bus.writes.back().command == 0x12 && count(bus, 0x02) == 0);
+  size_t fired = bus.writes.size();
+  size_t waits = bus.busyWaitWriteCounts.size();
+  assert(waits == 1 && !waitedAt(bus, fired));  // the power on's wait; the waveform's is still owed
+  driver.displayFinish(bus, nullptr);            // and takes no host buffer
+  assert(bus.busyWaitWriteCounts.size() == waits + 2 && bus.busyWaitWriteCounts[waits] == fired);
+  assert(bus.writes.size() == fired + 1 && bus.writes.back().command == 0x02);  // then the power off, and its wait
+  driver.displayFinish(bus, nullptr);  // once
+  assert(bus.busyWaitWriteCounts.size() == waits + 2 && bus.writes.size() == fired + 1);
+
+  // Not asked to power off: the finish waits and leaves the controller up.
+  bus.clear();
+  assert(driver.displayStart(bus, page.data(), next.data(), RefreshMode::Fast, false));
+  fired = bus.writes.size();
+  driver.displayFinish(bus, nullptr);
+  assert(waitedAt(bus, fired) && bus.writes.size() == fired);
+
+  // BUSY seen to drop at the start and back up at the finish: the waveform is over, nothing to wait for.
+  bus.clear();
+  bus.busy = true;
+  assert(driver.displayStart(bus, next.data(), page.data(), RefreshMode::Fast, true));
+  bus.busy = false;
+  fired = bus.writes.size();
+  driver.displayFinish(bus, nullptr);
+  assert(!waitedAt(bus, fired) && bus.writes.back().command == 0x02 && waitedAt(bus, fired + 1));
+  // Still down: the finish waits.
+  bus.clear();
+  bus.busy = true;
+  assert(driver.displayStart(bus, page.data(), next.data(), RefreshMode::Fast, false));
+  fired = bus.writes.size();
+  driver.displayFinish(bus, nullptr);
+  assert(waitedAt(bus, fired));
+  bus.busy = false;
+}
+
+void testEveryEntryFinishesARefreshInFlightFirst() {
+  const auto cfg = withText();
+  EpdBus bus;
+  Uc8253MurphyDriver driver(cfg);
+  driver.begin(bus);
+  const Bits white = blank(0xFF), black = blank(0x00);
+  Bits page = blank(0xFF);
+  page.set(3, 3, false);
+  driver.display(bus, white.data(), nullptr, RefreshMode::Half, false);
+  // The page in flight asked for a power off: its wait and that power off come before anything the entry sends.
+  const auto finishesFirst = [&](const char* what, auto entry) {
+    bus.clear();
+    assert(driver.displayStart(bus, page.data(), white.data(), RefreshMode::Fast, true));
+    const size_t fired = bus.writes.size();
+    entry();
+    if (!waitedAt(bus, fired) || bus.writes.size() <= fired || bus.writes[fired].command != 0x02) {
+      std::cout << "a refresh in flight was not finished before " << what << "\n";
+      assert(false);
+    }
+    return fired;
+  };
+  finishesFirst("display", [&] { driver.display(bus, white.data(), page.data(), RefreshMode::Fast, false); });
+  finishesFirst("displayStart", [&] {
+    assert(driver.displayStart(bus, white.data(), page.data(), RefreshMode::Fast, false));
+    driver.displayFinish(bus, nullptr);
+  });
+  size_t fired = finishesFirst("copyGrayscaleLsb", [&] { driver.copyGrayscaleLsb(bus, black.data()); });
+  assert(bus.writes.size() == fired + 1);  // staging itself sends nothing
+  fired = finishesFirst("copyGrayscaleMsb", [&] { driver.copyGrayscaleMsb(bus, black.data()); });
+  assert(bus.writes.size() == fired + 1);
+  finishesFirst("displayGray", [&] { driver.displayGray(bus, nullptr, false, nullptr, false); });
+  finishesFirst("displayGrayFrame", [&] { driver.displayGrayFrame(bus, white.data(), RefreshMode::Fast, false); });
+  finishesFirst("displayGrayFrameStart", [&] {
+    assert(driver.displayGrayFrameStart(bus, white.data(), RefreshMode::Fast, false));
+    driver.displayFinish(bus, nullptr);
+  });
+  finishesFirst("deepSleep", [&] {
+    driver.deepSleep(bus);
+    assert(bus.writes.back().command == 0x07 && count(bus, 0x02) == 1);  // powered off once, by the finish
+  });
+
+  // The single push on its own path (planes staged, a record of the glass) resets the controller for its frame:
+  // the page in flight has to be over before that. Staged first, as staging collects a refresh itself.
+  driver.begin(bus);
+  driver.setOnePassText(true);
+  driver.display(bus, white.data(), nullptr, RefreshMode::Half, false);
+  driver.copyGrayscaleLsb(bus, white.data());
+  driver.copyGrayscaleMsb(bus, black.data());
+  bus.clear();
+  assert(driver.displayStart(bus, page.data(), white.data(), RefreshMode::Fast, true));
+  fired = bus.writes.size();
+  assert(driver.displayGrayFrameStart(bus, black.data(), RefreshMode::Fast, false));
+  assert(waitedAt(bus, fired) && bus.writes[fired].command == 0x02);
+  assert(count(bus, 0x12) == 2);  // one refresh more, no nudge: the one-pass path
+  assert(last(bus, 0x23)->bytes == std::vector<uint8_t>(MURPHY_LUT_23_TEXT, MURPHY_LUT_23_TEXT + MURPHY_LUT_LEN_WB));
+  driver.displayFinish(bus, nullptr);
+}
+
+void testANudgeAfterADeferredPageStillTakesTheWarmPath() {
+  const auto cfg = withGray();
+  EpdBus bus;
+  Uc8253MurphyDriver driver(cfg);
+  driver.begin(bus);
+  Bits page = blank(0xFF);
+  assert(driver.displayStart(bus, page.data(), page.data(), RefreshMode::Fast, false));
+  bus.clear();
+  Bits lsb = blank(0x00), msb = blank(0x00);
+  msb.set(5, 7, true);  // light: MSB only
+  nudge(driver, bus, lsb, msb);  // the staging collects the page's refresh
+  assert(waitedAt(bus, 0));
+  assert(count(bus, 0x01) == 0 && count(bus, 0x04) == 0 && count(bus, 0x12) == 1);
+  assert(ramBit(last(bus, 0x10)->bytes, 5, 7) && !ramBit(last(bus, 0x13)->bytes, 5, 7));  // roles traded
+}
+
+void testADeferredOnePassPageHasItsRecordFromTheStart() {
+  const auto cfg = withText();
+  const Bits white = blank(0xFF), black = blank(0x00);
+  Uc8253MurphyDriver driver(cfg);
+  EpdBus bus;
+  driver.begin(bus);
+  driver.setOnePassText(true);
+  driver.display(bus, white.data(), nullptr, RefreshMode::Half, false);
+  driver.copyGrayscaleLsb(bus, white.data());  // a page of gray
+  driver.copyGrayscaleMsb(bus, black.data());
+  bus.clear();
+  assert(driver.displayGrayFrameStart(bus, black.data(), RefreshMode::Fast, true));
+  assert(count(bus, 0x12) == 1 && bus.writes.back().command == 0x12 && count(bus, 0x02) == 0);
+  assert(last(bus, 0x23)->bytes == std::vector<uint8_t>(MURPHY_LUT_23_TEXT, MURPHY_LUT_23_TEXT + MURPHY_LUT_LEN_WB));
+  const size_t fired = bus.writes.size();
+  assert(!waitedAt(bus, fired));
+  // A B/W page arrives while it paints: the push is finished first, and its gray is on record to be driven away.
+  driver.display(bus, black.data(), black.data(), RefreshMode::Fast, false);
+  assert(waitedAt(bus, fired) && bus.writes[fired].command == 0x02);
+  assert(uniformPlane(bus, 0x10, 0xFF));  // gray told it was white, so it takes the drive to black
+}
+
+void testADeferredCleanPushSendsItsOwnNudgeFromTheFinish() {
+  const auto cfg = withText();
+  const Bits white = blank(0xFF), black = blank(0x00);
+  Uc8253MurphyDriver driver(cfg);
+  EpdBus bus;
+  driver.begin(bus);
+  driver.setOnePassText(true);
+  driver.display(bus, white.data(), nullptr, RefreshMode::Half, false);
+  Bits lsb = blank(0x00), msb = blank(0x00);
+  msb.set(5, 7, true);  // one light pixel
+  driver.copyGrayscaleLsb(bus, lsb.data());
+  driver.copyGrayscaleMsb(bus, msb.data());
+  bus.clear();
+  assert(driver.displayGrayFrameStart(bus, black.data(), RefreshMode::Half, false));
+  assert(count(bus, 0x12) == 1 && bus.writes.back().command == 0x12);  // the page, fired
+  assert(!std::memcmp(last(bus, 0x22)->bytes.data(), MURPHY_LUT_22_DEFAULT, sizeof(MURPHY_LUT_22_DEFAULT)));
+  const size_t fired = bus.writes.size();
+  // The next page's planes arrive while the page paints: the nudge goes out first, with this page's planes.
+  driver.copyGrayscaleLsb(bus, white.data());
+  assert(waitedAt(bus, fired) && count(bus, 0x12) == 2);
+  assert(last(bus, 0x21)->bytes == std::vector<uint8_t>(MURPHY_LUT_21_GRAY, MURPHY_LUT_21_GRAY + MURPHY_LUT_LEN_WW));
+  assert(count(bus, 0x01) == 1);  // the page's init alone: the nudge runs warm, planes traded
+  assert(ramBit(last(bus, 0x10)->bytes, 5, 7) && !ramBit(last(bus, 0x13)->bytes, 5, 7));
+  assert(!ramBit(last(bus, 0x10)->bytes, 20, 7));  // not the next page's all-gray plane
+  const size_t done = bus.writes.size();
+  driver.displayFinish(bus, nullptr);  // nothing is left of it
+  assert(bus.writes.size() == done);
+
+  // The blocking form is the two halves in one call.
+  driver.display(bus, white.data(), nullptr, RefreshMode::Half, false);
+  driver.copyGrayscaleLsb(bus, lsb.data());
+  driver.copyGrayscaleMsb(bus, msb.data());
+  bus.clear();
+  driver.displayGrayFrame(bus, black.data(), RefreshMode::Half, false);
+  assert(count(bus, 0x12) == 2);
+
+  // begin() resets the controller: a push in flight is gone with it, and its nudge never follows.
+  driver.display(bus, white.data(), nullptr, RefreshMode::Half, false);
+  driver.copyGrayscaleLsb(bus, lsb.data());
+  driver.copyGrayscaleMsb(bus, msb.data());
+  assert(driver.displayGrayFrameStart(bus, black.data(), RefreshMode::Half, false));
+  driver.begin(bus);
+  bus.clear();
+  driver.display(bus, white.data(), nullptr, RefreshMode::Half, false);
+  assert(count(bus, 0x12) == 1 && !waitedAt(bus, 0));
+}
+
+// The power off between frames (the host's idle policy) against a deferred refresh.
+void testThePowerOffBetweenFramesFinishesARefreshInFlightFirst() {
+  EpdBus bus;
+  Uc8253MurphyDriver driver;
+  driver.begin(bus);
+  Bits page = blank(0xFF), next = blank(0xFF);
+  next.set(3, 3, false);
+  driver.display(bus, page.data(), nullptr, RefreshMode::Half, false);
+
+  // The page is still painting: its waveform is waited out, then the booster goes down, once.
+  bus.clear();
+  assert(driver.displayStart(bus, next.data(), page.data(), RefreshMode::Fast, false));
+  size_t fired = bus.writes.size();
+  driver.powerOffBetweenFrames(bus);
+  assert(waitedAt(bus, fired) && bus.writes.size() == fired + 1 && bus.writes[fired].command == 0x02);
+  assert(waitedAt(bus, fired + 1));  // the power off's own wait
+  driver.displayFinish(bus, nullptr);  // the host's finish finds nothing left
+  driver.powerOffBetweenFrames(bus);   // and a second power off finds the booster down
+  assert(bus.writes.size() == fired + 1);
+
+  // The page asked for its own power off: the finish sends it, the idle one adds none.
+  bus.clear();
+  assert(driver.displayStart(bus, page.data(), next.data(), RefreshMode::Fast, true));
+  fired = bus.writes.size();
+  driver.powerOffBetweenFrames(bus);
+  assert(waitedAt(bus, fired) && count(bus, 0x02) == 1 && bus.writes.size() == fired + 1);
+
+  // Powered off, the next page starts as any page does: reset, init, power on, one refresh.
+  bus.clear();
+  assert(driver.displayStart(bus, next.data(), page.data(), RefreshMode::Fast, false));
+  assert(count(bus, 0x01) == 1 && count(bus, 0x04) == 1 && count(bus, 0x12) == 1);
+  assert(!std::memcmp(last(bus, 0x22)->bytes.data(), MURPHY_LUT_22_FAST, sizeof(MURPHY_LUT_22_FAST)));
+  driver.displayFinish(bus, nullptr);
+  // Deep sleep after a power off does not power off again.
+  driver.powerOffBetweenFrames(bus);
+  bus.clear();
+  driver.deepSleep(bus);
+  assert(count(bus, 0x02) == 0 && bus.writes.back().command == 0x07);
+}
+
+void testANudgeAfterAPowerOffBetweenFramesTakesTheColdPath() {
+  const auto cfg = withGray();
+  EpdBus bus;
+  Uc8253MurphyDriver driver(cfg);
+  driver.begin(bus);
+  Bits page = blank(0xFF);
+  Bits lsb = blank(0x00), msb = blank(0x00);
+  msb.set(5, 7, true);  // light: MSB only
+  // A deferred page, collected, then the idle power off: the nudge that follows resets and takes straight planes.
+  assert(driver.displayStart(bus, page.data(), page.data(), RefreshMode::Fast, false));
+  driver.displayFinish(bus, nullptr);
+  driver.powerOffBetweenFrames(bus);
+  bus.clear();
+  nudge(driver, bus, lsb, msb);
+  assert(count(bus, 0x01) == 1 && count(bus, 0x04) == 1 && count(bus, 0x12) == 1);
+  assert(!ramBit(last(bus, 0x10)->bytes, 5, 7) && ramBit(last(bus, 0x13)->bytes, 5, 7));
+
+  // The same with the power off arriving while the page still paints.
+  driver.display(bus, page.data(), page.data(), RefreshMode::Half, false);
+  assert(driver.displayStart(bus, page.data(), page.data(), RefreshMode::Fast, false));
+  driver.powerOffBetweenFrames(bus);
+  bus.clear();
+  nudge(driver, bus, lsb, msb);
+  assert(count(bus, 0x01) == 1 && count(bus, 0x04) == 1 && count(bus, 0x12) == 1);
+  assert(!ramBit(last(bus, 0x10)->bytes, 5, 7) && ramBit(last(bus, 0x13)->bytes, 5, 7));
+
+  // Without the power off the nudge stays warm, deferred page or not (the control for the two above).
+  driver.display(bus, page.data(), page.data(), RefreshMode::Half, false);
+  assert(driver.displayStart(bus, page.data(), page.data(), RefreshMode::Fast, false));
+  driver.displayFinish(bus, nullptr);
+  bus.clear();
+  nudge(driver, bus, lsb, msb);
+  assert(count(bus, 0x01) == 0 && count(bus, 0x04) == 0 && count(bus, 0x12) == 1);
+  assert(ramBit(last(bus, 0x10)->bytes, 5, 7) && !ramBit(last(bus, 0x13)->bytes, 5, 7));
+}
+
+void testAPowerOffWhileACleanPushPaintsSendsItsNudgeWarmFirst() {
+  const auto cfg = withText();
+  const Bits white = blank(0xFF), black = blank(0x00);
+  Uc8253MurphyDriver driver(cfg);
+  EpdBus bus;
+  driver.begin(bus);
+  driver.setOnePassText(true);
+  driver.display(bus, white.data(), nullptr, RefreshMode::Half, false);
+  Bits lsb = blank(0x00), msb = blank(0x00);
+  msb.set(5, 7, true);
+  driver.copyGrayscaleLsb(bus, lsb.data());
+  driver.copyGrayscaleMsb(bus, msb.data());
+  bus.clear();
+  assert(driver.displayGrayFrameStart(bus, black.data(), RefreshMode::Half, false));
+  const size_t fired = bus.writes.size();
+  driver.powerOffBetweenFrames(bus);
+  // The page's wait, the nudge with the controller still up (no second init, planes traded), then the power off.
+  assert(waitedAt(bus, fired) && count(bus, 0x12) == 2 && count(bus, 0x01) == 1);
+  assert(last(bus, 0x21)->bytes == std::vector<uint8_t>(MURPHY_LUT_21_GRAY, MURPHY_LUT_21_GRAY + MURPHY_LUT_LEN_WW));
+  assert(ramBit(last(bus, 0x10)->bytes, 5, 7) && !ramBit(last(bus, 0x13)->bytes, 5, 7));
+  assert(bus.writes.back().command == 0x02 && count(bus, 0x02) == 1);
+  const size_t done = bus.writes.size();
+  driver.displayFinish(bus, nullptr);
+  assert(bus.writes.size() == done);
+  // The gray it left is on record: the next FAST page drives it away.
+  bus.clear();
+  driver.display(bus, black.data(), black.data(), RefreshMode::Fast, false);
+  assert(ramBit(last(bus, 0x10)->bytes, 5, 7));    // the gray pixel is told it was white
+  assert(!ramBit(last(bus, 0x10)->bytes, 20, 7));  // black that stays black rests
+}
+
+void testTheRecordOfTheGlassOutlivesAPowerOffBetweenFrames() {
+  const auto cfg = withText();
+  const Bits white = blank(0xFF), black = blank(0x00);
+  Uc8253MurphyDriver driver(cfg);
+  EpdBus bus;
+  driver.begin(bus);
+  driver.setOnePassText(true);
+  driver.display(bus, white.data(), nullptr, RefreshMode::Half, false);
+  driver.powerOffBetweenFrames(bus);
+  // Powered off, a FAST single push still knows what it replaces: one refresh with the text bank, no nudge.
+  driver.copyGrayscaleLsb(bus, white.data());  // a page of gray
+  driver.copyGrayscaleMsb(bus, black.data());
+  bus.clear();
+  assert(driver.displayGrayFrameStart(bus, black.data(), RefreshMode::Fast, false));
+  assert(count(bus, 0x01) == 1 && count(bus, 0x04) == 1 && count(bus, 0x12) == 1);
+  assert(last(bus, 0x23)->bytes == std::vector<uint8_t>(MURPHY_LUT_23_TEXT, MURPHY_LUT_23_TEXT + MURPHY_LUT_LEN_WB));
+  assert(uniformPlane(bus, 0x10, 0xFF) && uniformPlane(bus, 0x13, 0x00));  // white to gray, everywhere
+  // The power off arrives while it paints, then the same page again: its gray is on record and takes the gray row
+  // once more, as a page that stays gray does with the booster left up.
+  driver.powerOffBetweenFrames(bus);
+  assert(bus.writes.back().command == 0x02);
+  driver.copyGrayscaleLsb(bus, white.data());
+  driver.copyGrayscaleMsb(bus, black.data());
+  bus.clear();
+  assert(driver.displayGrayFrameStart(bus, black.data(), RefreshMode::Fast, false));
+  assert(count(bus, 0x12) == 1 && uniformPlane(bus, 0x10, 0xFF) && uniformPlane(bus, 0x13, 0x00));
+  driver.displayFinish(bus, nullptr);
+  // And a B/W FAST after another power off drives that gray away.
+  driver.powerOffBetweenFrames(bus);
+  bus.clear();
+  driver.display(bus, black.data(), black.data(), RefreshMode::Fast, false);
+  assert(uniformPlane(bus, 0x10, 0xFF));
+}
+
 int main() {
   BoardConfig::ACTIVE.displayWidth = FB_W;
   BoardConfig::ACTIVE.displayHeight = FB_H;
@@ -474,5 +813,14 @@ int main() {
   testOnePassPicksEachPixelsDrive();
   testOnePassKeepsTwoPassesWhereItMust();
   testAFastAfterOnePassDrivesItsGrayAway();
-  std::cout << "PASS: UC8253 Murphy gray nudge and gray-aware FAST\n";
+  testADeferredPageReturnsOnceFiredAndItsFinishWaitsAndPowersOff();
+  testEveryEntryFinishesARefreshInFlightFirst();
+  testANudgeAfterADeferredPageStillTakesTheWarmPath();
+  testADeferredOnePassPageHasItsRecordFromTheStart();
+  testADeferredCleanPushSendsItsOwnNudgeFromTheFinish();
+  testThePowerOffBetweenFramesFinishesARefreshInFlightFirst();
+  testANudgeAfterAPowerOffBetweenFramesTakesTheColdPath();
+  testAPowerOffWhileACleanPushPaintsSendsItsNudgeWarmFirst();
+  testTheRecordOfTheGlassOutlivesAPowerOffBetweenFrames();
+  std::cout << "PASS: UC8253 Murphy gray nudge, gray-aware FAST and deferred refresh\n";
 }
