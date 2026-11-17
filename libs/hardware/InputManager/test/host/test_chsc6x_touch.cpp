@@ -218,5 +218,44 @@ int main() {
   gpioLevels[0] = HIGH;
   idle(5);
 
+  // Light sleep: the IRQ line is armed as a level wake, and its edge interrupt is never live under a
+  // level type, which would re-enter the ISR for as long as the line is low.
+  idle();
+  resetCounts();
+  gpioStubPins[kIrqPin] = {GPIO_INTR_NEGEDGE, true, false};  // as beginTouch()'s attachInterrupt leaves it
+  assert(in.touchPulseWakePin() == kIrqPin);
+  assert(in.armTouchPulseWake());
+  assert(gpioStubPins[kIrqPin].wakeEnabled && gpioStubPins[kIrqPin].type == GPIO_INTR_LOW_LEVEL);
+  assert(!gpioStubPins[kIrqPin].intrEnabled);
+
+  // Woken by the line: the pulse ended before the edge interrupt was back, so the report is read anyway.
+  Wire.frame = contactAt(0x64, 0x01, 0x8B);
+  in.touchPulseWakeDone(true);
+  assert(!gpioStubPins[kIrqPin].wakeEnabled && gpioStubPins[kIrqPin].type == GPIO_INTR_NEGEDGE);
+  assert(gpioStubPins[kIrqPin].intrEnabled);
+  sample();
+  assert(in.isTouchPressed() && "the report that woke the chip is read without an edge");
+  report(liftAt(0x64, 0x01, 0x8B));
+  assert(taps == 1);
+
+  // Woken by the slice timer: no pulse, so what sits in the register is not read.
+  idle();
+  resetCounts();
+  assert(in.armTouchPulseWake());
+  Wire.frame = contactAt(0xA0, 0x00, 0x80);
+  in.touchPulseWakeDone(false);
+  assert(gpioStubPins[kIrqPin].intrEnabled && gpioStubPins[kIrqPin].type == GPIO_INTR_NEGEDGE);
+  idle();
+  assert(!in.isTouchPressed() && taps == 0);
+
+  // Done without an arm touches neither the pin nor the read flag.
+  gpioStubPins[kIrqPin].intrEnabled = false;
+  in.touchPulseWakeDone(true);
+  assert(!gpioStubPins[kIrqPin].intrEnabled);
+  idle();
+  assert(!in.isTouchPressed());
+
+  assert(gpioStubLevelWithLiveIntr == 0 && "a level type never met an enabled interrupt");
+
   std::puts("CHSC6x touch passed");
 }
