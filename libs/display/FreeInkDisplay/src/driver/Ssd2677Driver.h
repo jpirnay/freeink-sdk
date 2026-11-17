@@ -46,7 +46,8 @@ class Ssd2677Driver : public PanelDriver {
   void setReaderRefresh(bool reading) override;
   // Witch Reader's single push (PanelDriver::supportsGrayFrame): while setOnePassText() is on, a reader
   // page stages its planes, then displayGrayFrame() sends base and gray as the same rest pass that
-  // displayGray() runs for a combined base. The Picco only; the Sticky keeps the combined-base entry.
+  // displayGray() runs for a combined base. A clean refresh keeps two passes: the page in B/W, then
+  // its gray as the two-pass overlay. The Picco only; the Sticky keeps the combined-base entry.
   bool supportsOnePassText() const override;
   void setOnePassText(bool on) override;
   bool supportsGrayFrame() const override { return _onePassText && supportsOnePassText() && textPassReady(); }
@@ -101,12 +102,15 @@ class Ssd2677Driver : public PanelDriver {
   bool ensureRestText();
   void stageRestText(unsigned plane, const uint8_t* data);
   bool presentRestText(EpdBus& bus);
+  bool presentOverlayText(EpdBus& bus);
   void sendRestCodes(EpdBus& bus, bool grayKnown);
 
   X4ProTextAa _textAa;  // Sticky reader text (full-target compose with a charge map)
   uint8_t* _textGray = nullptr;  // Picco: the page's staged gray (LSB | MSB); swaps with _lsb after a pass
   uint8_t* _textBase = nullptr;  // Picco: the page's B/W base, as the renderer reuses its buffer for the planes
-  uint8_t _textStaged = 0;       // bit 0 LSB staged, bit 1 MSB
+  uint8_t* _textDark = nullptr;  // Picco single push: the page's staged LSB, apart for a clean refresh's overlay
+  uint8_t _textStaged = 0;       // bit 0 LSB staged, bit 1 MSB, bit 2 the LSB kept in _textDark
+  bool _restGrayOnGlass = false;  // the gray on the glass is the rest table's, so gray that stays may rest
   bool _textBegun = false;       // beginGrayscale() took a Picco reader page for the text pass
   bool _readerRefresh = false;
   bool _onePassText = false;  // the host sends reader pages through displayGrayFrame()

@@ -433,12 +433,19 @@ void Ssd2677Driver::setOnePassText(const bool on) {
   _onePassText = on;
   // A pre-render stages its page before any book page has set the reader hint, so this takes the
   // planes too.
-  if (on && supportsOnePassText()) ensureRestText();
+  if (!on || !supportsOnePassText() || !ensureRestText() || _textDark) return;
+  // Without it a clean refresh still works, through the longer rest pass.
+  _textDark = static_cast<uint8_t*>(heap_caps_malloc(geometry().bufferSize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
 }
 
 void Ssd2677Driver::displayGrayFrame(EpdBus& bus, const uint8_t* fb, const RefreshMode mode, const bool turnOff) {
-  // A clean refresh, or the first frame after init, goes up in B/W first, as beginGrayscale() does.
-  if (mode != RefreshMode::Fast || _needsInitialFull) display(bus, fb, nullptr, mode, false);
+  // A clean refresh, or the first frame after init, goes up in B/W first, as beginGrayscale() does. The glass
+  // is then the B/W page, gray pixels inked, which is where two-pass mode's overlay starts from, so the gray
+  // goes out as that overlay: its refresh took 119 ms in the reader, the rest pass's 296 (Picco, 2026-11-16).
+  if (mode != RefreshMode::Fast || _needsInitialFull) {
+    display(bus, fb, nullptr, mode, false);
+    if (presentOverlayText(bus)) return;
+  }
   // The rest pass reads the page from _textBase, which the combined-base entry fills in beginGrayscale().
   if (_textBase) memcpy(_textBase, fb, geometry().bufferSize);
   // On failure the page still goes up, in B/W.
@@ -468,8 +475,12 @@ void Ssd2677Driver::stageRestText(const unsigned plane, const uint8_t* data) {
   }
   const uint32_t size = geometry().bufferSize;
   if (plane == 0) {
-    memcpy(_textGray, data, size);
-    _textStaged = 1;
+    // The rest pass needs only the union; the overlay tells dark (LSB) from light (MSB only).
+    memcpy(_textDark ? _textDark : _textGray, data, size);
+    _textStaged = _textDark ? 5 : 1;
+  } else if (_textStaged & 4) {
+    for (uint32_t i = 0; i < size; ++i) _textGray[i] = static_cast<uint8_t>(_textDark[i] | data[i]);
+    _textStaged |= 2;
   } else if (_textStaged & 1) {
     for (uint32_t i = 0; i < size; ++i) _textGray[i] |= data[i];
     _textStaged |= 2;
@@ -480,7 +491,8 @@ void Ssd2677Driver::stageRestText(const unsigned plane, const uint8_t* data) {
 // on it) to the page (_textBase, plus the staged gray). A pixel already at its target rests (10): black
 // that stays black is never driven again, which is what keeps static text and the status bar from
 // collecting charge page after page. The rest go to white (11), to black (00) or to gray (01)
-// (RestTextCodes.h).
+// (RestTextCodes.h). Gray an overlay left is not at the rest gray's level, so gray that stays takes the
+// gray row once more.
 void Ssd2677Driver::sendRestCodes(EpdBus& bus, const bool grayKnown) {
   auto& chunk = sendChunk;
   const uint32_t size = geometry().bufferSize;
@@ -488,7 +500,8 @@ void Ssd2677Driver::sendRestCodes(EpdBus& bus, const bool grayKnown) {
   auto txn = bus.beginTxn();
   uint16_t n = 0;
   for (uint32_t i = 0; i < size; ++i) {  // the Picco takes rows in framebuffer order
-    const RestTextDrives d = restTextDrives(_textBase[i], _textGray[i], _old[i], grayKnown ? _lsb[i] : 0, true);
+    const RestTextDrives d =
+        restTextDrives(_textBase[i], _textGray[i], _old[i], grayKnown ? _lsb[i] : 0, _restGrayOnGlass);
     packPixels(static_cast<uint8_t>(d.rest | d.toWhite), static_cast<uint8_t>(d.toWhite | d.toGray), &chunk[n]);
     n += 2;
     if (n == sizeof(chunk)) {
@@ -500,7 +513,7 @@ void Ssd2677Driver::sendRestCodes(EpdBus& bus, const bool grayKnown) {
 }
 
 bool Ssd2677Driver::presentRestText(EpdBus& bus) {
-  const bool staged = _textStaged == 3;
+  const bool staged = (_textStaged & 3) == 3;
   _textStaged = 0;
   if (!staged || !textPassReady()) return false;
   // _lsb describes the glass only straight after a gray pass; a B/W frame since drove it to _old.
@@ -515,7 +528,29 @@ bool Ssd2677Driver::presentRestText(EpdBus& bus) {
   _lsb = glassGray;
   _grayPending = true;  // the next B/W frame drives each gray pixel to its target
   _grayMaskReady = false;
+  _restGrayOnGlass = true;
   _afterReader = true;  // the next B/W frame erases reading-depth ink
+  return true;
+}
+
+// After a clean refresh the glass is the page in B/W (_old), every gray pixel black, so the gray goes out as
+// two-pass mode sends it: the overlay table (lut_picco_se0400_gray) lightens dark pixels (LSB, code 01) 3
+// frames and light ones (MSB only, code 10) 4. False, with the staged planes kept, when the dark plane is
+// missing: the caller then sends the rest pass.
+bool Ssd2677Driver::presentOverlayText(EpdBus& bus) {
+  if (_textStaged != 7 || !textPassReady()) return false;
+  _textStaged = 0;
+  powerOn(bus);  // stock's overlay powers on before the upload (copyGrayscaleMsb)
+  sendPacked(bus, _textGray, _textDark, true);
+  refreshWith(bus, lut_picco_se0400_gray, true);
+  // As after a rest pass: the page's gray is the glass's, the old mask's block stages the next page.
+  uint8_t* const glassGray = _textGray;
+  _textGray = _lsb;
+  _lsb = glassGray;
+  _grayPending = true;
+  _grayMaskReady = false;
+  _restGrayOnGlass = false;
+  _afterReader = true;
   return true;
 }
 
@@ -587,6 +622,7 @@ void Ssd2677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
   refreshWith(bus, lut_picco_se0400_gray, true);
   _grayPending = _grayMaskReady;
   _grayMaskReady = false;
+  _restGrayOnGlass = false;
   // Preserve the base outside the gray mask; masked pixels are driven on the next frame.
 }
 

@@ -585,6 +585,97 @@ static void expectSinglePushRestText2677(Ssd2677Driver& s) {
   assert(packed && (*packed)[0] == 0x55 && (*packed)[1] == 0x7F);
 }
 
+struct Sent {
+  unsigned refreshes = 0;
+  std::vector<const Bytes*> luts, data;
+};
+
+static Sent sent(const EpdBus& bus) {
+  Sent s;
+  for (const auto& w : bus.writes) {
+    s.refreshes += w.command == 0x12;
+    if (w.command == 0x20) s.luts.push_back(&w.bytes);
+    if (w.command == 0x10) s.data.push_back(&w.bytes);
+  }
+  return s;
+}
+
+static bool isLut(const Bytes* sentLut, const unsigned char* lut) {
+  return sentLut && *sentLut == Bytes(lut, lut + 535);
+}
+
+// The single push on a clean refresh keeps two passes: the page in B/W, then its gray as two-pass mode's overlay,
+// dark (LSB) as 01 and light (MSB only) as 10. The next page's rest pass drives the overlay's gray that stays to
+// the rest gray once, then lets it rest.
+static void expectSinglePushCleanRefresh2677(Ssd2677Driver& s) {
+  EpdBus bus;
+  Bytes base(48000, 0xFF), lsb(48000, 0), msb(48000, 0);
+  base[0] = 0x07;  // 3 px ink, 2 px gray (black in the B/W page, as the renderer draws them), 3 px white
+  lsb[0] = 0x10;   // px 3 dark
+  msb[0] = 0x18;   // px 3 dark, px 4 light
+  s.display(bus, Bytes(48000, 0xFF).data(), nullptr, RefreshMode::Full, false);
+  s.setReaderRefresh(true);
+  s.setOnePassText(true);
+  assert(s._textDark && s.supportsGrayFrame());
+  const auto stage = [&]() {
+    bus.clear();
+    s.copyGrayscaleLsb(bus, lsb.data());
+    s.copyGrayscaleMsb(bus, msb.data());
+    assert(bus.writes.empty());
+    bus.clear();
+  };
+
+  stage();
+  s.displayGrayFrame(bus, base.data(), RefreshMode::Half, false);
+  Sent out = sent(bus);
+  assert(out.refreshes == 2 && out.luts.size() == 2 && out.data.size() == 2);
+  assert(isLut(out.luts[0], lut_picco_se0400_full) && isLut(out.luts[1], lut_picco_se0400_gray));
+  // The overlay: px 3 dark (01), px 4 light (10), everything else undriven (00).
+  const Bytes& overlay = *out.data[1];
+  assert(overlay[0] == 0x01 && overlay[1] == 0x80 && overlay[2] == 0x00 && overlay[3] == 0x00);
+  assert(s._grayPending && s._lsb[0] == 0x18 && !s._restGrayOnGlass && memcmp(s._old, base.data(), 48000) == 0);
+
+  // The same page, FAST: ink and white rest (10); the overlay's gray takes the rest table's gray row (01).
+  stage();
+  s.displayGrayFrame(bus, base.data(), RefreshMode::Fast, false);
+  out = sent(bus);
+  assert(out.refreshes == 1 && isLut(out.luts[0], lut_picco_se0400_text_rest));
+  assert((*out.data[0])[0] == 0xA9 && (*out.data[0])[1] == 0x6A && (*out.data[0])[2] == 0xAA);
+  assert(s._restGrayOnGlass);
+  // And again: now every pixel rests.
+  stage();
+  s.displayGrayFrame(bus, base.data(), RefreshMode::Fast, false);
+  out = sent(bus);
+  assert(out.refreshes == 1 && (*out.data[0])[0] == 0xAA && (*out.data[0])[1] == 0xAA);
+
+  // Without the dark plane a clean refresh still works, through the rest pass after the B/W page.
+  uint8_t* const dark = s._textDark;
+  s._textDark = nullptr;
+  stage();
+  s.displayGrayFrame(bus, base.data(), RefreshMode::Half, false);
+  out = sent(bus);
+  assert(out.refreshes == 2 && isLut(out.luts[0], lut_picco_se0400_full) &&
+         isLut(out.luts[1], lut_picco_se0400_text_rest));
+  assert(s._restGrayOnGlass);
+  s._textDark = dark;
+
+  // Two-pass mode's overlay leaves its own gray too: the first one-pass page after it drives that gray again.
+  // Two-pass mode as the reader runs it: the B/W page, then the planes and the overlay.
+  s.setOnePassText(false);
+  s.display(bus, base.data(), nullptr, RefreshMode::Fast, false);
+  s.copyGrayscaleLsb(bus, lsb.data());
+  s.copyGrayscaleMsb(bus, msb.data());
+  s.displayGray(bus, base.data(), false, nullptr, false);
+  assert(s._grayPending && !s._restGrayOnGlass);
+  s.setOnePassText(true);
+  stage();
+  s.displayGrayFrame(bus, base.data(), RefreshMode::Fast, false);
+  out = sent(bus);
+  assert(out.refreshes == 1 && (*out.data[0])[0] == 0xA9 && (*out.data[0])[1] == 0x6A);
+  s.setOnePassText(false);
+  s.setReaderRefresh(false);
+}
+
 // DEPG0397 reader pages: one combined activation, no separate B/W base. Other
 // SSD1677 panels keep the two-pass overlay.
 static void expectOnePassTextAa(Ssd1677Driver& d, bool expected) {
@@ -684,7 +775,8 @@ int main(int argc, char** argv) {
       expectOnePassTextAa2677(s);
       expectLabFrame2677(s);
       expectSinglePushRestText2677(s);
-      std::printf("Picco se0400: one-pass text AA, lab frame and single push passed\n");
+      expectSinglePushCleanRefresh2677(s);
+      std::printf("Picco se0400: one-pass text AA, lab frame, single push and its clean refresh passed\n");
       return 0;
     }
     // Stock reader table: 24-frame drives, 1-frame top-ups. Text table: black, gray, held white, white.
