@@ -55,10 +55,18 @@ the run toward white before it, are picked from the panel's measured response
 instead; see WALKDOWN_AFTER_RUN.
 
 epd_text/epd_quality become a true GC16-style refresh: every one of the 16
-columns rail-normalizes (dark half to white, light half to black) and then
-walks to its exact level. Destination-indexed yet source-independent, it both
-scrubs residue and resets any accumulated DC bias, because the saturating rail
-visit erases a pixel's drive history.
+columns goes to the black rail, then to the white rail, and then walks down to
+its exact level. Destination-indexed yet source-independent, it scrubs residue:
+the saturating rail visit erases the pixel's OPTICAL history. It does not erase
+charge -- every frame of net drive stays with the pixel -- so the phase lengths
+are cut to net zero for a pixel that keeps its level, LovyanGFX's eraser
+included (clean_phases()).
+
+Net drive, per pixel, of what this script emits: a clean refresh nets 0 for a
+pixel that keeps its level and at most 4 frames either way for one that changes
+(the eraser, which the destination-indexed columns cannot see); a fast-bank rail
+nets +-L[15] and so 0 over any B/W round trip; a fast-bank grey nets 0.
+tools/test_gen_ed047tc2_waveform.py checks those bounds on the committed tables.
 
 Panel_EPD reads a pixel's progress word through a signed cast, so no block index
 may reach 128: the five banks together, terminators included, must fit in 128
@@ -254,6 +262,43 @@ LUT_ROW_BUDGET = 128
 ERASER_ROWS = 4
 UNUSED_SLOT_ROWS = 1  # the board config stubs epd_quality/epd_fastest (see there)
 
+# The two drive rows of that eraser, copied from Panel_EPD.cpp (M5GFX 0.2.20,
+# lut_eraser), level 0 (black) first, in LUT_MAKE's codes. Panel_EPD runs them
+# ahead of every epd_text / epd_quality drive, indexed by the level the pixel was
+# last asked for (the low byte of its progress word). The clean bank cannot see
+# that level: its columns are indexed by the destination alone. So the eraser's
+# net drive is the one part of a clean refresh no column can cancel for a pixel
+# that changes, and clean_phases() cancels it for a pixel that does not.
+LGFX_ERASER_DRIVE = (
+    (2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 1, 1),
+    (2, 2, 3, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1),
+)
+
+# How dark the clean bank's first phase must take a white pixel, on the
+# WALKDOWN_AFTER_RAIL scale: everything on the panel goes black before it goes
+# white, so the refresh reads as one blink rather than as the old page fading
+# through the new one. 0.05 is as black as the greys are kept away from.
+CLEAN_BLACK_LIGHTNESS = 0.05
+
+
+def code_net(code):
+    """Frames toward white minus frames toward black for one LUT code."""
+    return 1 if code == 2 else -1 if code == 1 else 0
+
+
+def eraser_net(level):
+    """Net drive LovyanGFX's eraser gives a pixel last asked for `level`."""
+    return sum(code_net(row[level]) for row in LGFX_ERASER_DRIVE)
+
+
+def black_frames(drive):
+    """Frames toward black that take a white pixel visibly black (the clean
+    bank's first phase), in a range with a DU drive of `drive` frames."""
+    for frames in range(1, drive + 1):
+        if lightness(WALKDOWN_AFTER_RAIL, frames, drive) <= CLEAN_BLACK_LIGHTNESS + 1e-9:
+            return frames
+    return drive
+
 
 def check_response():
     """The measured responses must run rail to rail, and only one way.
@@ -344,44 +389,102 @@ def pick_gray_levels(impulse, k_dark, k_light):
     return best[1], best[2]
 
 
+def gray_lead(run, k):
+    """Frames toward black a grey column opens with: as many as its run toward
+    white outweighs its walk down, so the column nets no drive."""
+    return run - k
+
+
 def fast_rows(l15, run, dark, k_dark, light, k_light):
     """The differential bank: DU rails plus two self-normalizing grey columns.
 
-    Rails run the vendor DU verbatim: L[15] frames of full drive, then park.
-    Each grey column first drives `run` frames toward white, which takes any
-    source to white -- erasing whatever state the pixel arrived in, the rail clamp
-    doing the work a source index would otherwise have to -- and then walks back
-    down toward black for its k frames to land on its grey. Not the rails' L[15]:
-    every frame past white is drive the pixel never gets back. Measured at 24 C,
-    100 px grey patches over four page turns and then a turn to white: with a run
-    of L[15] they stayed ~5% darker than the white around them, with a run of 12
-    ~1.5% (the old near-black greys ~0.6%). The bank is as long as the longer of
-    the two, which is L[15] in every range.
+    Rails run the vendor DU verbatim: L[15] frames of full drive, then park. A
+    rail column nets +-L[15], and since the panel drives a pixel only when its
+    target changes, white -> black -> white nets 0: the rails are balanced over
+    any sequence of B/W pages.
+
+    Each grey column drives gray_lead() frames toward black, then `run` frames
+    toward white, which takes any source to white -- erasing whatever state the
+    pixel arrived in, the rail clamp doing the work a source index would
+    otherwise have to -- and then walks back down toward black for its k frames
+    to land on its grey. The run is not the rails' L[15]: every frame past white
+    is drive the pixel never gets back. Measured at 24 C, 100 px grey patches over
+    four page turns and then a turn to white: with a run of L[15] they stayed ~5%
+    darker than the white around them, with a run of 12 ~1.5% (the old near-black
+    greys ~0.6%). Those patches netted +18 and +9 frames toward white per drive,
+    and the lead toward black takes that net to 0: a pixel that turns grey on
+    every page no longer gains white drive on every page. It goes through black
+    first, so every source lands as a black start did in WALKDOWN_AFTER_RUN.
+
+    The bank is as long as the longest column: the lead, run and walk of a grey
+    (2 x run) where that is longer than L[15].
     """
+    greys = ((dark, gray_lead(run, k_dark), k_dark), (light, gray_lead(run, k_light), k_light))
     rows = []
-    for f in range(max(l15, run + max(k_dark, k_light))):
+    for f in range(max([l15] + [lead + run + k for _, lead, k in greys])):
         codes = [3] * 16
         if f < l15:
             codes[0] = 1
             codes[15] = 2
-        for level, k in ((dark, k_dark), (light, k_light)):
-            if f < run:
+        for level, lead, k in greys:
+            if f < lead:
+                codes[level] = 1
+            elif f < lead + run:
                 codes[level] = 2
-            elif f < run + k:
+            elif f < lead + run + k:
                 codes[level] = 1
         rows.append("    LUT_MAKE(%s)," % ", ".join(str(c) for c in codes))
     return rows
 
 
-def clean_rows(impulse):
-    """The GC16-style clean bank for epd_text / epd_quality.
+def clean_phases(impulse):
+    """Per level, the (black, white, down) frames of its clean-bank column.
 
-    Three phases, uniform across all 16 columns so the refresh reads as a
-    blink rather than as noise: every pixel drives to the black rail for L[15]
-    frames, then to the white rail for L[15], then walks down from white to its
-    exact level (L[15]-L[i] frames toward black). The double rail excursion is
-    the scrub -- it erases drive history and accumulated DC bias -- and the
-    final descent lands every level, greys included, precisely.
+    Every column walks three phases: toward black, toward white, then down from
+    the white rail to its level (L[15]-L[i] frames, which lands it exactly from
+    the rail). The white phase is at least L[15], which takes any source to the
+    rail, so the landing never depends on where the pixel came from.
+
+    The lengths are what make the refresh charge-neutral for a pixel that keeps
+    its level: Panel_EPD runs LovyanGFX's eraser first (eraser_net() of the level
+    the pixel had), and each column nets exactly the opposite of the eraser for
+    its own level -- black + down - white == eraser_net(level) -- so eraser and
+    column together net 0 for every pixel the refresh does not change. A pixel
+    that changes nets eraser_net(from) - eraser_net(to), at most 4 frames either
+    way. (The bank this replaces walked every column L[15] black, L[15] white and
+    then down: a pixel that stayed black netted -19 frames per clean refresh, -23
+    when the one before was clean too, and the screens that refresh on every
+    change kept their black chrome under that.)
+
+    A column needs no more black than takes a white pixel visibly black
+    (black_frames()): the white phase saturates it either way. A longer black
+    phase is only kept where the balance asks for it, and the white phase is
+    stretched past L[15] -- at the rail, where it moves nothing -- where it asks
+    for more white. Level 15 keeps a white phase of exactly L[15], so the
+    LgfxEpdDriver's buildGrayResponse() still derives a drive of L[15] from this
+    bank and the 16-level sleep image keeps its response.
+    """
+    l15 = impulse[15]
+    look = black_frames(l15)
+    phases = []
+    for level in range(16):
+        erase = eraser_net(level)
+        down = l15 - impulse[level]
+        black = max(look, impulse[level] + erase)
+        white = black + down - erase
+        phases.append((black, white, down))
+    if phases[15][1] != l15:
+        raise SystemExit("level 15's white phase is %d frames, not L[15] = %d" % (phases[15][1], l15))
+    return phases
+
+
+def clean_rows(impulse):
+    """The GC16-style clean bank for epd_text / epd_quality (see clean_phases).
+
+    The three phases start together in every column, so the refresh reads as
+    a blink: everything goes black, everything goes white, then the page walks
+    down into place. A column whose phase is shorter than the longest parks
+    (code 3) at the rail it reached until the next phase starts.
 
     An earlier cut of this bank sent each pixel to the rail OPPOSITE its
     destination and back, which scrubbed and landed just as well but showed the
@@ -389,15 +492,12 @@ def clean_rows(impulse):
     device the cadence refresh read as a screenful of garbage before the text
     resolved. Same physics, reordered for the eye watching it.
     """
-    l15 = impulse[15]
+    phases = clean_phases(impulse)
     rows = []
-    for _ in range(l15):
-        rows.append("    LUT_MAKE(%s)," % ", ".join(["1"] * 16))
-    for _ in range(l15):
-        rows.append("    LUT_MAKE(%s)," % ", ".join(["2"] * 16))
-    for f in range(l15):
-        codes = ["1" if f < l15 - impulse[i] else "3" for i in range(16)]
-        rows.append("    LUT_MAKE(%s)," % ", ".join(codes))
+    for phase, code in ((0, "1"), (1, "2"), (2, "1")):
+        for f in range(max(p[phase] for p in phases)):
+            codes = [code if f < p[phase] else "3" for p in phases]
+            rows.append("    LUT_MAKE(%s)," % ", ".join(codes))
     return rows
 
 
@@ -427,22 +527,26 @@ HEADER = '''// GENERATED FILE -- DO NOT EDIT BY HAND.
 // pass to pre-position the fringe.
 //
 // kFastLut (epd_fast / epd_fastest): the vendor DU rails verbatim, plus a grey
-// column per AA tone that drives toward white long enough to take any source
-// there and then descends k frames toward black. Both lengths come from the
-// panel\'s measured response (WALKUP_LIGHTNESS, WALKDOWN_AFTER_RUN in the
-// generator), not from L: run as one burst at this driver\'s frame rate,
-// L[15]-L[g] frames land every grey on black. Panel_EPD\'s per-pixel diff means
-// a pixel is only driven when its target changes, so a fringe pixel that stays
-// the same grey across a page turn is not driven at all -- which is also the
-// charge story: drives happen on content changes only, and each grey drive
-// begins with a saturating visit to the white rail.
+// column per AA tone that opens with a lead toward black, drives toward white
+// long enough to take any source there and then descends k frames toward black.
+// The run and k come from the panel\'s measured response (WALKUP_LIGHTNESS,
+// WALKDOWN_AFTER_RUN in the generator), not from L: run as one burst at this
+// driver\'s frame rate, L[15]-L[g] frames land every grey on black. The lead is
+// run - k, so a grey column nets no drive. Panel_EPD\'s per-pixel diff means a
+// pixel is only driven when its target changes, so a fringe pixel that stays the
+// same grey across a page turn is not driven at all, and a rail column\'s
+// +-L[15] nets 0 over any black/white round trip.
 //
 // kCleanLut (epd_text / epd_quality): a GC16-style refresh. Every one of the 16
-// columns rail-normalizes (dark half to white, light half to black) and then
-// walks to its exact level, so the periodic clean page both scrubs residue and
-// re-lands every grey precisely. The previous bank drove each level away and
-// symmetrically back, which is only a correct landing for the two rails; any
-// grey pushed through it ended on a rail.
+// columns goes to the black rail, then to the white rail, then walks down to its
+// exact level, so the periodic clean page both scrubs residue and re-lands every
+// grey precisely. Panel_EPD runs LovyanGFX\'s eraser ahead of it, indexed by the
+// level the pixel had; each column nets the opposite of that eraser for its own
+// level, so a pixel that keeps its level nets 0 and one that changes at most 4
+// frames either way. The phases start together in every column; a column that
+// needs fewer frames in a phase parks at the rail it reached:
+//
+{dc_comment}
 //
 // The greys are decided per temperature range: the run up and the walk-down k
 // from the measured response scaled by the range\'s drive length, and the canvas
@@ -577,6 +681,22 @@ def main():
         for r in ranges
     )
 
+    def dc_line(r):
+        L = impulses[r]
+        phases = clean_phases(L)
+        d, l = grays[r]
+        fast = fast_rows(L[15], runs[r], d, frames[r][0], l, frames[r][1])
+        return (
+            "//   {:>2}..{:<2} C  clean {:>2} rows: black {:>2} (level 0) .. {:>2} (level 15), white {:>2} .. {:>2},"
+            " down {:>2};  fast {:>2} rows, grey lead {}/{}".format(
+                intervals[r][0], intervals[r][1], len(clean_rows(L)),
+                phases[0][0], phases[15][0], phases[15][1], phases[0][1], phases[0][2],
+                len(fast), gray_lead(runs[r], frames[r][0]), gray_lead(runs[r], frames[r][1]),
+            )
+        )
+
+    dc_comment = "\n".join(dc_line(r) for r in ranges)
+
     # One bank pair per distinct (vector, grey pair); dedup by content.
     fast_banks = {}   # rows-tuple -> name
     clean_banks = {}
@@ -609,7 +729,7 @@ def main():
             )
 
     body = HEADER.format(
-        impulse_comment=impulse_comment, gray_comment=gray_comment, worst_rows=worst_rows
+        impulse_comment=impulse_comment, gray_comment=gray_comment, dc_comment=dc_comment, worst_rows=worst_rows
     )
     for rows, name in fast_banks.items():
         body += "// Differential bank: DU rails + self-normalizing AA grey columns.\n"

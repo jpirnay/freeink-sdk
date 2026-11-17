@@ -184,6 +184,21 @@ the drivers included in each harness.
 For the board-profile and display-probe regression test, follow the
 [XteinkDetect host instructions](../libs/hardware/XteinkDetect/test/host/README.md).
 
+## LilyGo T5S3 waveform tables
+
+```sh
+python3 tools/test_gen_ed047tc2_waveform.py
+```
+
+Checks that the committed `ED047TC2Waveform.cpp` is what
+`tools/gen_ed047tc2_waveform.py` makes of the vendor waveform (read back from the
+file's own header, so no vendor blob is needed), that every bank fits LovyanGFX's
+128-row budget, that every clean column lands its level from every source, and
+that the 16-level grey response the driver derives is unchanged. It also adds up
+the net drive each transition leaves on a pixel, LovyanGFX's eraser included, and
+fails when a clean refresh nets anything for a pixel that keeps its level, more
+than 4 frames for one that changes, or when a fast-bank grey nets anything.
+
 ## Validation limits
 
 Host suites cover only the code and configurations each harness compiles. Run

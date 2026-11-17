@@ -232,19 +232,24 @@ freeink::LgfxEpdConfig buildConfig() {
   // decides how the panel looks, it is chosen once and never revisited, and a
   // thermistor that reads high silently under-drives every transition. Without
   // this there is no way to tell a waveform problem from a wrong temperature.
+  // A grey column leads toward black for its run up minus its walk down, so it nets no drive.
+  const unsigned grayUp = freeink::ed047tc2::kGrayWhiteFrames[range];
+  const unsigned grayDownDark = freeink::ed047tc2::kGrayFramesDark[range];
+  const unsigned grayDownLight = freeink::ed047tc2::kGrayFramesLight[range];
   Serial.printf(
-      "[epd] panel %d C%s -> waveform range %u (%u..%u C), %u drive frames, AA greys at level %u/%u (%u frames up, "
-      "%u/%u down)\n",
+      "[epd] panel %d C%s -> waveform range %u (%u..%u C), %u drive frames, AA greys at level %u/%u (%u/%u frames "
+      "down, %u up, %u/%u down)\n",
       tempC, measuredOk ? "" : " (assumed, thermistor read failed)", static_cast<unsigned>(range),
       freeink::ed047tc2::kTempRanges[range].minC, freeink::ed047tc2::kTempRanges[range].maxC,
       freeink::ed047tc2::kDriveFrames[range], freeink::ed047tc2::kGrayLevelDark[range],
-      freeink::ed047tc2::kGrayLevelLight[range], freeink::ed047tc2::kGrayWhiteFrames[range],
-      freeink::ed047tc2::kGrayFramesDark[range], freeink::ed047tc2::kGrayFramesLight[range]);
+      freeink::ed047tc2::kGrayLevelLight[range], grayUp - grayDownDark, grayUp - grayDownLight, grayUp, grayDownDark,
+      grayDownLight);
 
   // Each slot gets the waveform that matches how Panel_EPD drives it: the
   // differential modes get the vendor DU table extended with the two AA grey
-  // columns, and the two modes that re-drive unchanged pixels get the charge
-  // neutral clean refresh. Filling all four keeps LovyanGFX's generic LUTs,
+  // columns, and the two modes that re-drive unchanged pixels get the clean
+  // refresh, cut so a pixel that keeps its level nets no drive (the eraser
+  // LovyanGFX runs first included). Filling all four keeps LovyanGFX's generic LUTs,
   // which are tuned for a different panel, out of the picture entirely.
   return {
       {EP_D0, EP_D1, EP_D2, EP_D3, EP_D4, EP_D5, EP_D6, EP_D7},

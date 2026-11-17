@@ -135,20 +135,23 @@ class FastBank(unittest.TestCase):
 
     def test_columns(self):
         rows = self.codes(gen.fast_rows(21, 12, 13, 3, 14, 2))
-        self.assertEqual(len(rows), 21)  # the rails; the greys end inside them
+        self.assertEqual(len(rows), 24)  # the greys' lead, run and walk: 2 x 12
         for f, row in enumerate(rows):
-            self.assertEqual(row[0], 1)
-            self.assertEqual(row[15], 2)
-            self.assertEqual(row[13], 2 if f < 12 else (1 if f < 15 else 3))
-            self.assertEqual(row[14], 2 if f < 12 else (1 if f < 14 else 3))
+            self.assertEqual(row[0], 1 if f < 21 else 3)
+            self.assertEqual(row[15], 2 if f < 21 else 3)
+            # dark: 9 toward black, 12 toward white, 3 toward black
+            self.assertEqual(row[13], 1 if f < 9 else (2 if f < 21 else 1))
+            # light: 10 toward black, 12 toward white, 2 toward black
+            self.assertEqual(row[14], 1 if f < 10 else (2 if f < 22 else 1))
             for level in range(1, 13):
                 self.assertEqual(row[level], 3)
 
     def test_greys_past_the_rails_lengthen_the_bank(self):
         rows = self.codes(gen.fast_rows(4, 4, 13, 3, 14, 2))
-        self.assertEqual(len(rows), 7)
-        self.assertEqual([r[0] for r in rows], [1, 1, 1, 1, 3, 3, 3])
-        self.assertEqual([r[13] for r in rows], [2, 2, 2, 2, 1, 1, 1])
+        self.assertEqual(len(rows), 8)
+        self.assertEqual([r[0] for r in rows], [1, 1, 1, 1, 3, 3, 3, 3])
+        self.assertEqual([r[13] for r in rows], [1, 2, 2, 2, 2, 1, 1, 1])
+        self.assertEqual([r[14] for r in rows], [1, 1, 2, 2, 2, 2, 1, 1])
 
 
 class GeneratedFile(unittest.TestCase):
@@ -189,16 +192,116 @@ class GeneratedFile(unittest.TestCase):
                     self.assertEqual(land(self.g["fast"][i], level, start, white), white - k)
 
     def test_rails_are_the_vendor_du(self):
+        # L[15] frames of full drive, then parked for as long as the greys run on.
         for i, impulse in enumerate(self.g["impulses"]):
             bank = self.g["fast"][i]
-            self.assertEqual(len(bank), impulse[15])
-            self.assertTrue(all(row[0] == 1 and row[15] == 2 for row in bank))
+            self.assertEqual(len(bank), max(impulse[15], 2 * self.g["white_run"][i]))
+            for f, row in enumerate(bank):
+                self.assertEqual((row[0], row[15]), (1, 2) if f < impulse[15] else (3, 3))
 
     def test_budget(self):
         for i in range(7):
             total = (gen.ERASER_ROWS + 2 * gen.UNUSED_SLOT_ROWS + len(self.g["clean"][i]) + 1 +
                      len(self.g["fast"][i]) + 1)
             self.assertLessEqual(total, gen.LUT_ROW_BUDGET, "range %d" % i)
+
+    def test_clean_banks_match_the_generator(self):
+        for i, impulse in enumerate(self.g["impulses"]):
+            got = ["    LUT_MAKE(%s)," % ", ".join(str(c) for c in row) for row in self.g["clean"][i]]
+            self.assertEqual(got, gen.clean_rows(impulse), "range %d" % i)
+
+    def test_clean_columns_land_exactly_from_every_start(self):
+        # On the impulse model's own scale (the rail is L[15]): every level from
+        # every start, so a Half refresh lands the same page whatever was on screen.
+        for i, impulse in enumerate(self.g["impulses"]):
+            rail = impulse[15]
+            for level in range(16):
+                for start in range(rail + 1):
+                    self.assertEqual(land(self.g["clean"][i], level, start, rail), impulse[level],
+                                     "range %d level %d start %d" % (i, level, start))
+
+    def test_driver_derives_the_same_grey_response(self):
+        # LgfxEpdDriver::buildGrayResponse() takes the largest rail at which every
+        # clean column lands on one position from every start, and the 16-level
+        # sleep image is linearised against the landings at that rail. The bank
+        # must keep both at L[15] and L[level], or sleep images change tone.
+        for i, impulse in enumerate(self.g["impulses"]):
+            bank = self.g["clean"][i]
+            drive = 0
+            for rail in range(1, 64):
+                if any(len({land(bank, level, start, rail) for start in range(rail + 1)}) > 1 for level in range(16)):
+                    break
+                drive = rail
+            self.assertEqual(drive, impulse[15], "range %d" % i)
+            self.assertEqual([land(bank, level, 0, drive) for level in range(16)], impulse, "range %d" % i)
+
+
+def column_net(bank, level):
+    """Frames toward white minus frames toward black of one column."""
+    return sum(gen.code_net(row[level]) for row in bank)
+
+
+class NetDrive(unittest.TestCase):
+    """What each transition leaves on a pixel, in frames of drive (+ toward white).
+
+    The panel keeps every frame of net drive as charge; nothing optical erases it.
+    How Panel_EPD (M5GFX 0.2.20) drives a pixel, which these model:
+
+    - Fast bank: a pixel is driven only when its requested level changes (or its
+      pair partner's does, see below), with its destination's column alone.
+    - Clean bank: every pixel is driven, LovyanGFX's eraser first (indexed by the
+      level the pixel had), then its destination's column.
+
+    The bounds, and why:
+
+    - A clean refresh nets exactly 0 for a pixel that keeps its level: the
+      columns can see their own level, so they cancel the eraser there.
+    - A clean refresh that changes a pixel nets eraser_net(from) - eraser_net(to):
+      the column cannot see `from`. The eraser nets -2..+2, so that is at most 4.
+    - Ahead of a clean refresh that follows a clean one the LgfxEpdDriver re-tags
+      the screen (normalizeForCleanBank). A re-tag that keeps each pixel's level
+      leaves the eraser the true `from`; one that records every pixel as white
+      makes a kept black net -4, still inside the bound.
+    - Fast rails net -L[15] / +L[15], the vendor DU, so any black/white round
+      trip nets 0. A grey column nets 0. The pair partner of a changing pixel is
+      re-driven with its own column: on a rail that is one-sided +-L[15] per push
+      (a LovyanGFX property the tables cannot change), on a grey 0.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.g = read_generated()
+
+    def test_eraser_is_lovyangfx_s(self):
+        # lut_eraser in Panel_EPD.cpp: sources 0-1 two frames toward white, 2-4 one,
+        # 5-10 one each way, 11-13 one toward black, 14-15 two.
+        self.assertEqual([gen.eraser_net(level) for level in range(16)],
+                         [2, 2, 1, 1, 1, 0, 0, 0, 0, 0, 0, -1, -1, -1, -2, -2])
+
+    def test_clean_refresh(self):
+        swing = max(gen.eraser_net(v) for v in range(16)) - min(gen.eraser_net(v) for v in range(16))
+        self.assertEqual(swing, 4)
+        for i in range(7):
+            bank = self.g["clean"][i]
+            for to in range(16):
+                column = column_net(bank, to)
+                for frm in range(16):
+                    net = gen.eraser_net(frm) + column
+                    if frm == to:
+                        self.assertEqual(net, 0, "range %d: level %d kept nets %d" % (i, to, net))
+                    self.assertLessEqual(abs(net), swing, "range %d: %d -> %d nets %d" % (i, frm, to, net))
+                # The re-tag reading every pixel as white (eraser of level 15):
+                self.assertLessEqual(abs(gen.eraser_net(15) + column), swing, "range %d level %d" % (i, to))
+
+    def test_fast_refresh(self):
+        for i, impulse in enumerate(self.g["impulses"]):
+            bank = self.g["fast"][i]
+            self.assertEqual(column_net(bank, 0), -impulse[15], "range %d" % i)
+            self.assertEqual(column_net(bank, 15), impulse[15], "range %d" % i)
+            for level in (self.g["dark"][i], self.g["light"][i]):
+                self.assertEqual(column_net(bank, level), 0, "range %d grey %d" % (i, level))
+            for level in set(range(1, 15)) - {self.g["dark"][i], self.g["light"][i]}:
+                self.assertTrue(all(row[level] == 3 for row in bank), "range %d level %d drives" % (i, level))
 
 
 if __name__ == "__main__":

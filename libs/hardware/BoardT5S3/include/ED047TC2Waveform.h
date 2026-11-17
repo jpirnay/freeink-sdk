@@ -40,25 +40,29 @@ extern const uint32_t* const kFastLut[kTempRangeCount];
 extern const size_t kFastLutStep[kTempRangeCount];
 
 // The two canvas levels the grey columns above are cut for, per range. A grey
-// column is destination-indexed: it drives the pixel kGrayWhiteFrames toward
-// white, which takes it there from whatever it showed before, and then
-// kGrayFrames* frames toward black. A canvas that writes any other level lands on
-// a column the fast bank leaves undriven. LilyGoT5S3LgfxConfig turns these into
-// the canvas bytes the driver writes.
+// column is destination-indexed: it drives the pixel kGrayWhiteFrames minus
+// kGrayFrames* toward black, then kGrayWhiteFrames toward white, which takes it to
+// white from whatever it showed before, and then kGrayFrames* frames toward black
+// -- netting no drive. A canvas that writes any other level lands on a column the
+// fast bank leaves undriven. LilyGoT5S3LgfxConfig turns these into the canvas
+// bytes the driver writes.
 extern const uint8_t kGrayLevelDark[kTempRangeCount];
 extern const uint8_t kGrayLevelLight[kTempRangeCount];
 
 // The grey columns' run toward white and their frames toward black after it, per
-// range. Picked by the generator from the panel's measured response; here for
-// logging.
+// range (the lead toward black before the run is the difference of the two).
+// Picked by the generator from the panel's measured response; here for logging.
 extern const uint8_t kGrayWhiteFrames[kTempRangeCount];
 extern const uint8_t kGrayFramesDark[kTempRangeCount];
 extern const uint8_t kGrayFramesLight[kTempRangeCount];
 
 // The clean refresh, for epd_text / epd_quality. Those modes re-drive every
-// non-white pixel whether or not it changed, so this one is charge neutral: it
-// drives each level away from its target and back again, which nets zero and
-// puts every re-driven pixel through a full rail-to-rail excursion.
+// pixel whether or not it changed, LovyanGFX's eraser first, so every column
+// goes to the black rail, then to the white rail, then down to its level, with
+// phase lengths that cancel the eraser: a pixel that keeps its level nets no
+// drive, one that changes at most 4 frames (the eraser's part, which a
+// destination-indexed column cannot see). tools/gen_ed047tc2_waveform.py,
+// clean_phases(), and tools/test_gen_ed047tc2_waveform.py, NetDrive.
 extern const uint32_t* const kCleanLut[kTempRangeCount];
 extern const size_t kCleanLutStep[kTempRangeCount];
 

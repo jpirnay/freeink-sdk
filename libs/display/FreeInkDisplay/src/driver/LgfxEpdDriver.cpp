@@ -818,8 +818,9 @@ void LgfxEpdDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
 // The charge story rides on the same property. Under the old flow every fringe
 // pixel swung black-to-grey through two pushes on every page turn, with a net
 // drive imbalance each time; under one push, Panel_EPD's diff drives a pixel
-// only when its target changes, and every grey drive begins with a saturating
-// rail visit that erases accumulated bias.
+// only when its target changes. A rail visit does not erase charge, though: the
+// grey columns open with a lead toward black sized so each nets no drive
+// (gen_ed047tc2_waveform.py, fast_rows()).
 // Deferred single-push: identical to displayGrayFrame() except that it returns
 // while the waveform runs.
 //
