@@ -81,6 +81,9 @@ constexpr uint8_t CMD_POWER_OFF = 0x02;
 constexpr uint8_t CMD_REFRESH = 0x12;
 constexpr uint8_t CMD_DEEP_SLEEP = 0x07;
 constexpr uint16_t LUT_LEN = 535;
+// How long a deferred start looks for BUSY to drop after the refresh command: the grace
+// EpdBus::waitRefreshComplete() gives it.
+constexpr unsigned long BUSY_ASSERT_MS = 20;
 
 // 8 pixels of old + new -> two bytes of 2-bit pixels, old in the high bit,
 // MSB-first (stock FUN_422869b4).
@@ -179,6 +182,9 @@ void Ssd2677Driver::latchOtpWaveform(EpdBus& bus, uint8_t code) {
 void Ssd2677Driver::begin(EpdBus& bus) {
   initPanel(bus);
 
+  // The reset above ended any waveform a deferred start left running.
+  _refreshPending = false;
+  _grayAfterPage = GrayAfterPage::None;
   _needsInitialFull = true;
   _grayPending = _grayMaskReady = false;
   // Retained old-plane: this panel takes old+new as one 2bpp burst, so the old
@@ -192,8 +198,16 @@ void Ssd2677Driver::begin(EpdBus& bus) {
   if (_old) memset(_old, 0xFF, size);
 }
 
+bool Ssd2677Driver::supportsAsyncDisplay() const { return !isSticky(); }
+
 void Ssd2677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
+  displayStart(bus, fb, prev, mode, turnOff);
+  finishRefresh(bus);
+}
+
+bool Ssd2677Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
   (void)prev;  // unused: single-buffer host passes null; we track our own old plane
+  finishPending(bus);
   _textAa.invalidate();
   // First paint after init clears the panel with the full waveform (stock forces
   // mode 0 on the first frame).
@@ -217,7 +231,7 @@ void Ssd2677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
     powerAndRefresh(bus, !fast || turnOff);
     if (_old) memcpy(_old, fb, geometry().bufferSize);
     _needsInitialFull = false;
-    return;
+    return false;
   }
   // Old plane = our retained last-displayed frame (seeded white in begin). A
   // differential refresh needs old to match the glass; without this the panel
@@ -252,9 +266,18 @@ void Ssd2677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
   sendPacked(bus, _old, fb);
   const auto* fastLut = redraw ? lut_picco_se0400_fast : lut_picco_se0400_mode3;
   const bool keepPower = mode == RefreshMode::Fast && !redraw;
-  refreshWith(bus, mode == RefreshMode::Fast ? fastLut : lut_picco_se0400_full, !keepPower);
-  if (_old) memcpy(_old, fb, size);  // new becomes old for the next frame
+  startRefresh(bus, mode == RefreshMode::Fast ? fastLut : lut_picco_se0400_full, !keepPower);
+  // New becomes old for the next frame. Here, not after the waveform: the frame went to the controller above, and
+  // nothing else reaches it before finishRefresh(). The finish then needs no host buffer, and a requestResync()
+  // that arrives while the waveform runs is not undone by it.
+  if (_old) memcpy(_old, fb, size);
   _needsInitialFull = false;
+  return true;
+}
+
+void Ssd2677Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
+  (void)fb;  // the start kept what the finish sends: the host may have drawn over its frame since
+  finishPending(bus);
 }
 
 void Ssd2677Driver::sendPacked(EpdBus& bus, const uint8_t* hi, const uint8_t* lo, bool exclusive) {
@@ -284,6 +307,11 @@ void Ssd2677Driver::sendPacked(EpdBus& bus, const uint8_t* hi, const uint8_t* lo
 }
 
 void Ssd2677Driver::powerOffBetweenFrames(EpdBus& bus) {
+  finishPending(bus);
+  powerOff(bus);
+}
+
+void Ssd2677Driver::powerOff(EpdBus& bus) {
   if (_needsPowerOn) return;
   bus.cmd(CMD_POWER_OFF);
   bus.data(0x00);
@@ -304,7 +332,7 @@ void Ssd2677Driver::powerAndRefresh(EpdBus& bus, bool turnOff) {
   bus.cmd(CMD_REFRESH);
   bus.data(0x00);
   bus.waitRefreshComplete("refresh");
-  if (turnOff) powerOffBetweenFrames(bus);
+  if (turnOff) powerOff(bus);
 }
 
 void Ssd2677Driver::refreshWith(EpdBus& bus, const unsigned char* lut, bool turnOff) {
@@ -313,13 +341,53 @@ void Ssd2677Driver::refreshWith(EpdBus& bus, const unsigned char* lut, bool turn
   powerAndRefresh(bus, turnOff);
 }
 
+void Ssd2677Driver::startRefresh(EpdBus& bus, const unsigned char* lut, const bool turnOff) {
+  bus.cmd(CMD_LUT);
+  bus.data(lut, LUT_LEN);
+  powerOn(bus);
+  bus.cmd(CMD_REFRESH);
+  bus.data(0x00);
+  // BUSY drops once the waveform runs. Seen here, BUSY back up is the whole answer later: a finish that comes after
+  // the waveform's end (a popup the host painted over its own work) then waits for nothing.
+  const unsigned long fired = millis();
+  while (!bus.isBusy() && millis() - fired < BUSY_ASSERT_MS) delay(1);
+  _pendingSawBusy = bus.isBusy();
+  _pendingPowerOff = turnOff;
+  _refreshPending = true;
+}
+
+void Ssd2677Driver::finishRefresh(EpdBus& bus) {
+  if (!_refreshPending) return;
+  _refreshPending = false;
+  if (!_pendingSawBusy || bus.isBusy()) bus.waitRefreshComplete("refresh");
+  if (_pendingPowerOff) powerOff(bus);
+}
+
+void Ssd2677Driver::finishPending(EpdBus& bus) {
+  finishRefresh(bus);
+  const GrayAfterPage gray = _grayAfterPage;
+  _grayAfterPage = GrayAfterPage::None;
+  switch (gray) {
+    case GrayAfterPage::None:
+      break;
+    case GrayAfterPage::Overlay:
+      presentOverlayText(bus);
+      break;
+    case GrayAfterPage::RestPass:
+      // On failure the page still goes up in B/W, from the copy the start took. display() powers the Picco off by
+      // its own rule, whatever it is asked.
+      if (!presentRestText(bus) && _textBase) display(bus, _textBase, nullptr, RefreshMode::Fast, true);
+      break;
+  }
+}
+
 bool Ssd2677Driver::ensureLsb() {
   if (!_lsb) _lsb = static_cast<uint8_t*>(heap_caps_malloc(geometry().bufferSize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   return _lsb != nullptr;
 }
 
 void Ssd2677Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
-  (void)bus;
+  finishPending(bus);  // a clean single push in flight still sends the planes staged for it
   if (_textBegun || (supportsGrayFrame() && !_absoluteGray)) {
     stageRestText(0, lsb);
     return;
@@ -333,6 +401,7 @@ void Ssd2677Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
 
 void Ssd2677Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback,
                                    bool turnOff) {
+  finishPending(bus);
   _textBegun = false;
   if (mode == GrayscaleMode::Overlay && _readerRefresh && !isSticky() && textPassReady()) {
     // The page is presented by displayGray; only a clean needs its own refresh.
@@ -371,6 +440,7 @@ void Ssd2677Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode
 }
 
 void Ssd2677Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
+  finishPending(bus);
   if (_textBegun || (supportsGrayFrame() && !_absoluteGray)) {
     stageRestText(1, msb);
     return;
@@ -439,17 +509,34 @@ void Ssd2677Driver::setOnePassText(const bool on) {
 }
 
 void Ssd2677Driver::displayGrayFrame(EpdBus& bus, const uint8_t* fb, const RefreshMode mode, const bool turnOff) {
+  displayGrayFrameStart(bus, fb, mode, turnOff);
+  finishPending(bus);
+}
+
+bool Ssd2677Driver::displayGrayFrameStart(EpdBus& bus, const uint8_t* fb, const RefreshMode mode, const bool turnOff) {
+  finishPending(bus);
+  const uint32_t size = geometry().bufferSize;
   // A clean refresh, or the first frame after init, goes up in B/W first, as beginGrayscale() does. The glass
   // is then the B/W page, gray pixels inked, which is where two-pass mode's overlay starts from, so the gray
   // goes out as that overlay: its refresh took 119 ms in the reader, the rest pass's 296 (Picco, 2026-11-16).
+  // It follows the page's waveform, so finishPending() sends it, from planes that are the driver's own by then.
   if (mode != RefreshMode::Fast || _needsInitialFull) {
-    display(bus, fb, nullptr, mode, false);
-    if (presentOverlayText(bus)) return;
+    const bool deferred = displayStart(bus, fb, nullptr, mode, false);
+    if (_textStaged == 7 && textPassReady()) {
+      _grayAfterPage = GrayAfterPage::Overlay;
+    } else {
+      // No dark plane to tell the overlay's two codes apart: the rest pass, which reads the page from _textBase.
+      if (_textBase) memcpy(_textBase, fb, size);
+      _grayAfterPage = GrayAfterPage::RestPass;
+    }
+    if (!deferred) finishPending(bus);
+    return deferred;
   }
   // The rest pass reads the page from _textBase, which the combined-base entry fills in beginGrayscale().
-  if (_textBase) memcpy(_textBase, fb, geometry().bufferSize);
+  if (_textBase) memcpy(_textBase, fb, size);
+  if (startRestText(bus)) return true;
   // On failure the page still goes up, in B/W.
-  if (!presentRestText(bus)) display(bus, fb, nullptr, RefreshMode::Fast, turnOff);
+  return displayStart(bus, fb, nullptr, RefreshMode::Fast, turnOff);
 }
 
 bool Ssd2677Driver::textPassReady() const {
@@ -513,6 +600,14 @@ void Ssd2677Driver::sendRestCodes(EpdBus& bus, const bool grayKnown) {
 }
 
 bool Ssd2677Driver::presentRestText(EpdBus& bus) {
+  if (!startRestText(bus)) return false;
+  finishRefresh(bus);
+  return true;
+}
+
+// The rest pass up to its refresh command; finishRefresh() waits it out. The history is the page's from here on,
+// for the reasons displayStart() gives.
+bool Ssd2677Driver::startRestText(EpdBus& bus) {
   const bool staged = (_textStaged & 3) == 3;
   _textStaged = 0;
   if (!staged || !textPassReady()) return false;
@@ -520,7 +615,7 @@ bool Ssd2677Driver::presentRestText(EpdBus& bus) {
   const bool grayKnown = _grayPending;
   powerOn(bus);
   sendRestCodes(bus, grayKnown);
-  refreshWith(bus, lut_picco_se0400_text_rest, true);  // stock reader pages power off
+  startRefresh(bus, lut_picco_se0400_text_rest, true);  // stock reader pages power off
   memcpy(_old, _textBase, geometry().bufferSize);
   // The page's gray is now the glass's; the old mask's block stages the next page.
   uint8_t* const glassGray = _textGray;
@@ -558,6 +653,7 @@ void Ssd2677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
                                 bool factoryMode) {
   (void)lut;
   (void)factoryMode;
+  finishPending(bus);
   if (_textBegun) {
     _textBegun = false;
     // On failure the page still goes up, in B/W.
@@ -627,6 +723,7 @@ void Ssd2677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
 }
 
 void Ssd2677Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
+  finishPending(bus);
   // A skipped text pass still owes the caller its deferred B/W page.
   if (_textBegun) {
     _textBegun = false;
@@ -638,6 +735,7 @@ void Ssd2677Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
 bool Ssd2677Driver::displayLabFrame(EpdBus& bus, const uint8_t* bw, const uint8_t* red, const uint8_t* lut) {
   // The Sticky runs OTP waveforms and latches them; only the Picco takes a RAM LUT per frame.
   if (isSticky() || !bw || !red || !lut) return false;
+  finishPending(bus);
   // packPixels puts its first plane in the high bit: (red, bw) gives code red * 2 + bw.
   sendPacked(bus, red, bw);
   refreshWith(bus, lut, true);
@@ -651,9 +749,10 @@ bool Ssd2677Driver::displayLabFrame(EpdBus& bus, const uint8_t* bw, const uint8_
 }
 
 void Ssd2677Driver::deepSleep(EpdBus& bus) {
+  finishPending(bus);  // a waveform in flight ends, and its power off runs, before the controller sleeps
   _textAa.invalidate();
   _textBegun = false;
-  powerOffBetweenFrames(bus);
+  powerOff(bus);
   // Stock (FUN_4200b608): 0x07 with the 0xA5 check code.
   bus.cmd(CMD_DEEP_SLEEP);
   bus.data(0xA5);

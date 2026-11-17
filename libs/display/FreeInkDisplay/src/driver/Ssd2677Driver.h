@@ -59,6 +59,15 @@ class Ssd2677Driver : public PanelDriver {
   void deepSleep(EpdBus& bus) override;
   void powerOffBetweenFrames(EpdBus& bus) override;
   void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
+  // The Picco's B/W frames and its single push defer: the start returns once the waveform is fired, with the
+  // driver's history already saying what the glass will hold, and displayFinish() waits the waveform out, powers
+  // off where the frame asked for it, and sends what a clean single push still owes (its gray). It reads no host
+  // buffer. Every other entry that reaches the controller finishes a refresh in flight first. The two-pass gray
+  // (copyGrayscale*, displayGray) and the Sticky's OTP frames block as before.
+  bool supportsAsyncDisplay() const override;
+  bool displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
+  void displayFinish(EpdBus& bus, const uint8_t* fb) override;
+  bool displayGrayFrameStart(EpdBus& bus, const uint8_t* fb, RefreshMode mode, bool turnOff) override;
 
   // Overlay AA with the Picco's uploaded gray LUT on both boards. Sticky also
   // uses its OTP image waveform. Picco uploads its own slot-4 waveform.
@@ -95,12 +104,19 @@ class Ssd2677Driver : public PanelDriver {
   void sendPacked(EpdBus& bus, const uint8_t* hi, const uint8_t* lo, bool exclusive = false);
   bool ensureLsb();
   void powerOn(EpdBus& bus);
+  void powerOff(EpdBus& bus);
   void powerAndRefresh(EpdBus& bus, bool turnOff);
   void refreshWith(EpdBus& bus, const unsigned char* lut, bool turnOff);
+  // refreshWith() in two halves: the LUT, power on and the refresh command, then the wait and the power off.
+  void startRefresh(EpdBus& bus, const unsigned char* lut, bool turnOff);
+  void finishRefresh(EpdBus& bus);
+  // finishRefresh(), then the gray a clean single push owes. What every entry runs before it touches the bus.
+  void finishPending(EpdBus& bus);
   // Picco reader text: rest every pixel already at its target (see sendRestCodes).
   bool textPassReady() const;
   bool ensureRestText();
   void stageRestText(unsigned plane, const uint8_t* data);
+  bool startRestText(EpdBus& bus);
   bool presentRestText(EpdBus& bus);
   bool presentOverlayText(EpdBus& bus);
   void sendRestCodes(EpdBus& bus, bool grayKnown);
@@ -118,6 +134,14 @@ class Ssd2677Driver : public PanelDriver {
   bool _darkBackground = false;  // facade renders inverted frames
   bool _needsPowerOn = true;
   bool _needsInitialFull = true;
+  // A waveform startRefresh() fired has not been waited out; the power off it owes; BUSY was seen to drop for it,
+  // so BUSY back up says it is over.
+  bool _refreshPending = false;
+  bool _pendingPowerOff = false;
+  bool _pendingSawBusy = false;
+  // A clean single push's B/W page is in flight: what follows it, from the planes staged for the page.
+  enum class GrayAfterPage : uint8_t { None, Overlay, RestPass };
+  GrayAfterPage _grayAfterPage = GrayAfterPage::None;
   uint8_t _latchedWaveform = 0;  // Sticky: OTP waveform code currently latched (0 = none)
   bool _grayPending = false;
   bool _grayMaskReady = false;

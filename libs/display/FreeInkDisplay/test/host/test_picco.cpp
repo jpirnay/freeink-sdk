@@ -676,6 +676,294 @@ static void expectSinglePushCleanRefresh2677(Ssd2677Driver& s) {
   s.setReaderRefresh(false);
 }
 
+static unsigned commands(const EpdBus& bus, uint8_t command) {
+  unsigned n = 0;
+  for (const auto& w : bus.writes) n += w.command == command;
+  return n;
+}
+
+// SE0400 B/W frames defer: the start fires the waveform and returns with the history already the new frame's, the
+// finish waits it out and powers off, once and without a host buffer. Whatever else reaches the controller
+// finishes a refresh in flight first.
+static void expectDeferredRefresh2677(Ssd2677Driver& s) {
+  EpdBus bus;
+  const Bytes white(48000, 0xFF), lsb(48000, 0x11), msb(48000, 0x33), red(48000, 0x0F), lut(535, 0x5A);
+  Bytes page(48000, 0xFF);
+  page[0] = 0x0F;
+  assert(s.supportsAsyncDisplay());
+  s.begin(bus);
+  s.display(bus, white.data(), nullptr, RefreshMode::Full, false);
+  s.setReaderRefresh(true);  // book pages power off after their refresh
+
+  bus.clear();
+  assert(s.displayStart(bus, page.data(), nullptr, RefreshMode::Fast, false));
+  Sent out = sent(bus);
+  assert(out.refreshes == 1 && out.data.size() == 1 && isLut(out.luts[0], lut_picco_se0400_fast));
+  assert(bus.writes.back().command == 0x12 && bus.refreshWaitWriteCounts.empty());  // fired, not waited out
+  assert(commands(bus, 0x02) == 0 && !s._needsPowerOn && s._refreshPending);
+  assert(memcmp(s._old, page.data(), 48000) == 0 && !s._needsInitialFull);
+  size_t fired = bus.writes.size();
+  s.displayFinish(bus, nullptr);
+  assert(bus.refreshWaitWriteCounts == std::vector<size_t>({fired}));
+  assert(bus.writes.size() == fired + 1 && bus.writes.back().command == 0x02 && s._needsPowerOn && !s._refreshPending);
+  s.displayFinish(bus, nullptr);  // once
+  assert(bus.writes.size() == fired + 1 && bus.refreshWaitWriteCounts.size() == 1);
+
+  // BUSY seen to drop at the start and back up at the finish: the waveform is over, nothing to wait for.
+  bus.clear();
+  bus.busy = true;
+  assert(s.displayStart(bus, white.data(), nullptr, RefreshMode::Fast, false));
+  bus.busy = false;
+  s.displayFinish(bus, nullptr);
+  assert(bus.refreshWaitWriteCounts.empty() && bus.writes.back().command == 0x02 && s._needsPowerOn);
+  // Still down: the finish waits.
+  bus.clear();
+  bus.busy = true;
+  assert(s.displayStart(bus, page.data(), nullptr, RefreshMode::Fast, false));
+  s.displayFinish(bus, nullptr);
+  assert(bus.refreshWaitWriteCounts.size() == 1 && s._needsPowerOn);
+  bus.busy = false;
+
+  // A resync asked for while the waveform runs is not undone by the finish: the next frame is a full one.
+  assert(s.displayStart(bus, white.data(), nullptr, RefreshMode::Fast, false));
+  s.requestResync(0);
+  s.displayFinish(bus, nullptr);
+  assert(s._needsInitialFull);
+  bus.clear();
+  s.display(bus, white.data(), nullptr, RefreshMode::Fast, false);
+  assert(isLut(sent(bus).luts[0], lut_picco_se0400_full) && !s._needsInitialFull);
+
+  // Every entry that reaches the controller waits the refresh in flight out and powers off before its first byte.
+  const auto finishesFirst = [&](const char* what, auto entry) {
+    bus.clear();
+    assert(s.displayStart(bus, page.data(), nullptr, RefreshMode::Fast, false));
+    fired = bus.writes.size();
+    entry();
+    if (s._refreshPending || bus.refreshWaitWriteCounts.empty() || bus.refreshWaitWriteCounts[0] != fired ||
+        bus.writes.size() <= fired || bus.writes[fired].command != 0x02) {
+      std::printf("a refresh in flight was not finished before %s\n", what);
+      assert(false);
+    }
+  };
+  finishesFirst("display", [&] { s.display(bus, white.data(), nullptr, RefreshMode::Fast, false); });
+  finishesFirst("displayStart", [&] {
+    assert(s.displayStart(bus, white.data(), nullptr, RefreshMode::Fast, false));
+    assert(bus.refreshWaitWriteCounts.size() == 1);  // the first one's wait; its own is still owed
+    s.displayFinish(bus, nullptr);
+  });
+  finishesFirst("beginGrayscale", [&] {
+    s.beginGrayscale(bus, page.data(), GrayscaleMode::Overlay, RefreshMode::Fast, false);
+  });
+  finishesFirst("copyGrayscaleLsb", [&] { s.copyGrayscaleLsb(bus, lsb.data()); });
+  finishesFirst("copyGrayscaleMsb", [&] { s.copyGrayscaleMsb(bus, msb.data()); });
+  finishesFirst("displayGray", [&] { s.displayGray(bus, page.data(), false, nullptr, false); });
+  finishesFirst("cleanupGrayscaleBuffers", [&] { s.cleanupGrayscaleBuffers(bus, page.data()); });
+  finishesFirst("powerOffBetweenFrames", [&] { s.powerOffBetweenFrames(bus); });
+  finishesFirst("displayLabFrame", [&] { assert(s.displayLabFrame(bus, page.data(), red.data(), lut.data())); });
+  finishesFirst("deepSleep", [&] {
+    s.deepSleep(bus);
+    assert(bus.writes.back().command == 0x07);
+  });
+  s.begin(bus);
+  s.display(bus, white.data(), nullptr, RefreshMode::Full, false);
+
+  // A small update outside the reader keeps the rails on (mode 3): its finish waits and leaves them so.
+  s.setReaderRefresh(false);
+  s.display(bus, white.data(), nullptr, RefreshMode::Fast, false);  // the frame after a book page still powers off
+  Bytes moved(48000, 0xFF);
+  moved[0] = 0x7F;
+  bus.clear();
+  assert(s.displayStart(bus, moved.data(), nullptr, RefreshMode::Fast, false));
+  assert(isLut(sent(bus).luts[0], lut_picco_se0400_mode3));
+  s.displayFinish(bus, nullptr);
+  assert(bus.refreshWaitWriteCounts.size() == 1 && commands(bus, 0x02) == 0 && !s._needsPowerOn);
+  s.powerOffBetweenFrames(bus);
+  assert(s._needsPowerOn);
+
+  // Through the facade: a triggered refresh stays pending until it is collected, an async one too; deep sleep and
+  // the gray cleanup with the previous buffer collect it themselves; inverted output never defers.
+  FreeInkDisplay display(1, 2, 3, 4, 5, 6);
+  display._driver = &s;
+  display.begin();
+  assert(display.supportsAsyncRefresh());
+  std::memset(display.getFrameBuffer(), 0xFF, 48000);
+  display.displayBuffer(FreeInkDisplay::FULL_REFRESH);
+  assert(!display.isRefreshPending());
+  std::memset(display.getFrameBuffer(), 0xF0, 48000);
+  display._bus.clear();
+  display.triggerDisplay(FreeInkDisplay::FAST_REFRESH);
+  assert(display.isRefreshPending() && sent(display._bus).refreshes == 1 && display._bus.refreshWaitWriteCounts.empty());
+  display.completeDisplay();
+  assert(!display.isRefreshPending() && display._bus.refreshWaitWriteCounts.size() == 1);
+  std::memset(display.getFrameBuffer(), 0x0F, 48000);
+  display.triggerDisplayAsync(FreeInkDisplay::FAST_REFRESH);
+  assert(display.isRefreshPending());
+  display.finishDisplayAsync();
+  assert(!display.isRefreshPending() && display._bus.refreshWaitWriteCounts.size() == 2);
+  std::memset(display.getFrameBuffer(), 0xF0, 48000);
+  display.triggerDisplay(FreeInkDisplay::FAST_REFRESH);
+  display.cleanupGrayscaleWithPreviousBuffer();
+  assert(!display.isRefreshPending() && display._bus.refreshWaitWriteCounts.size() == 3);
+  std::memset(display.getFrameBuffer(), 0x0F, 48000);
+  display._bus.clear();
+  display.triggerDisplay(FreeInkDisplay::FAST_REFRESH);
+  fired = display._bus.writes.size();
+  display.deepSleep();
+  assert(!display.isRefreshPending() && display._bus.refreshWaitWriteCounts == std::vector<size_t>({fired}));
+  assert(display._bus.writes.back().command == 0x07);
+  display.begin();
+  std::memset(display.getFrameBuffer(), 0xFF, 48000);
+  display.displayBuffer(FreeInkDisplay::FULL_REFRESH);
+  display.setInverted(true);
+  assert(!display.supportsAsyncRefresh());
+  display._bus.clear();
+  display.triggerDisplay(FreeInkDisplay::FAST_REFRESH);
+  assert(!display.isRefreshPending() && display._bus.refreshWaitWriteCounts.size() == 1);
+  display.triggerDisplayAsync(FreeInkDisplay::FAST_REFRESH);
+  assert(!display.isRefreshPending() && display._bus.refreshWaitWriteCounts.size() == 2);
+  display.setInverted(false);
+  std::memset(display.getFrameBuffer(), 0xFF, 48000);
+  display.displayBuffer(FreeInkDisplay::FULL_REFRESH);
+}
+
+// The single push defers as well. FAST: the rest pass is fired with the history already the page's, the finish
+// waits and powers off. A clean refresh: the start fires the B/W page and the finish sends its gray overlay, from
+// the planes staged for that page even when the next page's arrive while it paints.
+static void expectDeferredSinglePush2677(Ssd2677Driver& s) {
+  EpdBus bus;
+  const Bytes white(48000, 0xFF), nextLsb(48000, 0xFF), nextMsb(48000, 0xFF);
+  Bytes base(48000, 0xFF), lsb(48000, 0), msb(48000, 0);
+  base[0] = 0x07;  // as expectSinglePushCleanRefresh2677: 3 px ink, 2 px gray, 3 px white
+  lsb[0] = 0x10;
+  msb[0] = 0x18;
+  s.begin(bus);
+  s.display(bus, white.data(), nullptr, RefreshMode::Full, false);
+  s.setReaderRefresh(true);
+  s.setOnePassText(true);
+  assert(s._textDark && s.supportsGrayFrame());
+  const auto stage = [&]() {
+    s.copyGrayscaleLsb(bus, lsb.data());
+    s.copyGrayscaleMsb(bus, msb.data());
+    bus.clear();
+  };
+
+  stage();
+  assert(s.displayGrayFrameStart(bus, base.data(), RefreshMode::Half, false));
+  Sent out = sent(bus);
+  assert(out.refreshes == 1 && isLut(out.luts[0], lut_picco_se0400_full) && bus.refreshWaitWriteCounts.empty());
+  assert(s._refreshPending && memcmp(s._old, base.data(), 48000) == 0);
+  s.copyGrayscaleLsb(bus, nextLsb.data());  // the next page's pre-render stages its planes
+  out = sent(bus);
+  assert(out.refreshes == 2 && out.data.size() == 2 && isLut(out.luts[1], lut_picco_se0400_gray));
+  // The overlay of the page in flight: px 3 dark (01), px 4 light (10), nothing else driven.
+  assert((*out.data[1])[0] == 0x01 && (*out.data[1])[1] == 0x80 && (*out.data[1])[2] == 0x00);
+  assert(!s._refreshPending && s._grayPending && s._lsb[0] == 0x18 && !s._restGrayOnGlass && s._needsPowerOn);
+  size_t done = bus.writes.size();
+  s.displayFinish(bus, nullptr);  // nothing is left of it
+  assert(bus.writes.size() == done);
+  s.copyGrayscaleMsb(bus, nextMsb.data());
+  assert(bus.writes.size() == done && s._textStaged == 7);  // staged for the next page, not uploaded
+
+  // The blocking form is the two halves in one call.
+  stage();
+  s.displayGrayFrame(bus, base.data(), RefreshMode::Half, false);
+  out = sent(bus);
+  assert(out.refreshes == 2 && isLut(out.luts[0], lut_picco_se0400_full) && isLut(out.luts[1], lut_picco_se0400_gray));
+  assert(!s._refreshPending && bus.refreshWaitWriteCounts.size() == 2);
+
+  // FAST: one refresh with the rest table. The gray history is this page's from the start.
+  stage();
+  assert(s.displayGrayFrameStart(bus, base.data(), RefreshMode::Fast, false));
+  out = sent(bus);
+  assert(out.refreshes == 1 && isLut(out.luts[0], lut_picco_se0400_text_rest) && bus.refreshWaitWriteCounts.empty());
+  assert(commands(bus, 0x02) == 0 && s._refreshPending);
+  assert(s._grayPending && s._restGrayOnGlass && s._lsb[0] == 0x18 && memcmp(s._old, base.data(), 48000) == 0);
+  size_t fired = bus.writes.size();
+  s.displayFinish(bus, nullptr);
+  assert(bus.refreshWaitWriteCounts == std::vector<size_t>({fired}));
+  assert(bus.writes.size() == fired + 1 && bus.writes.back().command == 0x02 && s._needsPowerOn);
+
+  // A B/W frame that arrives while the rest pass paints finishes it first, then drives its gray away.
+  stage();
+  assert(s.displayGrayFrameStart(bus, base.data(), RefreshMode::Fast, false));
+  fired = bus.writes.size();
+  s.display(bus, white.data(), nullptr, RefreshMode::Fast, false);
+  assert(bus.refreshWaitWriteCounts.size() == 2 && bus.refreshWaitWriteCounts[0] == fired);
+  assert(bus.writes[fired].command == 0x02 && !s._grayPending);
+
+  // A push that starts while a B/W frame paints finishes that frame before its page copy and its codes go out.
+  stage();
+  assert(s.displayStart(bus, white.data(), nullptr, RefreshMode::Fast, false));
+  fired = bus.writes.size();
+  assert(s.displayGrayFrameStart(bus, base.data(), RefreshMode::Fast, false));
+  assert(bus.refreshWaitWriteCounts == std::vector<size_t>({fired}) && bus.writes[fired].command == 0x02);
+  assert(isLut(sent(bus).luts[1], lut_picco_se0400_text_rest));
+  s.displayFinish(bus, nullptr);
+
+  // A combined-base page (beginGrayscale) that arrives while a clean push paints: the push's overlay still goes
+  // out, from its own planes, before the new page takes the staging over.
+  stage();
+  assert(s.displayGrayFrameStart(bus, base.data(), RefreshMode::Half, false));
+  s.beginGrayscale(bus, white.data(), GrayscaleMode::Overlay, RefreshMode::Fast, false);
+  out = sent(bus);
+  assert(out.refreshes == 2 && isLut(out.luts[1], lut_picco_se0400_gray) && (*out.data[1])[0] == 0x01);
+  assert(s._textBegun && s._textStaged == 0 && !s._refreshPending);
+  s.cleanupGrayscaleBuffers(bus, white.data());  // the skipped pass presents its page
+
+  // begin() resets the controller: a push in flight is gone with it, and its overlay never follows.
+  stage();
+  assert(s.displayGrayFrameStart(bus, base.data(), RefreshMode::Half, false));
+  s.begin(bus);
+  bus.clear();
+  s.display(bus, white.data(), nullptr, RefreshMode::Fast, false);
+  out = sent(bus);
+  assert(out.refreshes == 1 && isLut(out.luts[0], lut_picco_se0400_full));  // the first frame after init, alone
+  assert(bus.refreshWaitWriteCounts.size() == 1 && bus.refreshWaitWriteCounts[0] == bus.writes.size() - 1);
+  s.setReaderRefresh(true);
+  s.setOnePassText(true);
+
+  // Without the dark plane the clean push still defers: the B/W page, then the rest pass from the finish.
+  uint8_t* const dark = s._textDark;
+  s._textDark = nullptr;
+  stage();
+  assert(s.displayGrayFrameStart(bus, base.data(), RefreshMode::Half, false));
+  assert(sent(bus).refreshes == 1);
+  s.displayFinish(bus, nullptr);
+  out = sent(bus);
+  assert(out.refreshes == 2 && isLut(out.luts[1], lut_picco_se0400_text_rest) && s._restGrayOnGlass);
+  s._textDark = dark;
+
+  // Through the facade the push stays pending until completeDisplay() collects it.
+  FreeInkDisplay display(1, 2, 3, 4, 5, 6);
+  display._driver = &s;
+  display.begin();
+  s.setReaderRefresh(true);
+  s.setOnePassText(true);
+  std::memset(display.getFrameBuffer(), 0xFF, 48000);
+  display.displayBuffer(FreeInkDisplay::FULL_REFRESH);
+  assert(display.supportsGrayFrame());
+  display.copyGrayscaleLsbBuffers(lsb.data());
+  display.copyGrayscaleMsbBuffers(msb.data());
+  std::memcpy(display.getFrameBuffer(), base.data(), 48000);
+  display._bus.clear();
+  display.triggerGrayscaleFrame(FreeInkDisplay::HALF_REFRESH);
+  assert(display.isRefreshPending() && sent(display._bus).refreshes == 1);
+  display.completeDisplay();
+  assert(!display.isRefreshPending() && sent(display._bus).refreshes == 2);
+  display.copyGrayscaleLsbBuffers(lsb.data());
+  display.copyGrayscaleMsbBuffers(msb.data());
+  display._bus.clear();
+  display.triggerGrayscaleFrame(FreeInkDisplay::FAST_REFRESH);
+  assert(display.isRefreshPending() && isLut(sent(display._bus).luts[0], lut_picco_se0400_text_rest));
+  assert(display._bus.refreshWaitWriteCounts.empty());
+  display.deepSleep();
+  assert(!display.isRefreshPending() && display._bus.refreshWaitWriteCounts.size() == 1);
+  assert(display._bus.writes.back().command == 0x07);
+  s.setOnePassText(false);
+  s.setReaderRefresh(false);
+  s.begin(bus);
+}
+
 // DEPG0397 reader pages: one combined activation, no separate B/W base. Other
 // SSD1677 panels keep the two-pass overlay.
 static void expectOnePassTextAa(Ssd1677Driver& d, bool expected) {
@@ -776,7 +1064,8 @@ int main(int argc, char** argv) {
       expectLabFrame2677(s);
       expectSinglePushRestText2677(s);
       expectSinglePushCleanRefresh2677(s);
-      std::printf("Picco se0400: one-pass text AA, lab frame, single push and its clean refresh passed\n");
+      expectDeferredSinglePush2677(s);
+      std::printf("Picco se0400: one-pass text AA, lab frame, single push, its clean refresh and its deferral passed\n");
       return 0;
     }
     // Stock reader table: 24-frame drives, 1-frame top-ups. Text table: black, gray, held white, white.
@@ -991,7 +1280,8 @@ int main(int argc, char** argv) {
       if (w.command == 0x20) assert(w.bytes == Bytes(lut_picco_se0400_full, lut_picco_se0400_full + 535));
     expectNightGray2677(s);
     expectDarkGray2677(s);
-    std::printf("Picco se0400: probe, init, packing and refresh passed\n");
+    expectDeferredRefresh2677(s);
+    std::printf("Picco se0400: probe, init, packing, refresh and its deferral passed\n");
     return 0;
   }
   checkController("SSD1677");
