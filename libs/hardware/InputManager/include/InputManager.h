@@ -241,6 +241,19 @@ class InputManager {
   // TouchConfig::irqActiveLow. The driver only ever programs a low-level hold,
   // and refuses to report the pin at all on a profile that claims otherwise.
   bool touchWakeIrqActiveLow() const;
+  // A data-ready line that PULSES rather than holds, as a best-effort light-sleep wake: the CHSC6x
+  // (Murphy M3) pulses it low for about 0.4 ms per report, about every 7 ms while a finger is on the
+  // glass, so a level wake gets a pulse to catch every few milliseconds for as long as a tap lasts.
+  // -1 when there is no such line (another controller, no IRQ pin, the probe failed).
+  int8_t touchPulseWakePin() const;
+  // Arms #touchPulseWakePin as a low-level light-sleep wake (the caller still enables GPIO wake).
+  // The pin's own interrupt goes off first: arming swaps its FALLING-edge type for a level, and a
+  // level type with the interrupt live re-enters the ISR for as long as the line stays low.
+  // Returns whether it armed; then call touchPulseWakeDone() after the sleep call.
+  bool armTouchPulseWake() const;
+  // Undoes armTouchPulseWake(): the edge type back, then the interrupt. After a GPIO wake it marks a
+  // report to read, since the pulse that woke the chip ended before the edge interrupt was live.
+  void touchPulseWakeDone(bool gpioWake) const;
 
   // Optional hooks for buttons that aren't direct GPIOs — e.g. a key behind an
   // I2C IO-expander (the LilyGo T5 S3 user button on its PCA9535), or presses an
