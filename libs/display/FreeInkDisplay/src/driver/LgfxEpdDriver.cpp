@@ -591,10 +591,22 @@ void pushCanvas(lgfx::epd_mode::epd_mode_t epdMode) {
 // lut_eraser, so the pixel would run the eraser's two-frame nudge and then stop
 // with nothing driving it home -- a half-inverted screen that never resolves.
 //
+// Through the no-drive bank the re-tag keeps each pixel's level: it re-requests
+// the frame Panel_EPD already holds (its own buffer, the last frame pushed)
+// rather than white. The level is what LovyanGFX's eraser is indexed by when the
+// clean refresh starts, and the clean bank's columns cancel the eraser of their
+// own level (gen_ed047tc2_waveform.py, clean_phases()). Re-tagged as white, a
+// black pixel ran the white source's eraser, two frames toward black instead of
+// two toward white, and a black that stayed black netted -4 frames of drive per
+// back-to-back clean refresh instead of 0. The request is made on the panel
+// itself, in its own coordinates: LGFXBase::display() clips to the rotated size
+// and Panel_EPD::display() does not rotate.
+//
 // A board with no such slot drives the white rail through the differential bank
 // instead: a real refresh, so a real cost, but known-good (it is the drive every
 // page turn makes) and on the glass it reads as the white flash a scrub is
-// expected to open with.
+// expected to open with. There the screen IS white afterwards, so white is the
+// level to record.
 //
 // Either way this writes the panel's own buffer and not the canvas, so the frame
 // the caller is about to push survives untouched -- which matters for
@@ -604,10 +616,14 @@ void normalizeForCleanBank() {
   const auto bank = g_noDriveBankAvailable ? lgfx::epd_mode::epd_fastest : lgfx::epd_mode::epd_fast;
   g_dev.waitDisplay();
   g_dev.setEpdMode(bank);
-  g_dev.setAutoDisplay(false);
-  g_dev.fillScreen(g_dev.color888(255, 255, 255));
-  g_dev.setAutoDisplay(true);
-  g_dev.display();  // covers the rect fillScreen accumulated
+  if (g_noDriveBankAvailable) {
+    g_dev.getPanel()->display(0, 0, g_w, g_h);
+  } else {
+    g_dev.setAutoDisplay(false);
+    g_dev.fillScreen(g_dev.color888(255, 255, 255));
+    g_dev.setAutoDisplay(true);
+    g_dev.display();  // covers the rect fillScreen accumulated
+  }
   settleDisplay();
   g_lastBaseEpdMode = bank;
 #if defined(LGFX_EPD_PUSH_TRACE) && LGFX_EPD_PUSH_TRACE

@@ -22,16 +22,16 @@ PSRAM:
   (`epd_fast`) and FULL the clean one (`epd_text`); `epd_quality` is not used
   here, because this board leaves that LUT slot empty and a bare terminator
   bank freezes the panel mid-refresh.
-- HALF is resolved against the previous refresh, because `Panel_EPD` will not
+- HALF and FULL both take the clean bank (`epd_text`). `Panel_EPD` will not
   re-drive a background it already requested white through the same bank: a
-  clean refresh that follows another clean refresh drives only the union of the
-  old and new ink, showing both pages at once and leaving the old one as an
-  imprint. So HALF takes the clean bank whenever the refresh before it did not,
-  and falls back to the differential bank when it did — which is self-correcting,
-  since that fallback leaves the background fresh for the next one. FULL, which
-  cannot be downgraded, instead gets a white flash through the differential bank
-  first (`normalizeForCleanBank()`). Both behaviours are opt-in per board via
-  `LgfxEpdConfig::cleanBankNeedsFreshBackground`.
+  clean refresh that follows another clean refresh would drive only the union of
+  the old and new ink, showing both pages at once and leaving the old one as an
+  imprint. So when the refresh before was clean too, `normalizeForCleanBank()`
+  first re-requests the frame on screen through the no-drive `epd_fastest` bank,
+  one frame that moves no ink but re-tags every pixel; it keeps each pixel's level,
+  which the eraser `Panel_EPD` runs ahead of a clean drive is indexed by. Without
+  such a bank it drives white through the differential bank instead. Opt-in per
+  board via `LgfxEpdConfig::cleanBankNeedsFreshBackground`.
 - The 16-gray path (`displayGray` + `copyGrayscaleLsb/Msb` +
   `writeGrayscalePlaneStrip`) combines the B/W base with the LSB/MSB planes into
   four gray levels in the canvas, then `pushSprite`s at the quality waveform.
