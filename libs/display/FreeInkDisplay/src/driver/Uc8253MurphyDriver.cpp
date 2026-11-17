@@ -39,6 +39,10 @@ constexpr uint16_t CTRL_W = 240;
 constexpr uint16_t CTRL_H = 416;
 constexpr uint16_t CTRL_WB = CTRL_W / 8;  // 30
 
+// How long a deferred start looks for BUSY to drop after the refresh command: the grace EpdBus::waitBusy()
+// gives an active-low BUSY.
+constexpr unsigned long BUSY_ASSERT_MS = 100;
+
 // What a pixel's bit in the old plane should say. A gray pixel is told it held the opposite of its
 // new value, so it counts as changed and takes the full drive to the new rail. Told the truth, a
 // pixel that stays white or black would rest and keep its gray.
@@ -117,18 +121,42 @@ void Uc8253MurphyDriver::writeOldPlane(EpdBus& bus, const uint8_t* old, const ui
 }
 
 void Uc8253MurphyDriver::triggerRefresh(EpdBus& bus, bool turnOff) {
+  startRefresh(bus, turnOff);
+  finishRefresh(bus);
+}
+
+void Uc8253MurphyDriver::startRefresh(EpdBus& bus, const bool turnOff) {
   if (!_isScreenOn) {
     bus.cmd(CMD_POWER_ON);
     bus.waitBusy(" M3_PON");
     _isScreenOn = true;
   }
   bus.cmd(CMD_DISPLAY_REFRESH);
-  bus.waitBusy(" M3_DRF");
-  if (turnOff) {
+  // BUSY drops once the waveform runs. Seen here, BUSY back up is the whole answer later: a finish that comes
+  // after the waveform's end then waits for nothing, where waitBusy() would look 100 ms for a BUSY to wait on.
+  const unsigned long fired = millis();
+  while (!bus.isBusy() && millis() - fired < BUSY_ASSERT_MS) delay(1);
+  _pendingSawBusy = bus.isBusy();
+  _pendingTurnOff = turnOff;
+  _refreshPending = true;
+}
+
+void Uc8253MurphyDriver::finishRefresh(EpdBus& bus) {
+  if (!_refreshPending) return;
+  _refreshPending = false;
+  if (!_pendingSawBusy || bus.isBusy()) bus.waitBusy(" M3_DRF");
+  if (_pendingTurnOff) {
     bus.cmd(CMD_POWER_OFF);
     bus.waitBusy(" M3_POF");
     _isScreenOn = false;
   }
+}
+
+void Uc8253MurphyDriver::finishPending(EpdBus& bus) {
+  finishRefresh(bus);
+  if (!_nudgeAfterPage) return;
+  _nudgeAfterPage = false;
+  nudgeGray(bus, _nudgeTurnOff);
 }
 
 void Uc8253MurphyDriver::initController(EpdBus& bus) {
@@ -162,6 +190,9 @@ void Uc8253MurphyDriver::initController(EpdBus& bus) {
 
 void Uc8253MurphyDriver::begin(EpdBus& bus) {
   bus.reset(200);  // Murphy panel wants a long post-reset settle
+  // The reset ended any waveform a deferred start left running.
+  _refreshPending = false;
+  _nudgeAfterPage = false;
   _isScreenOn = false;
   _shownValid = false;  // whatever is on the glass, no refresh of ours put it there
   _fastRefreshCount = 0;
@@ -171,6 +202,18 @@ void Uc8253MurphyDriver::begin(EpdBus& bus) {
 }
 
 void Uc8253MurphyDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
+  displayStart(bus, fb, prev, mode, turnOff);
+  finishRefresh(bus);
+}
+
+void Uc8253MurphyDriver::displayFinish(EpdBus& bus, const uint8_t* fb) {
+  (void)fb;  // the start kept what the finish sends: the host may have drawn over its frame since
+  finishPending(bus);
+}
+
+bool Uc8253MurphyDriver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode,
+                                      bool turnOff) {
+  finishPending(bus);
   // Manufacturer guidance: hardware-reset and re-initialise the controller before
   // every refresh. The UC8253 retains LUT/RAM state between refreshes, and reusing
   // it leaves pixels half-latched (the previous frame bleeds through / flashes
@@ -210,10 +253,13 @@ void Uc8253MurphyDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* 
   }
   writePlane(bus, CMD_DTM2, fb);
 
-  triggerRefresh(bus, turnOff);
-  _grayOnGlass = false;  // both paths above drove every gray pixel to a rail
+  startRefresh(bus, turnOff);
+  // The record is the new frame's from here, not from the waveform's end: both planes are in the controller, and
+  // nothing else reaches it before finishRefresh(). The finish then needs no host buffer.
+  _grayOnGlass = false;  // both paths above drive every gray pixel to a rail
   _rolesTraded = !turnOff;
   noteShown(fb);
+  return true;
 }
 
 void Uc8253MurphyDriver::noteShown(const uint8_t* fb) {
@@ -223,14 +269,22 @@ void Uc8253MurphyDriver::noteShown(const uint8_t* fb) {
 }
 
 void Uc8253MurphyDriver::displayGrayFrame(EpdBus& bus, const uint8_t* fb, RefreshMode mode, bool turnOff) {
+  displayGrayFrameStart(bus, fb, mode, turnOff);
+  finishPending(bus);
+}
+
+bool Uc8253MurphyDriver::displayGrayFrameStart(EpdBus& bus, const uint8_t* fb, RefreshMode mode, bool turnOff) {
+  finishPending(bus);
   const bool staged = _lsbStaged && _msbStaged;
   // A clean refresh keeps its two passes, and so does a page with no record of what it replaces:
   // a FAST without the previous frame would leave that frame up. HALF then, as at a book's open.
+  // The nudge follows the page's waveform, so finishPending() sends it, from the planes staged here.
   if (!staged || mode != RefreshMode::Fast || !_shownValid || !grayPlane(_textOld) || !grayPlane(_textNew) ||
       !grayPlane(_gray)) {
-    display(bus, fb, _shownValid ? _shown : nullptr, _shownValid ? mode : RefreshMode::Half, false);
-    displayGray(bus, fb, turnOff, nullptr, false);
-    return;
+    displayStart(bus, fb, _shownValid ? _shown : nullptr, _shownValid ? mode : RefreshMode::Half, false);
+    _nudgeAfterPage = true;
+    _nudgeTurnOff = turnOff;
+    return true;
   }
   _lsbStaged = _msbStaged = false;
 
@@ -251,12 +305,13 @@ void Uc8253MurphyDriver::displayGrayFrame(EpdBus& bus, const uint8_t* fb, Refres
   loadLut(bus, _cfg.text);
   writePlane(bus, CMD_DTM1, _textOld);
   writePlane(bus, CMD_DTM2, _textNew);
-  triggerRefresh(bus, turnOff);
+  startRefresh(bus, turnOff);
   _rolesTraded = !turnOff;
 
   for (size_t i = 0; i < size; i++) _gray[i] = static_cast<uint8_t>(_lsb[i] | _msb[i]);
   _grayOnGlass = true;  // the next FAST drives it away, and no nudge may lift it
   noteShown(fb);
+  return true;
 }
 
 uint8_t* Uc8253MurphyDriver::grayPlane(uint8_t*& plane) {
@@ -268,18 +323,25 @@ uint8_t* Uc8253MurphyDriver::grayPlane(uint8_t*& plane) {
   return plane;
 }
 
-void Uc8253MurphyDriver::copyGrayscaleLsb(EpdBus&, const uint8_t* lsb) {
+void Uc8253MurphyDriver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
+  finishPending(bus);  // a nudge still owed takes the planes staged for its page, not these
   _msbStaged = false;
   _lsbStaged = _cfg.gray.vcom && lsb && grayPlane(_lsb);
   if (_lsbStaged) memcpy(_lsb, lsb, static_cast<size_t>(_fbWb) * _fbH);
 }
 
-void Uc8253MurphyDriver::copyGrayscaleMsb(EpdBus&, const uint8_t* msb) {
+void Uc8253MurphyDriver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
+  finishPending(bus);
   _msbStaged = _lsbStaged && msb && grayPlane(_msb);
   if (_msbStaged) memcpy(_msb, msb, static_cast<size_t>(_fbWb) * _fbH);
 }
 
 void Uc8253MurphyDriver::displayGray(EpdBus& bus, const uint8_t*, bool turnOff, const unsigned char*, bool) {
+  finishPending(bus);
+  nudgeGray(bus, turnOff);
+}
+
+void Uc8253MurphyDriver::nudgeGray(EpdBus& bus, const bool turnOff) {
   const bool staged = _lsbStaged && _msbStaged;
   _lsbStaged = _msbStaged = false;
   if (!staged || _grayOnGlass || !grayPlane(_gray)) return;
@@ -307,6 +369,7 @@ void Uc8253MurphyDriver::displayGray(EpdBus& bus, const uint8_t*, bool turnOff, 
 }
 
 void Uc8253MurphyDriver::deepSleep(EpdBus& bus) {
+  finishPending(bus);  // a waveform in flight ends, and its power off runs, before the controller sleeps
   _rolesTraded = false;
   if (_isScreenOn) {
     bus.cmd(CMD_POWER_OFF);

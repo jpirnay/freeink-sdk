@@ -29,6 +29,13 @@
 // A pixel that stays white or black rests, which is less drive than FAST gives it. The driver keeps
 // what is on the glass to choose; a clean refresh, or no record yet, takes the two-pass route.
 //
+// Deferred refresh: displayStart() and displayGrayFrameStart() return once the waveform is fired, with
+// the reset, the init, the LUTs and both planes behind them and the driver's record of the glass already
+// the new frame's. displayFinish() waits the waveform out, powers off where the frame asked for it, and
+// sends the nudge of a single push that kept its two passes. It reads no host buffer. Every other entry
+// that reaches the controller, or the staged planes, finishes a refresh in flight first. The two-pass
+// nudge (displayGray) blocks.
+//
 // Selection: linked only when -DFREEINK_DRIVER_UC8253_MURPHY (Murphy board env).
 
 #include "PanelDriver.h"
@@ -78,6 +85,9 @@ class Uc8253MurphyDriver : public PanelDriver {
   void begin(EpdBus& bus) override;
   void deepSleep(EpdBus& bus) override;
   void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
+  bool supportsAsyncDisplay() const override { return true; }
+  bool displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
+  void displayFinish(EpdBus& bus, const uint8_t* fb) override;
   GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const override {
     if (mode != GrayscaleMode::Overlay || !_cfg.gray.vcom) return {};
     return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Separate, false, false, false};
@@ -92,6 +102,7 @@ class Uc8253MurphyDriver : public PanelDriver {
   bool supportsOnePassText() const override { return _cfg.text.vcom != nullptr && _cfg.gray.vcom != nullptr; }
   void setOnePassText(bool on) override { _onePassText = on; }
   bool supportsGrayFrame() const override { return _onePassText && supportsOnePassText(); }
+  bool displayGrayFrameStart(EpdBus& bus, const uint8_t* fb, RefreshMode mode, bool turnOff) override;
   void displayGrayFrame(EpdBus& bus, const uint8_t* fb, RefreshMode mode, bool turnOff) override;
 
  private:
@@ -100,6 +111,12 @@ class Uc8253MurphyDriver : public PanelDriver {
   void writePlane(EpdBus& bus, uint8_t command, const uint8_t* fb);  // rotates 416x240 fb -> 240x416 RAM
   void writeOldPlane(EpdBus& bus, const uint8_t* old, const uint8_t* fb);  // `old`, gray pixels marked changed
   void triggerRefresh(EpdBus& bus, bool turnOff);
+  // triggerRefresh() in two halves: power on and the refresh command, then the wait and the power off.
+  void startRefresh(EpdBus& bus, bool turnOff);
+  void finishRefresh(EpdBus& bus);
+  // finishRefresh(), then the nudge a two-pass single push owes. What every entry runs first.
+  void finishPending(EpdBus& bus);
+  void nudgeGray(EpdBus& bus, bool turnOff);  // displayGray()'s refresh, with nothing in flight
   uint8_t* grayPlane(uint8_t*& plane);
 
   const Uc8253MurphyConfig& _cfg;
@@ -110,6 +127,14 @@ class Uc8253MurphyDriver : public PanelDriver {
 
   bool _isScreenOn = false;
   uint8_t _fastRefreshCount = 0;
+  // A waveform startRefresh() fired has not been waited out; the power off it owes; BUSY was seen to drop
+  // for it, so BUSY back up says it is over.
+  bool _refreshPending = false;
+  bool _pendingTurnOff = false;
+  bool _pendingSawBusy = false;
+  // A single push that kept its two passes has its B/W page in flight: the nudge follows it.
+  bool _nudgeAfterPage = false;
+  bool _nudgeTurnOff = false;
 
   // A plane arrives in the write framebuffer, which the next plane overwrites, and every refresh
   // starts with a reset, so both wait here for displayGray(). Allocated on the first gray pass.
