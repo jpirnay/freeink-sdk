@@ -950,6 +950,22 @@ static void expectDeferredSinglePush2677(Ssd2677Driver& s) {
   assert(display.isRefreshPending() && sent(display._bus).refreshes == 1);
   display.completeDisplay();
   assert(!display.isRefreshPending() && sent(display._bus).refreshes == 2);
+  // A host asks isRefreshPending() before it powers the panel off or lets the chip sleep: the answer is yes from the
+  // trigger until the finish has returned, through every wait in it: the page's waveform and power off, the overlay's
+  // power on, waveform and power off.
+  display.copyGrayscaleLsbBuffers(lsb.data());
+  display.copyGrayscaleMsbBuffers(msb.data());
+  unsigned waitsSeen = 0, waitsPending = 0;
+  display._bus.onWait = [&] {
+    ++waitsSeen;
+    waitsPending += display.isRefreshPending();
+  };
+  display.triggerGrayscaleFrame(FreeInkDisplay::HALF_REFRESH);
+  assert(display.isRefreshPending());
+  waitsSeen = waitsPending = 0;
+  display.completeDisplay();
+  assert(waitsSeen == 5 && waitsPending == 5 && !display.isRefreshPending());
+  display._bus.onWait = nullptr;
   display.copyGrayscaleLsbBuffers(lsb.data());
   display.copyGrayscaleMsbBuffers(msb.data());
   display._bus.clear();
