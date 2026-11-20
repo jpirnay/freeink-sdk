@@ -53,6 +53,9 @@ class Uc8253X3Driver : public PanelDriver {
 
   void begin(EpdBus& bus) override;
   void deepSleep(EpdBus& bus) override;
+  // The booster down while the host is idle (FreeInkDisplay::powerOffBetweenFrames), controller RAM kept. The
+  // next refresh powers it up and keeps the mode it asked for: see _idlePoweredOff.
+  void powerOffBetweenFrames(EpdBus& bus) override;
 
   // One-pass text, composed by the host (see PanelDriver::composesOnePassText()).
   bool supportsOnePassText() const override { return true; }
@@ -63,7 +66,7 @@ class Uc8253X3Driver : public PanelDriver {
   void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
   // Refresh split: displayStart fires the waveform and returns while the ~130-770 ms
   // X3 waveform runs (so the render task can overlap non-SPI work); displayFinish
-  // waits BUSY out and runs the post-waveform DTM1 sync + conditioning passes.
+  // waits BUSY out and, after a full sync, runs its DTM1 upload + conditioning passes.
   // display() above is exactly displayStart()+displayFinish().
   bool displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
   void displayFinish(EpdBus& bus, const uint8_t* fb) override;
@@ -115,6 +118,12 @@ private:
   uint32_t _bufferSize;
 
   bool _isScreenOn = false;
+  // The rails are down because the host powered them off between frames. A refresh whose rails are down is
+  // promoted to HALF ("wake transition") when they went down at init or at the end of a refresh that asked for it
+  // (turnOff); not after this power-off, which leaves the glass as the last refresh drew it and DTM1/DTM2 as they
+  // were, so a FAST diffs exactly as it would with the rails up. Without this every page turn after a second of
+  // idle would flash.
+  bool _idlePoweredOff = false;
   bool _redRamSynced = false;
   bool _inGrayscaleMode = false;
   bool _absoluteInput = false;
@@ -145,7 +154,7 @@ private:
   bool _grayOnGlass = false;
 
   // Refresh split state: what displayStart() decided, replayed by displayFinish()
-  // for the post-waveform DTM1 sync + conditioning. _pendingRefresh guards against
+  // for the power-off and a full sync's DTM1 upload + conditioning. _pendingRefresh guards against
   // a displayFinish() with no matching displayStart(). The just-displayed frame is
   // NOT stashed here: the facade re-supplies it fresh to displayFinish() because
   // the caller may release/realloc the buffer holding it in the gap.
