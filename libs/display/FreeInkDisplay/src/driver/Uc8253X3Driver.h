@@ -55,6 +55,10 @@ class Uc8253X3Driver : public PanelDriver {
   void deepSleep(EpdBus& bus) override;
   // The booster down while the host is idle (FreeInkDisplay::powerOffBetweenFrames), controller RAM kept. The
   // next refresh powers it up and keeps the mode it asked for: see _idlePoweredOff.
+  // Ported from Free-Ink/freeink-sdk PR #220 ("feat(uc8253): add two-pass 16-gray, PTL windowing, and idle
+  // power-off on X3", @zuyan9): the power-off between frames that keeps controller RAM, and dropping the wake
+  // promotion after it, are theirs. Keeping the promotion after a turnOff power-off, and leaving the timing to the
+  // host instead of the driver's 1.2 s timer and press-edge prewarm, are ours.
   void powerOffBetweenFrames(EpdBus& bus) override;
 
   // One-pass text, composed by the host (see PanelDriver::composesOnePassText()).

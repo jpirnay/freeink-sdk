@@ -360,9 +360,12 @@ void Uc8253X3Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
 
   // DTM1 ("old" RAM) must hold this frame for the next fast diff. After a FAST, HALF or one-pass refresh the
   // controller has already put it there: the frame it drew from DTM2 is what the next refresh diffs against,
-  // without this upload (Free-Ink #220, zuyan9; checked on our X3, see the commit). The UC8253c datasheet's CDI has
-  // no N2OCP bit to say so, hence the check on glass. A full sync keeps the upload: it drew from a white DTM1, and
-  // its settle pass below was written around the host's copy.
+  // without this upload. The UC8253c datasheet's CDI has no N2OCP bit to say so, hence the check on glass (our X3,
+  // see the commit). A full sync keeps the upload: it drew from a white DTM1, and its settle pass below was written
+  // around the host's copy.
+  // Ported from Free-Ink/freeink-sdk PR #220 ("feat(uc8253): add two-pass 16-gray, PTL windowing, and idle
+  // power-off on X3", @zuyan9): leaving DTM1 to the controller outside a full sync is theirs; the check on our X3
+  // and the one-pass case are ours.
   if (doFullSync) {
     bus.sendPlaneFlipped(CMD_DTM1, fb, _h, _wb);
     bus.cmd(CMD_DATA_STOP);
