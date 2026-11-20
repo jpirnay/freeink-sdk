@@ -103,6 +103,15 @@ class Ssd2677Driver : public PanelDriver {
   // and the give-back tables in lut/Ssd2677Gray16Luts.h.
   bool supportsGray16Image() const override { return BoardConfig::ACTIVE.board != BoardConfig::Board::Sticky; }
   bool displayGray16Image(EpdBus& bus, const uint8_t* levels, RefreshMode mode, bool turnOff) override;
+  // The host's 8-bit canvas (PanelDriver::borrowGray8Canvas) on top of the 16-level image: the host paints gray
+  // into a panel-sized buffer and displayGray8Canvas() dithers it to the calibrated levels and draws it with
+  // displayGray16Image(). Picco only, as the 16 levels are.
+  uint8_t grayLevels() const override { return supportsGray16Image() ? 16 : 4; }
+  uint8_t* borrowGray8Canvas(uint16_t* stride) override;
+  void displayGray8Canvas(EpdBus& bus, RefreshMode mode, bool turnOff) override;
+  // The canvas's gray (0x00 black .. 0xFF white) dithered onto the 16 levels, packed 4 bpp in place over its
+  // first half, as displayGray16Image() takes them. Public for the host test.
+  static void canvasToGray16(uint8_t* canvas, uint16_t width, uint16_t height);
   bool setGray16Turn(uint8_t scrubEvery) override;
   // 16-level text: `levels` are the calibrated levels (as displayGray16Image);
   // the base must hold exactly the deep-path levels black.
@@ -192,6 +201,7 @@ class Ssd2677Driver : public PanelDriver {
   // Levels of the 16-level image on the glass (W*H/2 bytes, PSRAM), kept for
   // exitGray16's balance passes. Allocated on first use.
   uint8_t* _gray16 = nullptr;
+  uint8_t* _canvas = nullptr;  // borrowGray8Canvas(): W*H bytes, PSRAM, allocated on the first borrow and kept
   bool _gray16OnGlass = false;
   bool _textBaseUp = false;  // beginGray16Text ran; finishGray16Text owes the passes
   bool _textOnGlass = false;    // a 16-level text page is up; its levels are in _gray16

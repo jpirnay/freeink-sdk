@@ -1,6 +1,7 @@
 // Onyx Picco: panel-ID probe picks the stock per-panel SSD1677 tables.
 // Run once per panel (the driver is a process-wide singleton): yrd | depg | opm | unknown.
 #include <cassert>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -1274,6 +1275,43 @@ static void expectGray16Image(Ssd2677Driver& s) {
 }
 
 // Ported from Free-Ink 10b7ae5 (Julia Nguyen): the table-driven packPixels against the per-bit reference.
+// The 8-bit canvas on top of the 16-level image (this fork): white is level 0, black level 15, a flat gray dithers to
+// levels whose mean L* sits on the gray's own, mapped onto the panel's 29..100; the canvas goes up as the 16-level
+// image and is packed in place.
+static void expectGray8Canvas(Ssd2677Driver& s) {
+  static constexpr uint8_t kL[16] = {100, 89, 86, 82, 77, 72, 69, 66, 62, 55, 52, 49, 45, 40, 34, 29};
+  assert(s.grayLevels() == 16);
+  {
+    Bytes c(8 * 2, 0xFF);
+    Ssd2677Driver::canvasToGray16(c.data(), 8, 2);
+    for (int i = 0; i < 8; ++i) assert(c[i] == 0x00);
+    Bytes b(8 * 2, 0x00);
+    Ssd2677Driver::canvasToGray16(b.data(), 8, 2);
+    for (int i = 0; i < 8; ++i) assert(b[i] == 0xFF);
+  }
+  for (const int gray : {64, 128, 192}) {
+    const int w = 64, h = 64;
+    Bytes c(w * h, static_cast<uint8_t>(gray));
+    Ssd2677Driver::canvasToGray16(c.data(), w, h);
+    double sum = 0;
+    for (int i = 0; i < w * h / 2; ++i) sum += kL[c[i] >> 4] + kL[c[i] & 15];
+    const double mean = sum / (w * h);
+    const double cl = gray / 255.0, y = cl <= 0.04045 ? cl / 12.92 : std::pow((cl + 0.055) / 1.055, 2.4);
+    const double lstar = 116.0 * std::cbrt(y) - 16.0, want = 29.0 + 71.0 * lstar / 100.0;
+    assert(std::fabs(mean - want) < 1.0);
+  }
+  uint16_t stride = 0;
+  uint8_t* canvas = s.borrowGray8Canvas(&stride);
+  assert(canvas && stride == 800);
+  memset(canvas, 0xFF, 800 * 480);
+  for (int x = 0; x < 800; ++x) canvas[x] = 0x00;  // a black first row
+  EpdBus bus;
+  s.displayGray8Canvas(bus, RefreshMode::Half, true);
+  assert(s._gray16OnGlass);
+  for (int i = 0; i < 400; ++i) assert(s._gray16[i] == 0xFF);
+  for (int i = 400; i < 400 * 480; ++i) assert(s._gray16[i] == 0x00);
+}
+
 static void expectPackedPairs(Ssd2677Driver& driver) {
   const size_t size = driver.geometry().bufferSize;
   Bytes high(size), low(size);
@@ -1555,6 +1593,7 @@ int main(int argc, char** argv) {
     expectDarkGray2677(s);
     expectDeferredRefresh2677(s);
     expectGray16Image(s);
+    expectGray8Canvas(s);
     std::printf("Picco se0400: probe, init, packing, refresh and its deferral, 16-level image passed\n");
     return 0;
   }

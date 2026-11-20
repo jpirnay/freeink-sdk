@@ -4,7 +4,11 @@
 
 #if FREEINK_DEVICE_PICCO || FREEINK_DEVICE_STICKY
 
+#include <cmath>
+#include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <utility>
 
 #include "../lut/Ssd2677Gray16Luts.h"
 #include "../lut/Ssd2677Luts.h"
@@ -1109,6 +1113,85 @@ bool Ssd2677Driver::displayGray16Image(EpdBus& bus, const uint8_t* levels, Refre
   // B/W history is gone either way.
   _needsInitialFull = true;
   return true;
+}
+
+namespace {
+// L* each level lands at, 0 = white .. 15 = darkest: the "Expected L* per level" line of Ssd2677Gray16Luts.h, which
+// picco-gray-cal measured for the default paths. Change the two together.
+constexpr uint8_t kGray16LStar[16] = {100, 89, 86, 82, 77, 72, 69, 66, 62, 55, 52, 49, 45, 40, 34, 29};
+}  // namespace
+
+void Ssd2677Driver::canvasToGray16(uint8_t* canvas, const uint16_t width, const uint16_t height) {
+  // Each canvas value read as sRGB gray, as L*, and mapped from 0..100 onto what the panel spans (29..100): black
+  // keeps the darkest level and the shadows keep their steps above it. In 1/16 L* units.
+  static int16_t target[256];
+  static bool built = false;
+  if (!built) {
+    const float lo = kGray16LStar[15];
+    const float hi = kGray16LStar[0];
+    for (int v = 0; v < 256; ++v) {
+      const float c = v / 255.0f;
+      const float y = c <= 0.04045f ? c / 12.92f : powf((c + 0.055f) / 1.055f, 2.4f);
+      const float l = y > 0.008856f ? 116.0f * cbrtf(y) - 16.0f : 903.3f * y;
+      target[v] = static_cast<int16_t>(lroundf((lo + (hi - lo) * l / 100.0f) * 16.0f));
+    }
+    built = true;
+  }
+  // Floyd-Steinberg onto the nearest calibrated level, the error kept in the same units. Two error rows; without
+  // them (no heap) each pixel takes its nearest level undithered.
+  const size_t rowLen = static_cast<size_t>(width) + 2;
+  auto* err = static_cast<int16_t*>(heap_caps_malloc(rowLen * 2 * sizeof(int16_t), MALLOC_CAP_8BIT));
+  if (err) memset(err, 0, rowLen * 2 * sizeof(int16_t));
+  int16_t* cur = err;
+  int16_t* next = err ? err + rowLen : nullptr;
+  for (uint32_t y = 0; y < height; ++y) {
+    const uint32_t row = y * width;
+    for (uint32_t x = 0; x < width; ++x) {
+      const int want = target[canvas[row + x]] + (cur ? cur[x + 1] : 0);
+      uint8_t level = 0;
+      int best = INT32_MAX;
+      for (uint8_t l = 0; l < 16; ++l) {
+        const int d = abs(want - kGray16LStar[l] * 16);
+        if (d < best) best = d, level = l;
+      }
+      if (cur) {
+        const int e = want - kGray16LStar[level] * 16;
+        cur[x + 2] = static_cast<int16_t>(cur[x + 2] + e * 7 / 16);
+        next[x] = static_cast<int16_t>(next[x] + e * 3 / 16);
+        next[x + 1] = static_cast<int16_t>(next[x + 1] + e * 5 / 16);
+        next[x + 2] = static_cast<int16_t>(next[x + 2] + e / 16);
+      }
+      // In place: byte (row + x) / 2 lies before every canvas byte still to be read.
+      uint8_t& out = canvas[(row + x) / 2];
+      out = (x & 1) ? static_cast<uint8_t>((out & 0xF0) | level) : static_cast<uint8_t>(level << 4);
+    }
+    if (cur) {
+      std::swap(cur, next);
+      memset(next, 0, rowLen * sizeof(int16_t));
+    }
+  }
+  heap_caps_free(err);
+}
+
+uint8_t* Ssd2677Driver::borrowGray8Canvas(uint16_t* stride) {
+  if (!supportsGray16Image()) return nullptr;
+  const PanelGeometry g = geometry();
+  if (!_canvas) {
+    _canvas = static_cast<uint8_t*>(
+        heap_caps_malloc(static_cast<size_t>(g.width) * g.height, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  }
+  if (!_canvas) return nullptr;
+  if (stride) *stride = g.width;
+  return _canvas;
+}
+
+void Ssd2677Driver::displayGray8Canvas(EpdBus& bus, const RefreshMode mode, const bool turnOff) {
+  if (!_canvas || !supportsGray16Image()) return;
+  const PanelGeometry g = geometry();
+  canvasToGray16(_canvas, g.width, g.height);
+  if (!displayGray16Image(bus, _canvas, mode, turnOff) && Serial) {
+    Serial.printf("[%lu] [EPD] gray8 canvas: the 16-level image was refused\n", millis());
+  }
 }
 
 bool Ssd2677Driver::setGray16TextSoftPull(uint8_t frames) {
