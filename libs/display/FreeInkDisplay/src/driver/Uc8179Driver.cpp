@@ -930,6 +930,20 @@ void Uc8179Driver::finishTextFrame(EpdBus& bus) {
 }
 #endif
 
+bool Uc8179Driver::setLabRegisters(const uint8_t* records, const size_t len) {
+  if (!records || len == 0) {
+    _labRegistersLen = 0;
+    return true;
+  }
+  if (len > sizeof(_labRegisters)) return false;
+  for (size_t i = 0; i < len; i += 2 + records[i + 1]) {
+    if (i + 1 >= len || i + 2 + records[i + 1] > len) return false;  // a record runs past the end
+  }
+  memcpy(_labRegisters, records, len);
+  _labRegistersLen = static_cast<uint8_t>(len);
+  return true;
+}
+
 bool Uc8179Driver::displayLabFrame(EpdBus& bus, const uint8_t* bw, const uint8_t* red, const uint8_t* lut) {
   if (!bw || !red || !lut) return false;
   bus.waitBusy(" 8179_lab_ready");
@@ -954,6 +968,11 @@ bool Uc8179Driver::displayLabFrame(EpdBus& bus, const uint8_t* bw, const uint8_t
   bus.cmd(CMD_VCOM_DATA_INTERVAL);
   bus.data(0x29);
   bus.data(CDI_INTERVAL);
+  // The lab's own registers last (frame rate, source voltages, VCOM): after the tables, so they win.
+  for (size_t i = 0; i < _labRegistersLen; i += 2 + _labRegisters[i + 1]) {
+    bus.cmd(_labRegisters[i]);
+    if (_labRegisters[i + 1]) bus.data(_labRegisters + i + 2, _labRegisters[i + 1]);
+  }
   if (!_isScreenOn) {
     bus.cmd(CMD_POWER_ON);
     bus.waitBusy(" 8179_lab_PON");
@@ -964,6 +983,14 @@ bool Uc8179Driver::displayLabFrame(EpdBus& bus, const uint8_t* bw, const uint8_t
   bus.cmd(CMD_POWER_OFF);
   bus.waitBusy(" 8179_lab_POF");
   _isScreenOn = false;
+  if (_labRegistersLen) {
+    // Back to the controller's own settings: a reset returns what the lab changed to its power-on values, which
+    // every other frame assumes (this driver never sets them), and the init puts back what it does set. A reset
+    // drives no pixel.
+    bus.reset(50);
+    initController(bus);
+    _directGrayConfigured = false;
+  }
   // The glass holds whatever the lab's tables made of each code, which no retained plane describes: no
   // text history survives, and the next frame is a full one.
 #if FREEINK_ONE_PASS_TEXT_AA

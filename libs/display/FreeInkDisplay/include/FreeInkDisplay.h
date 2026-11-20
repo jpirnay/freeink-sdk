@@ -360,6 +360,8 @@ class FreeInkDisplay {
   // Development builds only: both RAM planes and an external LUT as given, one blocking refresh (see
   // PanelDriver::displayLabFrame()). False where the driver has no such path.
   bool displayLabFrame(const uint8_t* bw, const uint8_t* red, const uint8_t* lut);
+  // Register writes sent with every lab frame until cleared (PanelDriver::setLabRegisters()).
+  bool setLabRegisters(const uint8_t* records, size_t len);
   void displayGrayscaleFrame(RefreshMode mode, bool turnOffScreen = false);
   // Deferred displayGrayscaleFrame(): returns while the waveform runs where the
   // driver can. The caller owes a completeDisplay()/finishDisplayAsync() before it

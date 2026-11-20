@@ -118,6 +118,7 @@ class Uc8179Driver : public PanelDriver {
   // Lab (development builds): `red` goes to DTM1 and `bw` to DTM2, and `lut` is the five 42-byte tables
   // for 0x20..0x24 (VCOM, then one per pixel code), loaded and run as the one-pass text frame runs them.
   bool displayLabFrame(EpdBus& bus, const uint8_t* bw, const uint8_t* red, const uint8_t* lut) override;
+  bool setLabRegisters(const uint8_t* records, size_t len) override;
 
 #if FREEINK_ONE_PASS_TEXT_AA
   // --- One-pass text AA: see X4ProTextAa.h and PanelDriver::setOnePassText() ---
@@ -179,6 +180,9 @@ class Uc8179Driver : public PanelDriver {
   uint8_t _directGrayPlanes = 0;
 
   bool _isScreenOn = false;
+  // setLabRegisters(): records sent with every lab frame (frame rate 0x30, power 0x01, VCOM 0x82, ...).
+  uint8_t _labRegisters[64] = {};
+  uint8_t _labRegistersLen = 0;
   // Force the first refresh after begin() to a full flash, so a partial update
   // never runs against an unknown on-screen state (e.g. a retained boot image).
   bool _needFullClear = true;

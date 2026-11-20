@@ -1000,6 +1000,10 @@ uint8_t* FreeInkDisplay::beginOnePassMask() {
 #endif
 }
 
+bool FreeInkDisplay::setLabRegisters(const uint8_t* records, size_t len) {
+  return _driver != nullptr && _driver->setLabRegisters(records, len);
+}
+
 bool FreeInkDisplay::displayLabFrame(const uint8_t* bw, const uint8_t* red, const uint8_t* lut) {
   if (!_driver || !bw || !red || !lut) return false;
   cancelGrayscalePass();

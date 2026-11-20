@@ -239,6 +239,15 @@ class PanelDriver {
     (void)lut;
     return false;
   }
+  // Register writes for the lab's next frames, development builds only: records of (command, length, `length`
+  // bytes), sent after the tables and before the refresh of every displayLabFrame() until cleared (null or 0).
+  // A driver that takes them puts its own settings back after each such frame. False where it does not, or for
+  // records that do not parse.
+  virtual bool setLabRegisters(const uint8_t* records, size_t len) {
+    (void)records;
+    (void)len;
+    return false;
+  }
   // Deferred form of displayGrayFrame(): queue the frame and return while the
   // waveform runs, so the caller can spend it on its own work. Returns true when
   // it actually deferred, in which case displayFinish() must run before the host

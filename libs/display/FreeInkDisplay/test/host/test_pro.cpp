@@ -1090,6 +1090,29 @@ static void testUc8179LabFrame() {
     assert(sent);
   }
   assert(writesOf(bus, 0x12) == 1 && d._needFullClear && !d._oldPlaneValid);
+
+  // Lab registers: sent after the tables and before the refresh, then the controller is set up again (PSR after
+  // the refresh); cleared, a frame sends none. Records that run past their end are refused.
+  const uint8_t regs[] = {0x30, 1, 0x07, 0x01, 5, 0x17, 0x07, 0x3F, 0x1E, 0x0D};
+  assert(d.setLabRegisters(regs, sizeof(regs)));
+  bus.clear();
+  assert(d.displayLabFrame(bus, base.data(), red.data(), lut.data()));
+  size_t lastLut = 0, pll = 0, pwr = 0, drf = 0, psrAfter = 0;
+  for (size_t i = 0; i < bus.writes.size(); ++i) {
+    const auto& w = bus.writes[i];
+    if (w.command >= 0x20 && w.command <= 0x24) lastLut = i;
+    if (w.command == 0x30 && w.bytes == Bytes{0x07}) pll = i;
+    if (w.command == 0x01 && w.bytes == Bytes(regs + 5, regs + 10)) pwr = i;
+    if (w.command == 0x12) drf = i;
+    if (w.command == 0x00 && drf && i > drf) psrAfter = i;
+  }
+  assert(pll > lastLut && pwr > pll && drf > pwr && psrAfter > drf);
+  assert(d.setLabRegisters(nullptr, 0));
+  bus.clear();
+  assert(d.displayLabFrame(bus, base.data(), red.data(), lut.data()));
+  assert(writesOf(bus, 0x30) == 0 && writesOf(bus, 0x01) == 0);
+  const uint8_t bad[] = {0x30, 3, 0x07};
+  assert(!d.setLabRegisters(bad, sizeof(bad)));
 }
 
 static void testOnePassFrame() {
