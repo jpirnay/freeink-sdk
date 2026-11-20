@@ -53,6 +53,9 @@ class Uc8253X3Driver : public PanelDriver {
 
   void begin(EpdBus& bus) override;
   void deepSleep(EpdBus& bus) override;
+  // The booster down while the host is idle (FreeInkDisplay::powerOffBetweenFrames), controller RAM kept. The
+  // next refresh powers it up and keeps the mode it asked for: see _idlePoweredOff.
+  void powerOffBetweenFrames(EpdBus& bus) override;
 
   // One-pass text, composed by the host (see PanelDriver::composesOnePassText()).
   bool supportsOnePassText() const override { return true; }
@@ -115,6 +118,12 @@ private:
   uint32_t _bufferSize;
 
   bool _isScreenOn = false;
+  // The rails are down because the host powered them off between frames. A refresh whose rails are down is
+  // promoted to HALF ("wake transition") when they went down at init or at the end of a refresh that asked for it
+  // (turnOff); not after this power-off, which leaves the glass as the last refresh drew it and DTM1/DTM2 as they
+  // were, so a FAST diffs exactly as it would with the rails up. Without this every page turn after a second of
+  // idle would flash.
+  bool _idlePoweredOff = false;
   bool _redRamSynced = false;
   bool _inGrayscaleMode = false;
   bool _absoluteInput = false;

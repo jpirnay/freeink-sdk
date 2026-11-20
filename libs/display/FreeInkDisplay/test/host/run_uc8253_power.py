@@ -45,12 +45,12 @@ class EpdBus {
   uint8_t command=0;
 public:
   std::vector<uint8_t> oldPlane, newPlane, lastBank, rawRegisters;
-  unsigned powerOns=0, refreshes=0;
+  unsigned powerOns=0, powerOffs=0, refreshes=0;
   // Per refresh: bit 0 set when DTM2 (new) was all white, bit 1 when DTM1 (old) was.
   std::vector<uint8_t> planesAtRefresh;
   static bool white(const std::vector<uint8_t>& p) { for (uint8_t b : p) if (b != 0xFF) return false; return !p.empty(); }
   void cmd(uint8_t c) {
-    command=c; if(c == 4) ++powerOns;
+    command=c; if(c == 4) ++powerOns; if(c == 2) ++powerOffs;
     if(c == 0x12) { ++refreshes; planesAtRefresh.push_back(uint8_t((white(newPlane) ? 1 : 0) | (white(oldPlane) ? 2 : 0))); }
   }
   void cmdData2(uint8_t c, uint8_t a, uint8_t b) { cmd(c); data(a); data(b); }
@@ -182,7 +182,46 @@ int main() {
    x.beginGrayscale(b, page.data(), freeink::GrayscaleMode::Absolute, freeink::RefreshMode::Half, false);
    assert(b.refreshes == base + 2 && b.planesAtRefresh[base] == 3 && b.planesAtRefresh[base + 1] == 2);
  }
- std::cout << "PASS: UC8253 cold power-on, warm Full, power-off/wake, gray base scrubs after AA and one-pass\\n";
+ // Power-off between frames (the host's idle hook): the booster goes down once, and the next refresh powers it
+ // up and keeps the FAST it asked for. A refresh that powered off by itself (turnOff) still makes the next one a
+ // HALF, as before. lastBank holds the VCOM table of the bank the last refresh loaded.
+ {
+   const auto& cfg = freeink::uc8253X3DefaultConfig();
+   const std::vector<uint8_t> fastBank(cfg.fast.vcom, cfg.fast.vcom + 42), halfBank(cfg.half.vcom, cfg.half.vcom + 42);
+   freeink::Uc8253X3Driver x;
+   freeink::EpdBus b;
+   x.begin(b);
+   std::vector<uint8_t> page(792 / 8 * 528, 0xF0), mask(792 / 8 * 528, 0x3C);
+   x.display(b, page.data(), nullptr, freeink::RefreshMode::Full, false);
+   x.display(b, page.data(), nullptr, freeink::RefreshMode::Fast, false);
+   assert(b.lastBank == fastBank);
+   const auto ons = b.powerOns, offs = b.powerOffs;
+   x.powerOffBetweenFrames(b);
+   assert(b.powerOffs == offs + 1);
+   x.powerOffBetweenFrames(b);  // already down: nothing sent
+   assert(b.powerOffs == offs + 1);
+   x.display(b, page.data(), nullptr, freeink::RefreshMode::Fast, false);
+   assert(b.powerOns == ons + 1 && b.lastBank == fastBank);
+   // One-pass text after an idle power-off is still one refresh with its own bank.
+   x.powerOffBetweenFrames(b);
+   const std::vector<uint8_t> rest = {0x00, 24, 0, 0, 0, 1};
+   assert(x.displayOnePassStart(b, mask.data(), page.data(), freeink::RefreshMode::Fast, false));
+   assert(std::vector<uint8_t>(b.lastBank.begin(), b.lastBank.begin() + 6) == rest);
+   // A refresh in flight keeps its rails: its DTM1 sync is still to come.
+   const auto pendingOffs = b.powerOffs;
+   x.powerOffBetweenFrames(b);
+   assert(b.powerOffs == pendingOffs);
+   x.displayFinish(b, page.data());
+   // turnOff powers down at the end of the refresh; the wake promotion applies to the next one.
+   x.display(b, page.data(), nullptr, freeink::RefreshMode::Fast, true);
+   x.display(b, page.data(), nullptr, freeink::RefreshMode::Fast, false);
+   assert(b.lastBank == halfBank);
+   // An idle power-off after it does not carry that promotion on.
+   x.powerOffBetweenFrames(b);
+   x.display(b, page.data(), nullptr, freeink::RefreshMode::Fast, false);
+   assert(b.lastBank == fastBank);
+ }
+ std::cout << "PASS: UC8253 cold power-on, warm Full, power-off/wake, idle power-off keeps FAST, gray base scrubs after AA and one-pass\\n";
 }
 """)
     exe = root / "test_uc8253_power"
