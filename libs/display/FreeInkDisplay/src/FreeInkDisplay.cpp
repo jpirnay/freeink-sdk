@@ -1347,6 +1347,58 @@ void FreeInkDisplay::cleanupGrayscaleBuffers(const uint8_t* bwBuffer) {
   // rather than the stale LSB/MSB grayscale plane data that was there before.
   if (frameBuffer && bwBuffer && frameBuffer != bwBuffer) memcpy(frameBuffer, bwBuffer, bufferSize);
 }
+
+bool FreeInkDisplay::supportsGray16Image() const {
+  return !_inverted && _driver != nullptr && _driver->supportsGray16Image();
+}
+
+bool FreeInkDisplay::displayGray16Image(const uint8_t* levels, RefreshMode mode, bool turnOffScreen) {
+  if (!levels || !supportsGray16Image()) return false;
+  cancelGrayscalePass();
+  DisplayPmLock pmLock;
+  syncPendingAsync();
+  _shadowValid = false;
+  _redRamSynced = false;
+  return _driver->displayGray16Image(_bus, levels, toInternal(mode), turnOffScreen);
+}
+
+bool FreeInkDisplay::beginGray16Text(const uint8_t* base, const uint8_t* soft) {
+  if (!base || !supportsGray16Image()) return false;
+  cancelGrayscalePass();
+  DisplayPmLock pmLock;
+  syncPendingAsync();
+  _shadowValid = false;
+  _redRamSynced = false;
+  return _driver->beginGray16Text(_bus, base, soft);
+}
+
+bool FreeInkDisplay::finishGray16Text(const uint8_t* levels, bool turnOffScreen) {
+  if (!supportsGray16Image()) return false;
+  DisplayPmLock pmLock;
+  return _driver->finishGray16Text(_bus, levels, turnOffScreen);
+}
+
+bool FreeInkDisplay::setGray16TextSoftPull(uint8_t frames) {
+  return supportsGray16Image() && _driver->setGray16TextSoftPull(frames);
+}
+
+bool FreeInkDisplay::setGray16Turn(uint8_t scrubEvery) {
+  return supportsGray16Image() && _driver->setGray16Turn(scrubEvery);
+}
+
+bool FreeInkDisplay::setGray16Passes(const uint8_t black[3], const uint8_t white[3], uint8_t erase) {
+  if (!black || !white || !supportsGray16Image()) return false;
+  DisplayPmLock pmLock;
+  syncPendingAsync();
+  return _driver->setGray16Passes(_bus, black, white, erase);
+}
+
+bool FreeInkDisplay::setGray16Levels(const uint8_t (*paths)[3]) {
+  if (!paths || !supportsGray16Image()) return false;
+  DisplayPmLock pmLock;
+  syncPendingAsync();
+  return _driver->setGray16Levels(_bus, paths);
+}
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
 void FreeInkDisplay::cleanupGrayscaleWithPreviousBuffer() {
   cancelGrayscalePass();

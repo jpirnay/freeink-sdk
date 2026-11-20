@@ -303,6 +303,83 @@ class PanelDriver {
     (void)factoryMode;
     display(bus, fb, nullptr, RefreshMode::Fast, turnOff);
   }
+  // Absolute 16-level image in one call (Picco SE0400NQW47). `levels` holds one
+  // 4-bit level per pixel, 0 = white .. 15 = darkest, two pixels per byte (high
+  // nibble = left pixel), panel-native rows like the framebuffer. The driver
+  // owns the sequence, including giving the drive back before the next frame.
+  // False = not supported here; nothing was sent.
+  virtual bool supportsGray16Image() const { return false; }
+  // mode picks the turn, as for displayGray16Base(): Fast asks for the panel's
+  // fast turn, Half for a clean draw, Full for a third behaviour where a
+  // driver has one. Each driver defines what its fast turn does and when it
+  // applies. SSD2677 (Picco): Fast only applies when a 16-level image is
+  // already up (one dissolve, no full clears; every setGray16Turn()-th fast
+  // turn still draws clean); from anything else, and for Half and Full, it
+  // draws clean.
+  virtual bool displayGray16Image(EpdBus& bus, const uint8_t* levels, RefreshMode mode, bool turnOff) {
+    (void)bus;
+    (void)levels;
+    (void)mode;
+    (void)turnOff;
+    return false;
+  }
+  // 16-level text in two steps, so the page reads before its gray is done
+  // (after PR #220's UC8253 two-pass reader).
+  // beginGray16Text: `base` (1 bpp framebuffer layout, cleared bit = ink)
+  // holds the dark (deep-path) levels black. After a 16-level text page it
+  // goes up with one cross-dissolve from that page; otherwise with the B/W
+  // turn. Returns once the refresh has started, rails left on, so the caller
+  // can render `levels` while the panel draws. `soft` (optional, same layout)
+  // marks the lightest deep level's pixels, pulled back inside the turn so
+  // they are never black for long.
+  // finishGray16Text: the remaining 16-level passes bring `levels` (4 bpp,
+  // as displayGray16Image) to their tones; the next B/W frame clears them
+  // like any gray. finishGray16Text(nullptr) abandons the gray and powers off.
+  // False = unsupported; nothing sent.
+  virtual bool beginGray16Text(EpdBus& bus, const uint8_t* base, const uint8_t* soft = nullptr) {
+    (void)bus;
+    (void)base;
+    (void)soft;
+    return false;
+  }
+  // Tuning: frames of the in-turn pull-back on the `soft` pixels (0 = leave
+  // them to the pull pass). False = unsupported.
+  virtual bool setGray16TextSoftPull(uint8_t frames) {
+    (void)frames;
+    return false;
+  }
+  virtual bool finishGray16Text(EpdBus& bus, const uint8_t* levels, bool turnOff) {
+    (void)bus;
+    (void)levels;
+    (void)turnOff;
+    return false;
+  }
+  // Fast turns: a full clean turn after every `scrubEvery` fast ones (0 = never fast).
+  virtual bool setGray16Turn(uint8_t scrubEvery) {
+    (void)scrubEvery;
+    return false;
+  }
+  // Calibration: the three doses (frames) of the coarse-black and pull-back
+  // passes, and the fast-turn erase (frames toward white on old ink). Gives
+  // any image on the glass its drive back first. False = unsupported, or a
+  // level path would then net outside the give-back range.
+  virtual bool setGray16Passes(EpdBus& bus, const uint8_t black[3], const uint8_t white[3], uint8_t erase) {
+    (void)bus;
+    (void)black;
+    (void)white;
+    (void)erase;
+    return false;
+  }
+  // Calibration: choose the drive path of each level. paths[l] = {black dose
+  // index 0..3, white dose index 0..3, deep 0/1} (doses: setGray16Passes).
+  // An image on the glass gives its drive back first (the balance needs the
+  // paths it was drawn with). False = unsupported or out of range; the table
+  // is unchanged.
+  virtual bool setGray16Levels(EpdBus& bus, const uint8_t (*paths)[3]) {
+    (void)bus;
+    (void)paths;
+    return false;
+  }
   // Diagnostic four-gray comparison. The full frame is first rendered with
   // the controller's flashing OTP waveform; `custom*` is then rebuilt with the
   // driver's non-flashing grayscale path. Default drivers keep the OTP frame.

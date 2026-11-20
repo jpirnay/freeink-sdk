@@ -153,6 +153,27 @@ class FreeInkDisplay {
   // grayscale. Available in both buffer modes (CrossPoint's dual-buffer HAL
   // wraps it directly).
   void cleanupGrayscaleBuffers(const uint8_t* bwBuffer);
+  // Absolute 16-level image (Picco SE0400NQW47): `levels` is 4 bpp, 0 = white
+  // .. 15 = darkest, two pixels per byte (high nibble = left pixel), panel-native
+  // rows (getDisplayWidth()/2 bytes each). The framebuffer is not used. The next
+  // display call first returns the image's drive, then clears with a full
+  // refresh. False when unsupported (other panels, inverted output).
+  bool supportsGray16Image() const;
+  // mode: as displayGray16Base() picks its turn. FAST_REFRESH asks for the
+  // panel's fast turn and HALF_REFRESH for a clean draw; FULL_REFRESH is free
+  // for a driver with a third behaviour. What each does is panel-defined (see
+  // PanelDriver::displayGray16Image).
+  bool displayGray16Image(const uint8_t* levels, RefreshMode mode = HALF_REFRESH, bool turnOffScreen = true);
+  bool setGray16Turn(uint8_t scrubEvery);
+  // 16-level text in two steps (PanelDriver::beginGray16Text): the full-ink
+  // base first, then the edge tones. `base` is a 1 bpp frame.
+  bool beginGray16Text(const uint8_t* base, const uint8_t* soft = nullptr);
+  bool finishGray16Text(const uint8_t* levels, bool turnOffScreen = true);
+  bool setGray16TextSoftPull(uint8_t frames);
+  // Calibration: coarse-black and pull-back doses and the fast-turn erase, in frames.
+  bool setGray16Passes(const uint8_t black[3], const uint8_t white[3], uint8_t erase);
+  // Calibration hook: paths[l] = {black dose index 0..3, white dose index 0..3, deep 0/1}.
+  bool setGray16Levels(const uint8_t (*paths)[3]);
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
   // Restore controller RAM and frameBuffer to the BW baseline after grayscale.
   // frameBufferActive is the only valid source: the caller is always inside a

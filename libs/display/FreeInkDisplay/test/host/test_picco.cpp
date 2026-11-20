@@ -11,6 +11,7 @@
 #include "src/driver/Ssd2677Driver.h"
 #include "src/driver/RestTextCodes.h"
 #include "src/lut/Ssd1677Luts.h"
+#include "src/lut/Ssd2677Gray16Luts.h"
 #include "src/lut/Ssd2677Luts.h"
 #undef private
 
@@ -1043,6 +1044,235 @@ static void expectRestTextDrives() {
   }
 }
 
+// 16-level image, three draw passes built at runtime: they match the tables
+// picco-gray-cal builds byte for byte; a clean image starts from two full
+// clears; leaving gives every level its exact drive back; a fast turn is one
+// dissolve plus the gray passes, with a full turn every scrubEvery.
+static void expectGray16Image(Ssd2677Driver& s) {
+  using Lut = const unsigned char*;
+  auto lutsOf = [](const EpdBus& bus) {
+    std::vector<Bytes> out;
+    for (const auto& w : bus.writes)
+      if (w.command == 0x20) out.push_back(w.bytes);
+    return out;
+  };
+  auto framesOf = [](const EpdBus& bus) {
+    std::vector<Bytes> out;
+    for (const auto& w : bus.writes)
+      if (w.command == 0x10) out.push_back(w.bytes);
+    return out;
+  };
+  auto asBytes = [](Lut l) { return Bytes(l, l + 535); };
+  auto codeAt = [](const Bytes& frame, uint32_t pixel) { return (frame[pixel / 4] >> (6 - 2 * (pixel % 4))) & 3; };
+  auto levelAt = [](int x) { return static_cast<uint8_t>((x / 50) % 16); };  // every row: all 16 levels
+  Bytes levels(400 * 480);
+  for (int y = 0; y < 480; ++y)
+    for (int x = 0; x < 800; x += 2) levels[y * 400 + x / 2] = static_cast<uint8_t>(levelAt(x) << 4 | levelAt(x + 1));
+  Bytes reversed(levels.size());
+  for (size_t i = 0; i < levels.size(); ++i)
+    reversed[i] = static_cast<uint8_t>((15 - (levels[i] >> 4)) << 4 | (15 - (levels[i] & 15)));
+  auto levelIn = [](const Bytes& img, uint32_t x) { return static_cast<uint8_t>((img[x / 2] >> ((x & 1) ? 0 : 4)) & 15); };
+  const Bytes page(48000, 0xFF);
+
+  EpdBus bus;
+  assert(s.supportsGray16Image());
+  assert(s.displayGray16Image(bus, levels.data(), RefreshMode::Half, true));
+  // The runtime builder reproduces picco-gray-cal's tables for the defaults.
+  assert(Bytes(s._lutCoarse, s._lutCoarse + 535) == asBytes(lut_picco_se0400_gray16_ref_coarse));
+  assert(Bytes(s._lutPull, s._lutPull + 535) == asBytes(lut_picco_se0400_gray16_ref_pull));
+  assert(Bytes(s._lutDissolve, s._lutDissolve + 535) == asBytes(lut_picco_se0400_gray16_ref_dissolve));
+  assert(Bytes(s._lutDeep, s._lutDeep + 535) == asBytes(lut_picco_se0400_gray16_ref_deep));
+  // Clean image: two clears, deep, coarse, pull.
+  assert(lutsOf(bus) == std::vector<Bytes>({asBytes(lut_picco_se0400_full), asBytes(lut_picco_se0400_full),
+                                            asBytes(s._lutDeep), asBytes(s._lutCoarse), asBytes(s._lutPull)}));
+  {
+    const auto f = framesOf(bus);
+    assert(f.size() == 5 && f[0] == Bytes(96000, 0xFF) && f[1] == Bytes(96000, 0xFF));
+    for (uint32_t y : {0u, 479u})
+      for (uint32_t x = 0; x < 800; ++x) {
+        const uint8_t l = levelAt(x);
+        assert(codeAt(f[2], y * 800 + x) == s._g16.deep[l] && codeAt(f[3], y * 800 + x) == s._g16.coarse[l] &&
+               codeAt(f[4], y * 800 + x) == s._g16.pull[l]);
+      }
+  }
+  assert(lastRegister(bus, 0x02) == 0x00 && bus.writes.back().command == 0x02);  // powered off at the end
+  assert(s._gray16OnGlass);
+  // Level 0 is white: undriven in every pass, so the page around an image stays put.
+  assert(s._g16.deep[0] == 3 && s._g16.coarse[0] == 3 && s._g16.pull[0] == 3 && !s._g16.ink[0]);
+
+  // Leaving: deep give-back (if any), coarse and fine give-back toward white, then a full refresh.
+  bus.clear();
+  s.display(bus, page.data(), nullptr, RefreshMode::Fast, false);
+  {
+    std::vector<Bytes> want;
+    if (s._g16.useBalanceDeep) want.push_back(asBytes(lut_picco_se0400_gray16_deep_balance));
+    want.push_back(asBytes(lut_picco_se0400_gray16_balance));
+    want.push_back(asBytes(lut_picco_se0400_gray16_balance_fine));
+    want.push_back(asBytes(lut_picco_se0400_full));
+    assert(lutsOf(bus) == want);
+  }
+  assert(!s._gray16OnGlass);
+  // Exact: every level nets to zero over image + exit (black positive).
+  for (int l = 0; l < 16; ++l) {
+    const int net = ssd2677LutDose(s._lutDeep, s._g16.deep[l] + 1) + ssd2677LutDose(s._lutCoarse, s._g16.coarse[l] + 1) +
+                    ssd2677LutDose(s._lutPull, s._g16.pull[l] + 1) +
+                    ssd2677LutDose(lut_picco_se0400_gray16_deep_balance, s._g16.balanceDeep[l] + 1) +
+                    ssd2677LutDose(lut_picco_se0400_gray16_balance, s._g16.balanceCoarse[l] + 1) +
+                    ssd2677LutDose(lut_picco_se0400_gray16_balance_fine, s._g16.balanceFine[l] + 1);
+    assert(net == 0);
+  }
+  for (Lut l : {lut_picco_se0400_gray16_deep_balance, lut_picco_se0400_gray16_balance,
+                lut_picco_se0400_gray16_balance_fine})
+    assert(ssd2677LutDose(l, 4) == 0);  // table 4 = code 11: undriven
+  for (const uint8_t* l : {s._lutDeep, s._lutCoarse, s._lutPull, s._lutDissolve}) assert(ssd2677LutDose(l, 4) == 0);
+  // Dissolve: code 01 erases (white only), 10 is the deep black, 00 both.
+  assert(ssd2677LutDose(s._lutDissolve, 2) == -kGray16DefaultErase && ssd2677LutDose(s._lutDissolve, 3) == kGray16Deep &&
+         ssd2677LutDose(s._lutDissolve, 1) == kGray16Deep - kGray16DefaultErase);
+
+  // Fast turns: one dissolve, then the gray passes; a full turn after scrubEvery.
+  {
+    auto hasFull = [&](const EpdBus& b) {
+      for (const auto& l : lutsOf(b))
+        if (l == asBytes(lut_picco_se0400_full)) return true;
+      return false;
+    };
+    assert(s.setGray16Turn(2));
+    bus.clear();
+    assert(s.displayGray16Image(bus, levels.data(), RefreshMode::Fast, true));  // nothing up yet: full path
+    assert(hasFull(bus));
+    for (int turn = 0; turn < 2; ++turn) {
+      const Bytes& next = turn ? levels : reversed;
+      const Bytes& prev = turn ? reversed : levels;
+      bus.clear();
+      assert(s.displayGray16Image(bus, next.data(), RefreshMode::Fast, true));
+      assert(!hasFull(bus));
+      assert(lutsOf(bus) ==
+             std::vector<Bytes>({asBytes(s._lutDissolve), asBytes(s._lutCoarse), asBytes(s._lutPull)}));
+      const Bytes dissolve = framesOf(bus)[0];
+      for (uint32_t x = 0; x < 800; ++x) {
+        const bool ink = s._g16.ink[levelIn(prev, x)], deep = s._g16.deep[levelIn(next, x)] == 2;
+        assert(codeAt(dissolve, x) == (ink ? (deep ? 0 : 1) : (deep ? 2 : 3)));
+      }
+    }
+    bus.clear();
+    assert(s.displayGray16Image(bus, levels.data(), RefreshMode::Fast, true));  // third turn: the scrub
+    assert(hasFull(bus));
+    assert(s.setGray16Turn(0));
+  }
+
+  // Two-step 16-level text: base (dark levels black) first, then the passes;
+  // after a text page the base is one cross-dissolve from it.
+  {
+    auto planeOf = [&](const Bytes& img, bool (*want)(Ssd2677Driver&, uint8_t)) {
+      Bytes plane(48000, 0xFF);  // 1 bpp, cleared bit = marked
+      for (uint32_t y = 0; y < 480; ++y)
+        for (uint32_t x = 0; x < 800; ++x)
+          if (want(s, levelIn(img, y * 800 + x)))
+            plane[y * 100 + x / 8] &= static_cast<uint8_t>(~(0x80 >> (x & 7)));
+      return plane;
+    };
+    auto isDeep = [](Ssd2677Driver& d, uint8_t l) { return d._g16.deep[l] == 2; };
+    auto isSoft = [](Ssd2677Driver& d, uint8_t l) { return l == d._textSoftLevel; };
+    bus.clear();
+    s.display(bus, page.data(), nullptr, RefreshMode::Full, false);
+    assert(s.setGray16Turn(2));  // turns since the last clean one: B/W 1, dissolve 2, then clean
+    assert(s._textSoftLevel == 5);  // deep black, then the largest pull-back
+    // The dissolve: 01 erases, 10 lays deep black, 00 deep black then the
+    // in-turn pull-back, 11 undriven.
+    assert(ssd2677LutDose(s._lutCross, 2) == -kGray16DefaultErase);
+    assert(ssd2677LutDose(s._lutCross, 3) == kGray16Deep);
+    assert(ssd2677LutDose(s._lutCross, 1) == kGray16Deep - kGray16DefaultWhite[2]);
+    assert(ssd2677LutDose(s._lutCross, 4) == 0);
+
+    // Turn 1, nothing up yet: the B/W turn, returning while the panel draws.
+    const Bytes base1 = planeOf(levels, isDeep), soft1 = planeOf(levels, isSoft);
+    bus.clear();
+    assert(s.beginGray16Text(bus, base1.data(), soft1.data()));
+    // The B/W turn goes through display(), which this fork defers with startRefresh() (_refreshPending);
+    // settle() ends either kind.
+    assert(!s._textDissolved && (s._refreshInFlight || s._refreshPending));
+    assert(framesOf(bus).size() == 1);
+    assert(s.finishGray16Text(bus, levels.data(), true));
+    assert(lutsOf(bus).size() == 4);  // base, deep, coarse, pull
+    assert(lutsOf(bus)[1] == asBytes(s._lutDeep) && lutsOf(bus)[3] == asBytes(s._lutPull));
+    assert(bus.writes.back().command == 0x02 && s._refreshInFlight);  // power-off not waited for
+    assert(s._textOnGlass);
+
+    // Turn 2: one cross-dissolve from turn 1's levels; no deep pass.
+    const Bytes base2 = planeOf(reversed, isDeep), soft2 = planeOf(reversed, isSoft);
+    bus.clear();
+    assert(s.beginGray16Text(bus, base2.data(), soft2.data()));
+    assert(bus.waits >= 1);  // turn 1's power-off settled before the upload
+    assert(s._textDissolved && lutsOf(bus) == std::vector<Bytes>({asBytes(s._lutCross)}));
+    {
+      const Bytes cross = framesOf(bus)[0];
+      for (uint32_t y : {0u, 479u})
+        for (uint32_t x = 0; x < 800; ++x) {
+          const uint32_t p = y * 800 + x;
+          const uint8_t oldL = levelIn(levels, p), newL = levelIn(reversed, p);
+          const bool deep = s._g16.deep[newL] == 2, soft = newL == s._textSoftLevel;
+          assert(codeAt(cross, p) == (deep ? (soft ? 0 : 2) : (oldL ? 1 : 3)));
+        }
+    }
+    assert(s.finishGray16Text(bus, reversed.data(), true));
+    assert(lutsOf(bus) == std::vector<Bytes>({asBytes(s._lutCross), asBytes(s._lutCoarse), asBytes(s._lutPull)}));
+    {
+      const Bytes pull = framesOf(bus)[2];
+      for (uint32_t x = 0; x < 800; ++x) {
+        const uint8_t l = levelIn(reversed, x);
+        assert(codeAt(pull, x) == (l == s._textSoftLevel ? 3 : s._g16.pull[l]));
+      }
+    }
+
+    // Turn 3: the clean turn (setGray16Turn(2)), full refresh then deep pass.
+    bus.clear();
+    assert(s.beginGray16Text(bus, base1.data(), soft1.data()));
+    assert(!s._textDissolved && lutsOf(bus)[0] == asBytes(lut_picco_se0400_full));
+    assert(s.finishGray16Text(bus, levels.data(), true));
+
+    // A B/W frame ends the text page; finishGray16Text without a base refuses.
+    bus.clear();
+    s.display(bus, page.data(), nullptr, RefreshMode::Fast, true);
+    assert(!s._textOnGlass && !s.finishGray16Text(bus, levels.data(), true));
+    assert(s.setGray16Turn(0));
+    assert(s.displayGray16Image(bus, levels.data(), RefreshMode::Half, true));  // the image the checks below start from
+  }
+
+  // Runtime doses and paths: validated against the give-back range; an image
+  // on the glass is balanced with the old table before anything changes.
+  {
+    const uint8_t black[3] = {3, 6, 10}, white[3] = {1, 2, 3};
+    const uint8_t whiteTooStrong[3] = {1, 2, 4};  // level 1 (black 3, white 4) would net below zero
+    assert(!s.setGray16Passes(bus, black, whiteTooStrong, 16));
+    assert(s._gray16OnGlass);  // refused before touching the glass
+    bus.clear();
+    assert(s.setGray16Passes(bus, black, white, 16));
+    assert(!s._gray16OnGlass && !lutsOf(bus).empty());  // the default image was given back first
+    assert(ssd2677LutDose(s._lutCoarse, 1 + 2) == 6 && ssd2677LutDose(s._lutPull, 1 + 0) == -3);  // codes 10, 00
+    assert(ssd2677LutDose(s._lutDissolve, 2) == -16);
+    const uint8_t tooMuch[3] = {3, 6, 64};
+    assert(!s.setGray16Passes(bus, tooMuch, white, 16));
+    uint8_t paths[16][3];
+    memcpy(paths, kGray16DefaultPaths, sizeof(paths));
+    paths[5][0] = 0, paths[5][1] = 3, paths[5][2] = 0;  // white with nothing to pull back: nets below zero
+    assert(!s.setGray16Levels(bus, paths));
+    paths[5][1] = 0, paths[5][2] = 1;  // deep black alone
+    assert(s.setGray16Levels(bus, paths));
+    assert(s._g16.deep[5] == 2 && s._g16.coarse[5] == 3 && s._g16.pull[5] == 3);
+    assert(s.setGray16Passes(bus, kGray16DefaultBlack, kGray16DefaultWhite, kGray16DefaultErase));
+    assert(s.setGray16Levels(bus, kGray16DefaultPaths));
+    assert(Bytes(s._lutCoarse, s._lutCoarse + 535) == asBytes(lut_picco_se0400_gray16_ref_coarse));
+  }
+
+  // No PSRAM for the level copy: refused before anything reaches the panel.
+  Ssd2677Driver fresh;
+  bus.clear();
+  fakeHeapCapsFail = true;
+  assert(!fresh.displayGray16Image(bus, levels.data(), RefreshMode::Half, true));
+  fakeHeapCapsFail = false;
+  assert(bus.writes.empty());
+}
+
 // Ported from Free-Ink 10b7ae5 (Julia Nguyen): the table-driven packPixels against the per-bit reference.
 static void expectPackedPairs(Ssd2677Driver& driver) {
   const size_t size = driver.geometry().bufferSize;
@@ -1324,7 +1554,8 @@ int main(int argc, char** argv) {
     expectNightGray2677(s);
     expectDarkGray2677(s);
     expectDeferredRefresh2677(s);
-    std::printf("Picco se0400: probe, init, packing, refresh and its deferral passed\n");
+    expectGray16Image(s);
+    std::printf("Picco se0400: probe, init, packing, refresh and its deferral, 16-level image passed\n");
     return 0;
   }
   checkController("SSD1677");
