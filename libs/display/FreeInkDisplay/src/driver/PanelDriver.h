@@ -125,6 +125,36 @@ class PanelDriver {
   virtual bool displayRetainedGrayscaleOverlay(EpdBus& bus, const uint8_t* fb, uint16_t x, uint16_t y,
                                                uint16_t w, uint16_t h) { return false; }
 
+  // --- 16-level image ---
+  // Absolute 16-level image in one call. `levels` holds one 4-bit level per
+  // pixel, 0 = white .. 15 = darkest, two pixels per byte (high nibble = left
+  // pixel), panel-native rows like the framebuffer. False = not supported
+  // here; nothing was sent.
+  virtual bool supportsGray16Image() const { return false; }
+  // fast: drive less than a full redraw where the driver can (see each driver).
+  virtual bool displayGray16Image(EpdBus& bus, const uint8_t* levels, bool turnOff, bool fast = false) {
+    (void)bus;
+    (void)levels;
+    (void)turnOff;
+    (void)fast;
+    return false;
+  }
+
+  // Calibration: choose how each level of a 16-level image is driven.
+  // paths[l] holds three numbers for level l (0 = white .. 15 = darkest);
+  // what they mean is the driver's (see each driver). nullptr goes back to the
+  // driver's built-in levels. False = unsupported or out of range; nothing changed.
+  virtual bool setGray16Levels(EpdBus& bus, const uint8_t (*paths)[3]) {
+    (void)bus;
+    (void)paths;
+    return false;
+  }
+  // The numbers in use, or the driver's starting point when none were set.
+  virtual bool getGray16Levels(uint8_t (*paths)[3]) const {
+    (void)paths;
+    return false;
+  }
+
   // --- grayscale (dual-plane LSB/MSB) ---
   virtual GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const {
     (void)mode;
@@ -321,6 +351,25 @@ class PanelDriver {
 
   // --- optional, controller-specific hooks (no-op by default) ---
   virtual void requestResync(uint8_t settlePasses) { (void)settlePasses; }
+  // True asks overlay passes for every gray level the masks carry, where a
+  // driver otherwise renders them with fewer levels in less time.
+  virtual void setOverlayFullTone(bool fullTone) { (void)fullTone; }
+  // One-shot host work to run while a page-turn waveform drives the panel,
+  // when the CPU would otherwise only poll BUSY. The hook lasts for exactly one
+  // display call: set it right before display() or displayGray(); a driver
+  // that takes it calls it at most once during that call, on the calling
+  // thread, after the waveform has started, and clears it before the call
+  // returns whether or not it ran. Not every refresh runs it.
+  // The hook must not touch the bus or the display, and must not write the
+  // display's frame buffer: it draws only into buffers of its own. It runs
+  // inside the display call, so with FreeInkDisplay's power-management lock
+  // held and with whatever locks the host holds around its display calls; a
+  // hook that takes one of those, or waits on something that does, deadlocks.
+  // Default: ignored, the hook never runs.
+  virtual void setRefreshIdleHook(void (*hook)(void* ctx), void* ctx) {
+    (void)hook;
+    (void)ctx;
+  }
   virtual void skipInitialResync() {}
   // Content-polarity hint: true while the facade is rendering inverted (dark
   // background) frames. Differential drivers idle unchanged pixels, so on a
