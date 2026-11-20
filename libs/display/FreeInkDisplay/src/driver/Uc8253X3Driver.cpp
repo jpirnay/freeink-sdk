@@ -358,9 +358,15 @@ void Uc8253X3Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
     }
   }
 
-  // Sync DTM1 ("old" RAM) with the current frame for the next fast diff.
-  bus.sendPlaneFlipped(CMD_DTM1, fb, _h, _wb);
-  bus.cmd(CMD_DATA_STOP);
+  // DTM1 ("old" RAM) must hold this frame for the next fast diff. After a FAST, HALF or one-pass refresh the
+  // controller has already put it there: the frame it drew from DTM2 is what the next refresh diffs against,
+  // without this upload (Free-Ink #220, zuyan9; checked on our X3, see the commit). The UC8253c datasheet's CDI has
+  // no N2OCP bit to say so, hence the check on glass. A full sync keeps the upload: it drew from a white DTM1, and
+  // its settle pass below was written around the host's copy.
+  if (doFullSync) {
+    bus.sendPlaneFlipped(CMD_DTM1, fb, _h, _wb);
+    bus.cmd(CMD_DATA_STOP);
+  }
   // Both DTM planes now hold a BW frame, not grayscale planes, so the next
   // displayGrayscaleBase() can take the differential happy path. Without this
   // clear, lsbValid stays true after any grayscale page and pins
@@ -383,7 +389,7 @@ void Uc8253X3Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
   }
   _forceFullSyncNext = false;
   _forcedConditionPassesNext = 0;
-  if (onePass) _grayOnGlass = true;  // the DTM1 sync above counts it as black, as the page drew it
+  if (onePass) _grayOnGlass = true;  // DTM1 now holds the page, its gray drawn black
 }
 
 void Uc8253X3Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback,
@@ -463,7 +469,7 @@ void Uc8253X3Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, Refres
 
 void Uc8253X3Driver::preconditionGrayscale(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
   // OEM V5.6.33 "AA-pre-BW(mid)" pass: gentle settle of the displayed BW
-  // frame (DTM1 == DTM2 == frame after display()'s post-refresh DTM1 sync)
+  // frame (DTM1 == DTM2 == frame after display(): see displayFinish())
   // that leaves particles receptive to the weak grayscale nudge waveform.
   // Without it a strong base refresh sets pixels too firmly for the gray
   // drive to move. Windowed to the gray region via PTL exactly like the OEM
@@ -685,7 +691,7 @@ void Uc8253X3Driver::skipInitialResync() {
 
 void Uc8253X3Driver::powerOffBetweenFrames(EpdBus& bus) {
   // FreeInkDisplay finishes a deferred refresh (displayFinish) before it calls this; one still pending here
-  // would lose its DTM1 sync, so leave the rails to it.
+  // has its own end to run, so leave the rails to it.
   if (_pendingRefresh || !_isScreenOn) return;
   bus.cmd(CMD_POWER_OFF);
   bus.waitBusy(" X3_IDLE_POF");
