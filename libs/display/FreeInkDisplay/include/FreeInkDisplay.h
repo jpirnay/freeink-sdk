@@ -92,12 +92,34 @@ class FreeInkDisplay {
   // Selected controller/backend identity; nullptr until a driver is selected by begin().
   // Read-only: never probes hardware or substitutes the board profile default.
   const char* getControllerName() const;
+  // Panel part number when the board's probe identified one; nullptr otherwise.
+  // Read-only like getControllerName().
+  const char* getPanelName() const;
 
   // Runtime dimensions
   uint16_t getDisplayWidth() const { return displayWidth; }
   uint16_t getDisplayHeight() const { return displayHeight; }
   uint16_t getDisplayWidthBytes() const { return displayWidthBytes; }
   uint32_t getBufferSize() const { return bufferSize; }
+
+  // Absolute 16-level image: `levels` is 4 bpp, 0 = white .. 15 = darkest, two
+  // pixels per byte (high nibble = left pixel), panel-native rows
+  // (getDisplayWidth() / 2 bytes each). The framebuffer is not used. `fast`
+  // asks for less than a full redraw; what that is depends on the panel.
+  // Under setInverted(true) every level is shown complemented, so `levels`
+  // must be writable: it is inverted in place for the call and restored.
+  // False when the panel does not take 16-level images. Implemented by the
+  // EPDiy driver and checked on the Metalio E-Ink4-Plus only.
+  // FREEINK_HAS_GRAY16 lets a consumer test for these two calls.
+#define FREEINK_HAS_GRAY16 1
+  bool supportsGray16Image() const;
+  bool displayGray16Image(const uint8_t* levels, bool turnOffScreen = true, bool fast = false);
+  // Calibration hooks: three numbers per level (0 = white .. 15 = darkest),
+  // 16 rows, whose meaning is the panel driver's. setGray16Levels(nullptr)
+  // returns to the built-in levels; getGray16Levels() reads the ones in use,
+  // or the driver's starting point. False when the driver has no such tuning.
+  bool setGray16Levels(const uint8_t (*paths)[3]);
+  bool getGray16Levels(uint8_t (*paths)[3]) const;
 
   // Frame buffer operations
   void clearScreen(uint8_t color = 0xFF) const;
@@ -365,6 +387,13 @@ class FreeInkDisplay {
 
   // Hint the X3 policy to run a one-shot full resync on next update.
   void requestResync(uint8_t settlePasses = 0);
+  // True asks overlay passes for every gray level (see PanelDriver::setOverlayFullTone).
+  void setOverlayFullTone(bool fullTone);
+  // One-shot work to run while the next display call's page-turn waveform
+  // drives the panel; it lasts for that one call. It must not touch the
+  // display or write its frame buffer, and runs with the caller's locks held
+  // (see PanelDriver::setRefreshIdleHook). Only drivers that support it run it.
+  void setRefreshIdleHook(void (*hook)(void* ctx), void* ctx);
   // Physical-pixel rectangle; restore=true removes the overlay from the retained gray image.
   bool displayRetainedGrayscaleOverlay(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool restore = false);
   void skipInitialResync();

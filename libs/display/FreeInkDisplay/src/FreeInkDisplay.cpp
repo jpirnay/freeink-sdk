@@ -62,6 +62,9 @@
 #if FREEINK_DRIVER_IT8951
 #include "driver/It8951Driver.h"
 #endif
+#if FREEINK_DRIVER_EPDIY
+#include "driver/EpdiyDriver.h"
+#endif
 #if FREEINK_DRIVER_PAPER_MONO
 #include "driver/PaperMonoDriver.h"
 #endif
@@ -246,6 +249,8 @@ void FreeInkDisplay::selectDriver() {
       _driver = &lgfxEpdDriver();
 #elif FREEINK_DRIVER_IT8951
       _driver = &it8951Driver();
+#elif FREEINK_DRIVER_EPDIY
+      _driver = &epdiyDriver();
 #endif
       break;
   }
@@ -255,6 +260,13 @@ void FreeInkDisplay::selectDriver() {
 }
 
 const char* FreeInkDisplay::getControllerName() const { return _driver ? _driver->controllerName() : nullptr; }
+
+const char* FreeInkDisplay::getPanelName() const {
+#if FREEINK_DEVICE_PICCO
+  if (BoardConfig::isPicco()) return piccoPanelName();
+#endif
+  return nullptr;
+}
 
 void FreeInkDisplay::begin() {
   _activeMatchesGlass = false;
@@ -305,7 +317,9 @@ void FreeInkDisplay::begin() {
 // Framebuffer composition (facade-owned; no driver involvement)
 // ============================================================================
 
-void FreeInkDisplay::clearScreen(uint8_t color) const { memset(frameBuffer, color, bufferSize); }
+void FreeInkDisplay::clearScreen(uint8_t color) const {
+  if (frameBuffer) memset(frameBuffer, color, bufferSize);
+}
 
 // Blit a 1bpp image (MSB-first, 1=white/0=black) into the framebuffer.
 // `transparent` = only paint black pixels (AND, leaving white untouched);
@@ -388,7 +402,9 @@ void FreeInkDisplay::drawImageTransparent(const uint8_t* imageData, uint16_t x, 
   blitImage(imageData, x, y, w, h, fromProgmem, /*transparent=*/true);
 }
 
-void FreeInkDisplay::setFramebuffer(const uint8_t* bwBuffer) const { memcpy(frameBuffer, bwBuffer, bufferSize); }
+void FreeInkDisplay::setFramebuffer(const uint8_t* bwBuffer) const {
+  if (frameBuffer && bwBuffer) memcpy(frameBuffer, bwBuffer, bufferSize);
+}
 
 void FreeInkDisplay::setInverted(const bool inverted) {
   if (_inverted != inverted) cancelGrayscalePass();
@@ -486,6 +502,7 @@ void FreeInkDisplay::releaseBuffers() {
   // use-after-free and would orphan _secondaryLent. returnSecondaryBuffer() first.
   if (_secondaryLent) return;
 #endif
+  if (_buildLent) return;  // the borrower still holds frameBuffer0; returnBuildStorage() first
   syncPendingAsync();  // a refresh in flight was fed from these buffers
   free(frameBuffer0);
   frameBuffer0 = nullptr;
@@ -509,6 +526,7 @@ bool FreeInkDisplay::reallocBuffers() {
   // would reattach it as frameBufferActive and memset the borrower's scratch.
   if (_secondaryLent) return false;
 #endif
+  if (_buildLent) return false;  // would memset the borrower's scratch
   if (!frameBuffer0) frameBuffer0 = allocFrameBufferStorage();
   if (!frameBuffer0) return false;
   frameBuffer = frameBuffer0;
@@ -1133,6 +1151,14 @@ void FreeInkDisplay::displayGrayBuffer(bool turnOffScreen, const unsigned char* 
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
   Serial.printf("[EPD] displayGrayBuffer\n");
 #endif
+  // A refresh idle hook lasts for this call, including the returns below that
+  // never reach the driver.
+  struct IdleHookScope {
+    PanelDriver* driver;
+    ~IdleHookScope() {
+      if (driver) driver->setRefreshIdleHook(nullptr, nullptr);
+    }
+  } idleHookScope{_driver};
   // Inverted mode renders a crisp BW page unless the driver overlays masks on it.
   if (!grayAllowed()) return;
   DisplayPmLock pmLock;
@@ -1189,6 +1215,39 @@ void FreeInkDisplay::copyGrayscaleBuffers(const uint8_t* lsbBuffer, const uint8_
   _driver->copyGrayscaleLsb(_bus, lsbBuffer);
   if (!acceptGrayscaleRows(1, msbBuffer, 0, getDisplayHeight())) return;
   _driver->copyGrayscaleMsb(_bus, msbBuffer);
+}
+
+bool FreeInkDisplay::supportsGray16Image() const { return _driver != nullptr && _driver->supportsGray16Image(); }
+
+bool FreeInkDisplay::displayGray16Image(const uint8_t* levels, bool turnOffScreen, bool fast) {
+  if (!levels || !supportsGray16Image()) return false;
+  cancelGrayscalePass();
+  DisplayPmLock pmLock;
+  syncPendingAsync();
+  // The glass no longer shows a B/W frame, so no stored baseline matches it.
+  _shadowValid = false;
+  _redRamSynced = false;
+  // As with a B/W frame, the first refresh after a polarity change drives every pixel.
+  if (_inversionDirty) fast = false;
+  _inversionDirty = false;
+  // Inverted output: every level is complemented for the call, like the
+  // framebuffer bits of a B/W frame, and the caller's image is put back after.
+  const uint32_t imageBytes = static_cast<uint32_t>(getDisplayWidth() / 2) * getDisplayHeight();
+  if (_inverted) invertBytes(const_cast<uint8_t*>(levels), imageBytes);
+  const bool shown = _driver->displayGray16Image(_bus, levels, turnOffScreen, fast);
+  if (_inverted) invertBytes(const_cast<uint8_t*>(levels), imageBytes);
+  return shown;
+}
+
+bool FreeInkDisplay::setGray16Levels(const uint8_t (*paths)[3]) {
+  if (!_driver || !_driver->supportsGray16Image()) return false;
+  cancelGrayscalePass();
+  syncPendingAsync();  // never rebuild a table under a running refresh
+  return _driver->setGray16Levels(_bus, paths);
+}
+
+bool FreeInkDisplay::getGray16Levels(uint8_t (*paths)[3]) const {
+  return paths && _driver && _driver->supportsGray16Image() && _driver->getGray16Levels(paths);
 }
 
 void FreeInkDisplay::cancelGrayscalePass() {
@@ -1310,6 +1369,8 @@ void FreeInkDisplay::copyGrayscaleMsbBuffers(const uint8_t* msbBuffer) {
 void FreeInkDisplay::writeGrayscalePlaneStrip(GrayPlane plane, const uint8_t* rows, uint16_t yStart, uint16_t numRows) {
   if (!grayAllowed()) return;
   if (!acceptGrayscaleRows(plane == GRAY_PLANE_LSB ? 0 : 1, rows, yStart, numRows)) return;
+  // Overlay passes skip the row accounting above; drivers copy by yStart unchecked.
+  if (!rows || !numRows || yStart >= displayHeight || numRows > displayHeight - yStart) return;
   DisplayPmLock pmLock;
   // Paper Mono retains these bytes in PSRAM and performs no bus access here, so
   // staging can overlap the B/W waveform. Other drivers may write controller
@@ -1397,6 +1458,14 @@ void FreeInkDisplay::requestResync(uint8_t settlePasses) {
   if (_driver) _driver->requestResync(settlePasses);
 }
 
+void FreeInkDisplay::setOverlayFullTone(const bool fullTone) {
+  if (_driver) _driver->setOverlayFullTone(fullTone);
+}
+
+void FreeInkDisplay::setRefreshIdleHook(void (*hook)(void* ctx), void* ctx) {
+  if (_driver) _driver->setRefreshIdleHook(hook, ctx);
+}
+
 void FreeInkDisplay::skipInitialResync() {
   if (_driver) _driver->skipInitialResync();
 }
@@ -1481,9 +1550,10 @@ void FreeInkDisplay::saveFrameBufferAsPBM(const char* filename) {
   if (!file) return;
 
   // Rotate 90 degrees counterclockwise: 800x480 landscape -> 480x800 portrait.
-  const int W = DISPLAY_WIDTH;
-  const int H = DISPLAY_HEIGHT;
-  const int WB = W / 8;
+  if (!buffer) return;
+  const int W = displayWidth;
+  const int H = displayHeight;
+  const int WB = displayWidthBytes;
 
   file << "P4\n" << H << " " << W << "\n";
   std::vector<uint8_t> rotated((H / 8) * W, 0);
