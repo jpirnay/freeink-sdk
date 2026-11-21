@@ -1,4 +1,6 @@
 #pragma once
+#include <DividerRatio.h>
+
 #include <cstdint>
 
 // FreeInk SDK — battery monitor.
@@ -43,9 +45,10 @@ public:
     // Uses BoardConfig::ACTIVE's battery pins/backend.
     BatteryMonitor();
 
-    // Optional divider multiplier defaults to 2.0; optional charge-status pin
-    // defaults to unused.
-    explicit BatteryMonitor(int8_t adcPin, float dividerMultiplier = 2.0f, int8_t chargeStatusPin = PIN_NONE);
+    // Optional divider multiplier defaults to 2.0 (a float such as 1.559f
+    // converts); optional charge-status pin defaults to unused.
+    explicit BatteryMonitor(int8_t adcPin, BoardConfig::DividerRatio dividerMultiplier = 2.0f,
+                            int8_t chargeStatusPin = PIN_NONE);
 
     // Read voltage and return percentage (0-100)
     uint16_t readPercentage() const;
@@ -64,8 +67,9 @@ public:
     // Read the battery voltage in millivolts (accounts for divider)
     uint16_t readMillivolts() const;
 
-    // Read the battery voltage in volts (accounts for divider)
-    double readVolts() const;
+    // Read the battery voltage in volts (accounts for divider). Inline, so the
+    // double division lands only in a caller that wants volts.
+    double readVolts() const { return static_cast<double>(readMillivolts()) / 1000.0; }
 
     // True when the battery is actively charging. Sources by backend:
     //   * ADC boards: the MCP73832-style charge-status pin (LOW = charging),
@@ -129,6 +133,6 @@ private:
     bool readM5Pm1Status(Status& status) const;
 
     int8_t _adcPin;
-    float _dividerMultiplier;
+    uint16_t _dividerMilli;  // BoardConfig::DividerRatio::milli
     int8_t _chargeStatusPin;
 };

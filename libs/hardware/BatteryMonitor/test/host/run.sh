@@ -29,6 +29,6 @@ c++ -std=c++17 -Wall -Wextra -Werror \
   test_adc_usb_detect.cpp ../../src/BatteryMonitor.cpp -o "$BUILD_DIR/test_adc_usb_detect"
 "$BUILD_DIR/test_adc_usb_detect"
 
-c++ -std=c++17 -Wall -Wextra -Werror -I../../include \
+c++ -std=c++17 -Wall -Wextra -Werror -I../../include -I../../../BoardConfig/include \
   test_estimate.cpp -o "$BUILD_DIR/test_estimate"
 "$BUILD_DIR/test_estimate"

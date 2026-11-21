@@ -19,6 +19,8 @@
 #include <driver/gpio.h>  // gpio_hold_dis in releaseSdRail()
 #include <esp_rom_sys.h>  // esp_rom_printf in holdPowerRails()
 
+#include "DividerRatio.h"
+
 // ============================================================================
 // Build composition — devices x capabilities
 // ============================================================================
@@ -938,7 +940,7 @@ struct BoardProfile {
   InputPins input;
   int8_t batteryAdc;
   int8_t batteryChargeStatus;
-  float batteryDividerMultiplier;
+  DividerRatio batteryDividerMultiplier;  // written as a float (2.0f), held in thousandths
   int8_t usbDetect;
   TouchConfig touch;
   FrontlightConfig frontlight;
