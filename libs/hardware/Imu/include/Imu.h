@@ -3,7 +3,7 @@
 // FreeInk inertial measurement unit (LSM6DS3TR-C, QMI8658 or BMI270, 6-axis
 // accel + gyro), or SC7A20H (acceleration only).
 //
-// Reads acceleration (g) and angular rate (deg/s) from the I2C IMU described by
+// Reads acceleration (mg) and angular rate (mdps) from the I2C IMU described by
 // BoardConfig::ACTIVE.sensors (imuAddr / sensor bus). Dependency-free Wire
 // access, mirroring BatteryMonitor. Boards without an IMU (FREEINK_CAP_IMU off,
 // or imuAddr == 0) link stub bodies and present() returns false.
@@ -16,9 +16,12 @@ namespace freeink {
 
 class Imu {
  public:
+  // Integers: the ESP32-C3 has no FPU, and a float per axis cost every sample
+  // a soft-float multiply. Each value is the raw reading scaled by its part's
+  // sensitivity, rounded half away from zero.
   struct Sample {
-    float ax, ay, az;  // acceleration, g (1 g ~= 9.81 m/s^2)
-    float gx, gy, gz;  // angular rate, degrees/second; zero on accelerometer-only parts
+    int32_t axMg, ayMg, azMg;        // acceleration, thousandths of g (1 g ~= 9.81 m/s^2)
+    int32_t gxMdps, gyMdps, gzMdps;  // angular rate, thousandths of a degree/second; zero on accelerometer-only parts
   };
 
   // Verifies WHO_AM_I and configures accel + gyro for the active board.

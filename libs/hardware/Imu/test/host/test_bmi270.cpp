@@ -24,7 +24,25 @@ static bool sampling(uint8_t a) {
   const auto& r = Wire.regs[a];
   return r[0x40] == 0xA8 && r[0x41] == 0 && r[0x42] == 0xA8 && r[0x43] == 2 && r[0x7C] == 0 && r[0x7D] == 6;
 }
-static bool close(float a, float b) { return std::fabs(a-b) < 0.0001f; }
+static void put(uint8_t address, uint8_t reg, int16_t v) {
+  Wire.regs[address][reg] = uint8_t(v);
+  Wire.regs[address][reg + 1] = uint16_t(v) >> 8;
+}
+// Every raw reading on one axis: the exact product rounded half away from zero,
+// so never more than half a unit (plus the float's own rounding) from the float
+// (g or dps, times 1000) the driver computed before Sample became integers.
+static void sweep(Imu& imu, uint8_t address, uint8_t reg, int32_t Imu::Sample::*axis, long num, long den,
+                  float oldPerLsb) {
+  for (long raw = -32768; raw <= 32767; ++raw) {
+    put(address, reg, int16_t(raw));
+    Imu::Sample s{};
+    assert(imu.read(s));
+    const long got = s.*axis;
+    assert(got == std::lround(double(raw) * num / den));
+    const double old = double(int16_t(raw) * oldPerLsb) * 1000;  // plus the float's own rounding, 2^-24 of it
+    assert(std::fabs(got - old) <= 0.5 + std::fabs(old) * 1e-7);
+  }
+}
 int main() {
   Imu imu;
   Imu::Sample sample = {42,42,42,42,42,42};
@@ -42,7 +60,7 @@ int main() {
   Wire.writes.clear();
   assert(imu.begin() && imu.present() && imu.hasGyroscope());
   assert(Wire.writes.empty() && Wire.bmiUploads == 0);
-  assert(imu.sleep() && Wire.writes.empty() && !imu.read(sample) && sample.ax == 42);
+  assert(imu.sleep() && Wire.writes.empty() && !imu.read(sample) && sample.axMg == 42);
   // The first wake() streams the whole file in order, with a longer bus timeout.
   assert(imu.wake() && Wire.bmiUploads == 1 && !Wire.bmiBadOffset);
   assert(Wire.bmiConfig.size() == sizeof(freeink::bmi270cfg::CONFIG_FILE) &&
@@ -53,11 +71,14 @@ int main() {
   xyz(0x68, 0x0C, 16384, -8192, 4096);
   xyz(0x68, 0x12, 16384, -32768, 655);
   assert(imu.read(sample) && Wire.lastRead == 0x0C);
-  assert(sample.ax == -1 && sample.ay == 0.5f && sample.az == 0.25f);
-  assert(sample.gx == -250 && sample.gy == 500 && close(sample.gz, 9.9945f));
+  assert(sample.axMg == -1000 && sample.ayMg == 500 && sample.azMg == 250);
+  assert(sample.gxMdps == -250000 && sample.gyMdps == 500000 && sample.gzMdps == 9995);  // 655 * 500/32768 dps
   Wire.shortRead = true;
-  assert(!imu.read(sample) && sample.ax == -1);
+  assert(!imu.read(sample) && sample.axMg == -1000);
   Wire.shortRead = false;
+  // Z: Paper Mono flips X and Y only.
+  sweep(imu, 0x68, 0x10, &Imu::Sample::azMg, 125, 2048, 1.0f / 16384.0f);
+  sweep(imu, 0x68, 0x16, &Imu::Sample::gzMdps, 15625, 1024, 500.0f / 32768.0f);
   // Sleep powers both sensors down; wake restores them without another upload.
   assert(imu.sleep() && Wire.regs[0x68][0x7D] == 0 && Wire.regs[0x68][0x7C] == 1 && !imu.read(sample));
   Wire.failWriteReg = 0x7D;

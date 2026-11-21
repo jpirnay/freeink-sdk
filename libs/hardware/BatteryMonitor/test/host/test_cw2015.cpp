@@ -186,6 +186,13 @@ int main() {
     uint16_t pct = 0;
     CHECK(monitor.readPercentageChecked(pct) && pct == status.percentage);
     CHECK(gauge.writes.empty());
+    // The divider is held in thousandths now; across the ADC's range it gives
+    // the millivolts the float product gave.
+    static_assert(BoardConfig::EEGO_A4.batteryDividerMultiplier.milli == 1559);
+    for (uint32_t mv = 0; mv <= 4095; ++mv) {
+      hostAdcMv = mv;
+      CHECK(monitor.readMillivolts() == static_cast<uint16_t>(static_cast<uint16_t>(mv) * 1.559f));
+    }
   }
 
   std::printf("%d/%d CW2015 checks passed\n", checksRun - checksFailed, checksRun);

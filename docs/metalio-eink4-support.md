@@ -17,7 +17,7 @@ Support is compiled and host-tested; physical hardware validation is pending.
 | PCF8563, address 0x51 | Rtc |
 | GPIO44 motor | [HapticManager](haptics.md): consumer-triggered intensity, pulses and patterns |
 | Speaker | AudioManager: 16 kHz, 16-bit PCM WAV; software volume and looping |
-| SC7A20H accelerometer | Imu: XYZ acceleration in g, ±2 g / 100 Hz, sleep/wake |
+| SC7A20H accelerometer | Imu: XYZ acceleration in mg, ±2 g / 100 Hz, sleep/wake |
 | Microphone | Microphone: 16 kHz mono PCM capture, shared duplex I²S |
 | Power controller | Explicit `freeink::metalio::powerOff()` pulse helper |
 
