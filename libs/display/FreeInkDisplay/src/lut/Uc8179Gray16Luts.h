@@ -11,9 +11,11 @@
 // toward white at a lowered source voltage. #220's own doses barely moved this panel toward black (four frames left
 // a white base at 93-114 %), so the doses are this panel's.
 //
-// Measured on the gray lab's stand, 2026-11-21: the doses chosen from a grid of the 32 paths (bank x6, shot against a
-// reference card's lightness ramp; runs repeat to 0.3 points), each level's L* then measured alone on the whole
-// screen (kLevelTenths). ~/.local/state/witchhunt-work/x4pro-gray16/RESULTS.md, "Session 3b". Room temperature only.
+// Measured on the gray lab's stand, 2026-11-21, against a reference card's lightness ramp, each shot mapped through
+// its own card: each of the 32 paths alone on the whole screen (a uniform scene, so no lens glare from lighter areas),
+// after a white full refresh; the base's depth does not depend on the screen before it (gray 0 and 255 within 0.6
+// after white, black or themselves). ~/.local/state/witchhunt-work/x4pro-gray16/RESULTS.md, "Session 5". Room
+// temperature only.
 namespace freeink::uc8179_gray16 {
 
 struct Path {
@@ -22,20 +24,23 @@ struct Path {
   uint8_t pass2;   // LUT code in pass 2
 };
 
-// Level 0 (lightest) .. 15 (darkest), ordered by the L* below.
+// Level 0 (lightest) .. 15 (darkest): 16 of the 32 paths, every white-base level lighter than every black-base one.
+// The dither mixes neighbouring levels, and neighbours of opposite bases read darker than their mean (a set that
+// alternated bases among the middle levels made its grays run backwards there), so the bases meet once, between
+// levels 5 and 6. Among such sets, the least sum of squared gaps (2.8 .. 7.4 L*, ideal 3.9).
 inline constexpr Path kPaths[16] = {
-    {true, 0, 3},  {true, 1, 3},  {true, 2, 3},  {true, 3, 3},  {true, 2, 0},  {false, 3, 3},
-    {true, 3, 0},  {false, 3, 2}, {false, 2, 2}, {false, 1, 3}, {false, 1, 2}, {false, 1, 1},
-    {false, 0, 3}, {false, 0, 2}, {false, 0, 1}, {false, 0, 0},
+    {true, 0, 3},  {true, 1, 3},  {true, 1, 1},  {true, 2, 1},  {true, 2, 0},  {true, 3, 1},
+    {false, 3, 3}, {false, 2, 3}, {false, 3, 2}, {false, 3, 1}, {false, 2, 1}, {false, 3, 0},
+    {false, 1, 1}, {false, 1, 0}, {false, 0, 2}, {false, 0, 0},
 };
 
 // L* of each level, in tenths, on the reference card's lightness scale (its ten steps taken as 100 .. 0 in equal
-// steps), measured with the level alone on the whole screen (CMD:LAB:CANVAS): a uniform scene, as the panel's
-// full-refresh white (76.1) and black (17.4) were. Measured among the other levels instead, a black-base level read
-// up to 8 points too light from the lens glare of the white ones. Open: the gap from 33.9 to 44.2, and two levels
-// a hair apart (19.5 / 19.2).
-inline constexpr uint16_t kLevelTenths[16] = {749, 694, 647, 606, 564, 501, 460, 442,
-                                              339, 322, 278, 258, 238, 195, 192, 179};
+// steps). Full-screen gray sweeps of this set land within 3.3 L* of the gray's L* stretched over these ends, and
+// rise with every step of the canvas value. Runs two hours apart moved the whole response by 3 to 5 L* (the room's
+// light, and probably temperature: these tables have no temperature compensation), as much as a tone table fitted
+// to one run would correct, so the dither aims at the plain stretch.
+inline constexpr uint16_t kLevelTenths[16] = {749, 675, 643, 611, 580, 547, 515, 487,
+                                              458, 423, 387, 331, 303, 250, 215, 165};
 
 // Register writes per pass, records of command, length, bytes. Pass 1: frame rate 200 Hz (0x30 = 0x0F), the
 // controller's own source voltages (14 V). Pass 2: 200 Hz, VDH 14 V (0x3A), VDL 8.4 V (0x1E), VDHR 0x03.
@@ -46,14 +51,17 @@ inline constexpr uint8_t kPass2Registers[] = {0x30, 0x01, 0x0F, 0x01, 0x05, 0x07
 // 0x24 BB (code 0). A row: phase byte (2 bits a phase, A highest: 00 0 V, 01 VDH toward black, 10 VDL toward
 // white), four phase lengths in frames, repeat count.
 inline constexpr unsigned kTableLen = 42;
-// Pass 1: code 1 = 6 frames black then 4 white, code 2 = 10 + 6, code 3 = 32 + 9; code 0 nothing. VCOM runs 41.
+// Pass 1: code 1 = 6 frames black, 31 at 0 V, 4 white; code 2 = 10 black, 25 at 0 V, 6 white; code 3 = 32 black,
+// 9 white; code 0 nothing. VCOM runs 41. Every row's white drive ends on the last frame: with the white parts started
+// right after the black ones, a code-2 pixel drove white while a code-3 neighbour still drove black, and a dither of
+// the two read darker than either alone (gray 88: 30.6 where 37.3 was wanted, against 36.6 now).
 inline constexpr uint8_t kPass1Tables[5 * kTableLen] = {
     // 0x20 VCOM
-    0x00,
+    0,
     0x29,
-    0x00,
-    0x00,
-    0x00,
+    0,
+    0,
+    0,
     0x01,
     0,
     0,
@@ -95,8 +103,8 @@ inline constexpr uint8_t kPass1Tables[5 * kTableLen] = {
     0x60,
     0x20,
     0x09,
-    0x00,
-    0x00,
+    0,
+    0,
     0x01,
     0,
     0,
@@ -135,11 +143,11 @@ inline constexpr uint8_t kPass1Tables[5 * kTableLen] = {
     0,
     0,
     // 0x22 BW, code 1
-    0x60,
+    0x48,
     0x06,
+    0x1F,
     0x04,
-    0x00,
-    0x00,
+    0,
     0x01,
     0,
     0,
@@ -178,11 +186,11 @@ inline constexpr uint8_t kPass1Tables[5 * kTableLen] = {
     0,
     0,
     // 0x23 WB, code 2
-    0x60,
+    0x48,
     0x0A,
+    0x19,
     0x06,
-    0x00,
-    0x00,
+    0,
     0x01,
     0,
     0,
