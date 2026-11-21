@@ -18,7 +18,7 @@ def build(board, device_macro, test_cpp, directory, extra=()):
     for name in ("Ssd1677", "Ssd2677"):
         for ext in ("h", "cpp"):
             shutil.copy2(LIB / f"src/driver/{name}Driver.{ext}", root / f"src/driver/{name}Driver.{ext}")
-    for name in ("PanelDriver.h", "RestTextCodes.h", "X4ProTextAa.h"):
+    for name in ("PanelDriver.h", "RestTextCodes.h", "X4ProTextAa.h", "Gray16Canvas.h"):
         shutil.copy2(LIB / "src/driver" / name, root / "src/driver" / name)
     shutil.copy2(LIB / "include/GrayscaleCapabilities.h", root / "include/GrayscaleCapabilities.h")
     for name in ("Ssd1677Luts.h", "Ssd2677Luts.h", "Ssd2677Gray16Luts.h", "X4ProTextAaLuts.h"):
