@@ -1260,6 +1260,7 @@ static void expectGray16Image(Ssd2677Driver& s) {
     paths[5][1] = 0, paths[5][2] = 1;  // deep black alone
     assert(s.setGray16Levels(bus, paths));
     assert(s._g16.deep[5] == 2 && s._g16.coarse[5] == 3 && s._g16.pull[5] == 3);
+    assert(s._textSoftLevel == 0xFF);  // text's soft level follows: no level is deep black plus the largest pull-back
     assert(s.setGray16Passes(bus, kGray16DefaultBlack, kGray16DefaultWhite, kGray16DefaultErase));
     assert(s.setGray16Levels(bus, kGray16DefaultPaths));
     assert(Bytes(s._lutCoarse, s._lutCoarse + 535) == asBytes(lut_picco_se0400_gray16_ref_coarse));

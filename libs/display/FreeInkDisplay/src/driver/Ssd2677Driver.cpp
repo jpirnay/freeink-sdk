@@ -959,9 +959,10 @@ void Ssd2677Driver::buildGray16Tables() {
   _textSoftLevel = 0xFF;
   for (int l = 0; l < 16; ++l)
     if (_g16Paths[l][2] && _g16Paths[l][1] == 3 && !_g16Paths[l][0]) _textSoftLevel = static_cast<uint8_t>(l);
-  if (_textSoftPull == 0xFF) _textSoftPull = _g16White[2];  // default: the level's own pull-back
-  if (!_textSoftPull) _textSoftLevel = 0xFF;  // 0: pulled back by the pull pass instead
-  buildCrossDissolve(_lutCross, _g16Erase, kGray16Deep, _textSoftLevel != 0xFF ? _textSoftPull : 0);
+  // 0xFF: the level's own pull-back under the doses in force (resolved here, so new doses move it too).
+  const uint8_t softPull = _textSoftPull == 0xFF ? _g16White[2] : _textSoftPull;
+  if (!softPull) _textSoftLevel = 0xFF;  // 0: pulled back by the pull pass instead
+  buildCrossDissolve(_lutCross, _g16Erase, kGray16Deep, _textSoftLevel != 0xFF ? softPull : 0);
 }
 
 void Ssd2677Driver::ensureGray16Config() {
@@ -1055,6 +1056,7 @@ bool Ssd2677Driver::setGray16Levels(EpdBus& bus, const uint8_t (*paths)[3]) {
   exitGray16(bus);  // the image on the glass is balanced with the table it was drawn with
   memcpy(_g16Paths, paths, sizeof(_g16Paths));
   _g16 = c;
+  buildGray16Tables();  // text's soft level, and with it the cross-dissolve, follow the paths
   return true;
 }
 
