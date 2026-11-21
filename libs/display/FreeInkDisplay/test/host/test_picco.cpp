@@ -1276,10 +1276,11 @@ static void expectGray16Image(Ssd2677Driver& s) {
 
 // Ported from Free-Ink 10b7ae5 (Julia Nguyen): the table-driven packPixels against the per-bit reference.
 // The 8-bit canvas on top of the 16-level image (this fork): white is level 0, black level 15, a flat gray dithers to
-// levels whose mean L* sits on the gray's own, mapped onto the panel's 29..100; the canvas goes up as the 16-level
-// image and is packed in place.
+// levels whose mean L* sits on the gray's own, mapped onto the panel's measured 15.7..76.5; the canvas goes up as the
+// 16-level image and is packed in place.
 static void expectGray8Canvas(Ssd2677Driver& s) {
-  static constexpr uint8_t kL[16] = {100, 89, 86, 82, 77, 72, 69, 66, 62, 55, 52, 49, 45, 40, 34, 29};
+  static constexpr double kL[16] = {76.5, 59.3, 50.8, 46.5, 39.2, 33.7, 29.9, 27.0,
+                                    22.9, 22.6, 19.7, 18.8, 18.3, 17.5, 16.4, 15.7};
   assert(s.grayLevels() == 16);
   {
     Bytes c(8 * 2, 0xFF);
@@ -1297,7 +1298,7 @@ static void expectGray8Canvas(Ssd2677Driver& s) {
     for (int i = 0; i < w * h / 2; ++i) sum += kL[c[i] >> 4] + kL[c[i] & 15];
     const double mean = sum / (w * h);
     const double cl = gray / 255.0, y = cl <= 0.04045 ? cl / 12.92 : std::pow((cl + 0.055) / 1.055, 2.4);
-    const double lstar = 116.0 * std::cbrt(y) - 16.0, want = 29.0 + 71.0 * lstar / 100.0;
+    const double lstar = 116.0 * std::cbrt(y) - 16.0, want = 15.7 + 60.8 * lstar / 100.0;
     assert(std::fabs(mean - want) < 1.0);
   }
   uint16_t stride = 0;

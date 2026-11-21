@@ -1115,10 +1115,13 @@ bool Ssd2677Driver::displayGray16Image(EpdBus& bus, const uint8_t* levels, Refre
 }
 
 namespace {
-// L* each level lands at, 0 = white .. 15 = darkest, in tenths: the "Expected L* per level" line of
-// Ssd2677Gray16Luts.h, which picco-gray-cal measured for the default paths. Change the two together.
-constexpr uint16_t kGray16LStarTenths[16] = {1000, 890, 860, 820, 770, 720, 690, 660,
-                                             620,  550, 520, 490, 450, 400, 340, 290};
+// L* each level lands at, 0 = white .. 15 = darkest, in tenths, measured on the gray lab's stand against a reference
+// card's gray ramp with each level alone on the whole screen (2026-11-21, room temperature). picco-gray-cal's design
+// expected an even spread (the "Expected L* per level" line of Ssd2677Gray16Luts.h, 100 .. 29); on the panel, levels
+// 8-15 lie within 7 L* of black and level 1 is 17 below white, and a dither aimed at the design values drew mid grays
+// up to 22 L* too dark. Measure again when the paths change.
+constexpr uint16_t kGray16LStarTenths[16] = {765, 593, 508, 465, 392, 337, 299, 270,
+                                             229, 226, 197, 188, 183, 175, 164, 157};
 }  // namespace
 
 void Ssd2677Driver::canvasToGray16(uint8_t* canvas, const uint16_t width, const uint16_t height) {
