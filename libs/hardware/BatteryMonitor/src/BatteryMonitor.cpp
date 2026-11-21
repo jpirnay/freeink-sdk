@@ -682,8 +682,8 @@ int chargeActiveLevel() {
 }
 }  // namespace
 
-BatteryMonitor::BatteryMonitor(int8_t adcPin, float dividerMultiplier, int8_t chargeStatusPin)
-    : _adcPin(adcPin), _dividerMultiplier(dividerMultiplier), _chargeStatusPin(chargeStatusPin) {
+BatteryMonitor::BatteryMonitor(int8_t adcPin, BoardConfig::DividerRatio dividerMultiplier, int8_t chargeStatusPin)
+    : _adcPin(adcPin), _dividerMilli(dividerMultiplier.milli), _chargeStatusPin(chargeStatusPin) {
   if (_chargeStatusPin >= 0) {
     pinMode(_chargeStatusPin, BoardConfig::ACTIVE.batteryChargeStatusActiveHigh ? INPUT : INPUT_PULLUP);
   }
@@ -908,7 +908,7 @@ uint16_t BatteryMonitor::readMillivolts() const {
     const uint32_t c = analogReadMilliVolts(_adcPin);
     if (a > b) std::swap(a, b);
     const uint32_t median = c < a ? a : (c > b ? b : c);
-    return static_cast<uint16_t>(median * _dividerMultiplier);
+    return static_cast<uint16_t>(median * _dividerMilli / 1000);
   }
 #endif
 #if ESP_IDF_VERSION_MAJOR < 5
@@ -935,11 +935,9 @@ uint16_t BatteryMonitor::readMillivolts() const {
   }
 #endif
 
-  return static_cast<uint16_t>(mv * _dividerMultiplier);
-}
-
-double BatteryMonitor::readVolts() const {
-  return static_cast<double>(readMillivolts()) / 1000.0;
+  // Floored, as the float product was truncated: the same millivolts for every
+  // reading (test_cw2015 sweeps the ADC range through the x1.559 divider).
+  return static_cast<uint16_t>(uint32_t{mv} * _dividerMilli / 1000);
 }
 
 bool BatteryMonitor::isCharging() const {

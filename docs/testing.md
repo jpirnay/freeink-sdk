@@ -75,7 +75,7 @@ refused I2C transaction must still leave the gauge out of CONFIG UPDATE and
 sealed, and the next start must finish the load. It also compiles the EEGO A4
 profile against a model CW2015: the battery-profile check and upload sequence,
 the voltage and percentage conversion, and the ADC fallback when no gauge
-answers.
+answers (swept across the ADC range through the profile's x1.559 divider).
 
 The battery suite also covers Picco's SGM41562 status as a single register
 snapshot, three-conversion ADC median, charging endpoint and completion state,
@@ -96,7 +96,8 @@ sh libs/hardware/Imu/test/host/run.sh
 
 Compiles `Imu` with the Metalio EInk4 profile and every driver
 (`FREEINK_IMU_ALL_DRIVERS`) against a model SC7A20H (and the QMI8658 and LSM6DS3
-scaling), once more with `FREEINK_CAP_IMU=0`, with the Metalio's own driver
+scaling; every raw reading must scale to the exact product rounded to the
+nearest mg or mdps), once more with `FREEINK_CAP_IMU=0`, with the Metalio's own driver
 alone (a QMI8658, LSM6DS3 or BMI270 that answers must be refused and get no
 register write), and with
 the Paper Mono profile against a model BMI270: `begin()` must only identify
