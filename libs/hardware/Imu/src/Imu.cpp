@@ -15,6 +15,21 @@
 namespace freeink {
 namespace {
 
+// A part's sensitivity: num/den output units (mg or mdps) per LSB, reduced so
+// that a full-scale int16 times num stays inside int32.
+struct Sensitivity {
+  int32_t num;
+  int32_t den;
+};
+
+// raw * num / den, rounded half away from zero. Integer on purpose: the
+// ESP32-C3 has no FPU, and Sample is read at the tilt poll rate.
+int32_t scaled(const int32_t raw, const Sensitivity s) {
+  const int32_t product = raw * s.num;
+  const int32_t half = s.den / 2;
+  return (product >= 0 ? product + half : product - half) / s.den;
+}
+
 // LSM6DS3TR-C register map (datasheet).
 constexpr uint8_t REG_WHO_AM_I = 0x0F;
 constexpr uint8_t WHO_AM_I_VALUE = 0x6A;  // shared by LSM6DS3 / LSM6DS3TR-C
@@ -30,8 +45,8 @@ constexpr uint8_t CTRL2_G_104HZ_245DPS = 0x40;
 constexpr uint8_t CTRL3_C_BDU_IF_INC = 0x44;  // BDU=1, IF_INC=1 (block update + auto-increment)
 
 // Sensitivities for the scales above (datasheet "mechanical characteristics").
-constexpr float ACCEL_G_PER_LSB = 0.061f / 1000.0f;  // 0.061 mg/LSB at ±2 g
-constexpr float GYRO_DPS_PER_LSB = 8.75f / 1000.0f;  // 8.75 mdps/LSB at ±245 dps
+constexpr Sensitivity ACCEL_MG_PER_LSB = {61, 1000};  // 0.061 mg/LSB at ±2 g
+constexpr Sensitivity GYRO_MDPS_PER_LSB = {35, 4};    // 8.75 mdps/LSB at ±245 dps
 
 // QMI8658 register map.
 constexpr uint8_t QMI8658_REG_WHO_AM_I = 0x00;
@@ -57,8 +72,8 @@ constexpr uint8_t QMI8658_CTRL7_DISABLE_ALL = 0x00;
 // LSM6DS3: ODR bits [7:4] = 0000b powers the sensor down; full-scale bits are
 // retained, so restoring the configured CTRL value resumes sampling.
 constexpr uint8_t CTRL_ODR_POWER_DOWN = 0x00;
-constexpr float QMI8658_ACCEL_G_PER_LSB = 1.0f / 16384.0f;  // ±2 g
-constexpr float QMI8658_GYRO_DPS_PER_LSB = 1.0f / 64.0f;    // ±512 dps
+constexpr Sensitivity QMI8658_ACCEL_MG_PER_LSB = {125, 2048};  // 1/16384 g at ±2 g
+constexpr Sensitivity QMI8658_GYRO_MDPS_PER_LSB = {125, 8};    // 1/64 dps at ±512 dps
 
 // SC7A20H datasheet v1.1, sections 11.1 / 13. Unlike LIS3DH, HR is
 // CTRL0 bit 0 (0x1F), not CTRL4 bit 3 (which is a low-pass filter bit).
@@ -73,7 +88,7 @@ constexpr uint8_t SC7_OUT = 0x28 | 0x80;  // I2C auto-increment burst
 constexpr uint8_t SC7_POWER_DOWN = 0x07;
 constexpr uint8_t SC7_100HZ = 0x57;  // XYZ on, LPen off
 constexpr uint8_t SC7_DIG_CTRL = 0x57;
-constexpr float SC7_G_PER_RAW_LSB = 1.0f / 16384.0f;  // section 13.13: 0x4000 = 1 g at ±2 g
+constexpr Sensitivity SC7_MG_PER_RAW_LSB = {125, 2048};  // section 13.13: 0x4000 = 1 g at ±2 g
 
 // BMI270 register map (datasheet BST-BMI270-DS000; Bosch BMI270_SensorAPI
 // bmi2_defs.h). SDO selects 0x68 / 0x69.
@@ -106,8 +121,8 @@ constexpr uint8_t BMI270_ACC_CONF_100HZ = 0xA8;
 constexpr uint8_t BMI270_ACC_RANGE_2G = 0x00;
 constexpr uint8_t BMI270_GYR_CONF_100HZ = 0xA8;
 constexpr uint8_t BMI270_GYR_RANGE_500DPS = 0x02;
-constexpr float BMI270_ACCEL_G_PER_LSB = 1.0f / 16384.0f;    // ±2 g
-constexpr float BMI270_GYRO_DPS_PER_LSB = 500.0f / 32768.0f;  // ±500 dps
+constexpr Sensitivity BMI270_ACCEL_MG_PER_LSB = {125, 2048};    // 1/16384 g at ±2 g
+constexpr Sensitivity BMI270_GYRO_MDPS_PER_LSB = {15625, 1024};  // 500/32768 dps at ±500 dps
 // While advanced power save is on, the part needs 450 us after each write.
 constexpr uint32_t BMI270_POWER_SAVE_WRITE_US = 500;
 // 64-byte bursts fit the Arduino Wire buffer. One burst takes ~6 ms at 100 kHz
@@ -392,7 +407,7 @@ bool Imu::read(Sample& out) {
     const int16_t ax = static_cast<int16_t>((raw[0] & 0xF0) | (uint16_t(raw[1]) << 8));
     const int16_t ay = static_cast<int16_t>((raw[2] & 0xF0) | (uint16_t(raw[3]) << 8));
     const int16_t az = static_cast<int16_t>((raw[4] & 0xF0) | (uint16_t(raw[5]) << 8));
-    out = {ax * SC7_G_PER_RAW_LSB, ay * SC7_G_PER_RAW_LSB, az * SC7_G_PER_RAW_LSB, 0, 0, 0};
+    out = {scaled(ax, SC7_MG_PER_RAW_LSB), scaled(ay, SC7_MG_PER_RAW_LSB), scaled(az, SC7_MG_PER_RAW_LSB), 0, 0, 0};
     return true;
   }
   uint8_t g[6] = {};
@@ -428,39 +443,39 @@ bool Imu::read(Sample& out) {
   const int16_t ay = static_cast<int16_t>(a[2] | a[3] << 8);
   const int16_t az = static_cast<int16_t>(a[4] | a[5] << 8);
 
-  float accelScale = ACCEL_G_PER_LSB;
-  float gyroScale = GYRO_DPS_PER_LSB;
+  Sensitivity accelScale = ACCEL_MG_PER_LSB;
+  Sensitivity gyroScale = GYRO_MDPS_PER_LSB;
   if (s.imuType == BoardConfig::ImuType::Qmi8658) {
-    accelScale = QMI8658_ACCEL_G_PER_LSB;
-    gyroScale = QMI8658_GYRO_DPS_PER_LSB;
+    accelScale = QMI8658_ACCEL_MG_PER_LSB;
+    gyroScale = QMI8658_GYRO_MDPS_PER_LSB;
   } else if (s.imuType == BoardConfig::ImuType::Bmi270) {
-    accelScale = BMI270_ACCEL_G_PER_LSB;
-    gyroScale = BMI270_GYRO_DPS_PER_LSB;
+    accelScale = BMI270_ACCEL_MG_PER_LSB;
+    gyroScale = BMI270_GYRO_MDPS_PER_LSB;
   }
-  out.ax = ax * accelScale;
-  out.ay = ay * accelScale;
-  out.az = az * accelScale;
-  out.gx = gx * gyroScale;
-  out.gy = gy * gyroScale;
-  out.gz = gz * gyroScale;
+  out.axMg = scaled(ax, accelScale);
+  out.ayMg = scaled(ay, accelScale);
+  out.azMg = scaled(az, accelScale);
+  out.gxMdps = scaled(gx, gyroScale);
+  out.gyMdps = scaled(gy, gyroScale);
+  out.gzMdps = scaled(gz, gyroScale);
 
   // Mount correction (see SensorsConfig): swap first, then flip, applied to
   // accel and gyro together so both report the same board frame.
   if (s.imuSwapXY) {
-    float t = out.ax;
-    out.ax = out.ay;
-    out.ay = t;
-    t = out.gx;
-    out.gx = out.gy;
-    out.gy = t;
+    int32_t t = out.axMg;
+    out.axMg = out.ayMg;
+    out.ayMg = t;
+    t = out.gxMdps;
+    out.gxMdps = out.gyMdps;
+    out.gyMdps = t;
   }
   if (s.imuFlipX) {
-    out.ax = -out.ax;
-    out.gx = -out.gx;
+    out.axMg = -out.axMg;
+    out.gxMdps = -out.gxMdps;
   }
   if (s.imuFlipY) {
-    out.ay = -out.ay;
-    out.gy = -out.gy;
+    out.ayMg = -out.ayMg;
+    out.gyMdps = -out.gyMdps;
   }
   return true;
 }

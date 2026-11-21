@@ -17,8 +17,9 @@ bool startMotion() {
 void pollMotion() {
   Imu::Sample sample;
   if (motion.read(sample)) {
-    // sample.ax, sample.ay, sample.az: acceleration in g, in sensor axes.
-    // sample.gx, sample.gy, sample.gz: zero; motion.hasGyroscope() is false.
+    // sample.axMg, sample.ayMg, sample.azMg: acceleration in thousandths of g
+    // (integers), in sensor axes.
+    // sample.gxMdps, sample.gyMdps, sample.gzMdps: zero; motion.hasGyroscope() is false.
     // Apply the application's motion policy here.
   }
 }
