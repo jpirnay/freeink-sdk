@@ -120,6 +120,16 @@ class Uc8179Driver : public PanelDriver {
   bool displayLabFrame(EpdBus& bus, const uint8_t* bw, const uint8_t* red, const uint8_t* lut) override;
   bool setLabRegisters(const uint8_t* records, size_t len) override;
 
+  // --- 16-level images (X4 Pro): Free-Ink #220's shape with this panel's doses (lut/Uc8179Gray16Luts.h) ---
+  // The host paints 8-bit gray into a panel-sized canvas in PSRAM (borrowGray8Canvas); displayGray8Canvas() dithers
+  // it onto the 16 measured levels (Gray16Canvas.h) and draws them with displayGray16Image(): a B/W base by a full
+  // refresh, then two table passes. X4 Pro only: the doses and levels were measured on its panel.
+  bool supportsGray16Image() const override;
+  bool displayGray16Image(EpdBus& bus, const uint8_t* levels, RefreshMode mode, bool turnOff) override;
+  uint8_t grayLevels() const override { return supportsGray16Image() ? 16 : 4; }
+  uint8_t* borrowGray8Canvas(uint16_t* stride) override;
+  void displayGray8Canvas(EpdBus& bus, RefreshMode mode, bool turnOff) override;
+
 #if FREEINK_ONE_PASS_TEXT_AA
   // --- One-pass text AA: see X4ProTextAa.h and PanelDriver::setOnePassText() ---
   bool supportsOnePassText() const override;
@@ -132,6 +142,11 @@ class Uc8179Driver : public PanelDriver {
  private:
   void initController(EpdBus& bus);
   void startBwRefresh(EpdBus& bus, bool fast);
+  // One activation with external tables: `red` to DTM1, `bw` to DTM2, the five 42-byte tables for 0x20..0x24, then
+  // `registers` (records of command, length, bytes), which win over the tables' setup. After register writes the
+  // controller is reset and initialised again. The lab frame and the 16-level passes run through it.
+  void runTableFrame(EpdBus& bus, const uint8_t* bw, const uint8_t* red, const uint8_t* tables,
+                     const uint8_t* registers, size_t registersLen);
   void configureDirectGrayscale(EpdBus& bus);
   void restoreBwConfiguration(EpdBus& bus);
   // Stream a framebuffer into a RAM plane (ramCmd): reverse row order, use PSR
@@ -183,6 +198,8 @@ class Uc8179Driver : public PanelDriver {
   // setLabRegisters(): records sent with every lab frame (frame rate 0x30, power 0x01, VCOM 0x82, ...).
   uint8_t _labRegisters[64] = {};
   uint8_t _labRegistersLen = 0;
+  // borrowGray8Canvas(): _w x _h bytes in PSRAM, allocated on the first loan and kept (as the Picco keeps its own).
+  uint8_t* _gray8Canvas = nullptr;
   // Force the first refresh after begin() to a full flash, so a partial update
   // never runs against an unknown on-screen state (e.g. a retained boot image).
   bool _needFullClear = true;

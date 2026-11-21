@@ -2,6 +2,8 @@
 #include <cassert>
 #include <utility>
 #include <cstdio>
+#include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <type_traits>
 #include <vector>
@@ -14,6 +16,8 @@
 #include "src/lut/Ssd1677Luts.h"
 #include "src/lut/X4ProTextAaLuts.h"
 #include "src/lut/X4ProImageLuts.h"
+#include "src/lut/Uc8179Gray16Luts.h"
+#include "src/driver/Gray16Canvas.h"
 #undef private
 
 using namespace freeink;
@@ -1115,6 +1119,94 @@ static void testUc8179LabFrame() {
   assert(!d.setLabRegisters(bad, sizeof(bad)));
 }
 
+// 16-level images on the X4 Pro: a canvas lent from PSRAM, dithered onto the measured levels, then a full-refresh
+// base and two table passes carrying lut/Uc8179Gray16Luts.h's tables and registers byte for byte. A uniform canvas
+// makes every pixel take one path, so each plane is uniform too.
+static std::vector<size_t> writesAt(const EpdBus& bus, uint8_t command) {
+  std::vector<size_t> at;
+  for (size_t i = 0; i < bus.writes.size(); ++i)
+    if (bus.writes[i].command == command) at.push_back(i);
+  return at;
+}
+static bool visibleRowsAre(const Bytes& plane, uint8_t value) {
+  if (plane.size() < 48000) return false;
+  for (size_t i = 0; i < 48000; ++i)
+    if (plane[i] != value) return false;
+  return true;
+}
+static void testUc8179Gray16Image() {
+  namespace g = freeink::uc8179_gray16;
+  Uc8179Driver d;
+  EpdBus bus;
+  d.begin(bus);
+  assert(d.supportsGray16Image() && d.grayLevels() == 16);
+  uint16_t stride = 0;
+  uint8_t* canvas = d.borrowGray8Canvas(&stride);
+  assert(canvas && stride == 800);
+  struct Case {
+    uint8_t gray;
+    uint8_t level;
+  };
+  for (const Case c : {Case{255, 0}, Case{0, 15}}) {
+    memset(canvas, c.gray, 800 * 480);
+    bus.clear();
+    d.displayGray8Canvas(bus, RefreshMode::Half, true);
+    const g::Path& path = g::kPaths[c.level];
+    // The base: one full refresh of the base plane.
+    const auto dtm2 = writesAt(bus, 0x13);
+    assert(dtm2.size() == 3);
+    assert(visibleRowsAre(bus.writes[dtm2[0]].bytes, path.whiteBase ? 0xFF : 0x00));
+    // Two passes: DTM1 = code bit 1, DTM2 = code bit 0, then the pass's tables and registers.
+    const auto tables = writesAt(bus, 0x21);
+    assert(tables.size() == 2);
+    const auto dtm1 = writesAt(bus, 0x10);
+    for (int pass = 0; pass < 2; ++pass) {
+      const uint8_t code = pass == 0 ? path.pass1 : path.pass2;
+      const uint8_t* want = pass == 0 ? g::kPass1Tables : g::kPass2Tables;
+      size_t red = 0, bw = 0;
+      for (size_t i : dtm1)
+        if (i < tables[pass] && (pass == 0 || i > tables[0])) red = i;
+      for (size_t i : dtm2)
+        if (i < tables[pass] && (pass == 0 || i > tables[0])) bw = i;
+      assert(red && bw);
+      assert(visibleRowsAre(bus.writes[red].bytes, (code & 2) ? 0xFF : 0x00));
+      assert(visibleRowsAre(bus.writes[bw].bytes, (code & 1) ? 0xFF : 0x00));
+      for (unsigned t = 0; t < 5; ++t) {
+        bool sent = false;
+        for (size_t i = tables[pass] - 1; i < bus.writes.size() && i < tables[pass] + 6; ++i)
+          if (bus.writes[i].command == 0x20 + t)
+            sent = bus.writes[i].bytes == Bytes(want + t * g::kTableLen, want + (t + 1) * g::kTableLen);
+        assert(sent);
+      }
+    }
+    // Pass 1 at 200 Hz on the controller's voltages; pass 2 at 200 Hz with VDL lowered to 8.4 V.
+    assert(writesOf(bus, 0x30) == 2 && writesOf(bus, 0x01) >= 1);
+    assert(lastRegister(bus, 0x30) == 0x0F);
+    bool lowered = false;
+    for (const auto& w : bus.writes)
+      if (w.command == 0x01 && w.bytes == Bytes{0x07, 0x17, 0x3A, 0x1E, 0x03}) lowered = true;
+    assert(lowered);
+    assert(d._needFullClear && !d._oldPlaneValid);
+  }
+
+  // The shared dither: the L* table follows the CIE formula, and a flat gray's levels average out to its target.
+  for (int v = 0; v < 256; ++v) {
+    const double c = v / 255.0;
+    const double y = c <= 0.04045 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4);
+    const double l = y > 216.0 / 24389.0 ? 116.0 * std::cbrt(y) - 16.0 : 24389.0 / 27.0 * y;
+    assert(freeink::gray16::kLightnessCenti[v] == static_cast<uint16_t>(std::lround(l * 100.0)));
+  }
+  for (const uint8_t gray : {32, 64, 119, 160, 200, 230}) {
+    std::vector<uint8_t> flat(64 * 64, gray);
+    freeink::gray16::canvasToLevels(flat.data(), 64, 64, g::kLevelTenths);
+    long sum = 0;
+    for (size_t p = 0; p < 64 * 64; ++p) sum += g::kLevelTenths[(p & 1) ? (flat[p / 2] & 0x0F) : (flat[p / 2] >> 4)];
+    const long white = g::kLevelTenths[0], black = g::kLevelTenths[15];
+    const long target = black + ((white - black) * freeink::gray16::kLightnessCenti[gray] + 5000) / 10000;
+    assert(std::labs(sum / (64 * 64) - target) <= 5);  // half a unit of L*
+  }
+}
+
 static void testOnePassFrame() {
   Uc8179Driver d;
   EpdBus bus;
@@ -1626,6 +1718,7 @@ int main(int argc, char** argv) {
 #endif
 
   testUc8179LabFrame();
+  testUc8179Gray16Image();
   testInvertedGrayFrame();
   testGrayFrameFallbackKeepsBuffers();
   testUc8279X4WaveformSelection();

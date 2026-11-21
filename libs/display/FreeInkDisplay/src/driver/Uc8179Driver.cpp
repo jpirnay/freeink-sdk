@@ -4,7 +4,9 @@
 #include <BoardConfig.h>
 #include <string.h>
 
+#include "../lut/Uc8179Gray16Luts.h"
 #include "../lut/UltraChipDirectGrayLuts.h"
+#include "Gray16Canvas.h"
 #if FREEINK_ONE_PASS_TEXT_AA
 #include "../lut/X4ProTextAaLuts.h"
 
@@ -946,12 +948,18 @@ bool Uc8179Driver::setLabRegisters(const uint8_t* records, const size_t len) {
 
 bool Uc8179Driver::displayLabFrame(EpdBus& bus, const uint8_t* bw, const uint8_t* red, const uint8_t* lut) {
   if (!bw || !red || !lut) return false;
+  runTableFrame(bus, bw, red, lut, _labRegisters, _labRegistersLen);
+  return true;
+}
+
+void Uc8179Driver::runTableFrame(EpdBus& bus, const uint8_t* bw, const uint8_t* red, const uint8_t* tables,
+                                 const uint8_t* registers, const size_t registersLen) {
   bus.waitBusy(" 8179_lab_ready");
   restoreBwConfiguration(bus);
   _directGrayPass = false;
   _directGrayPlanes = 0;
   _absoluteInput = false;
-  // The register sequence of displayGrayFrameStart(), with the lab's planes and tables.
+  // The register sequence of displayGrayFrameStart(), with these planes and tables.
   streamPlane(bus, CMD_DTM1, red);
   streamPlane(bus, CMD_DTM2, bw);
   bus.cmd(CMD_PANEL_SETTING);
@@ -963,15 +971,15 @@ bool Uc8179Driver::displayLabFrame(EpdBus& bus, const uint8_t* bw, const uint8_t
   bus.data(2);
   for (unsigned i = 0; i < 5; ++i) {
     bus.cmd(0x20 + i);
-    bus.data(lut + i * GRAY_LUT_LEN, GRAY_LUT_LEN);
+    bus.data(tables + i * GRAY_LUT_LEN, GRAY_LUT_LEN);
   }
   bus.cmd(CMD_VCOM_DATA_INTERVAL);
   bus.data(0x29);
   bus.data(CDI_INTERVAL);
-  // The lab's own registers last (frame rate, source voltages, VCOM): after the tables, so they win.
-  for (size_t i = 0; i < _labRegistersLen; i += 2 + _labRegisters[i + 1]) {
-    bus.cmd(_labRegisters[i]);
-    if (_labRegisters[i + 1]) bus.data(_labRegisters + i + 2, _labRegisters[i + 1]);
+  // The frame's own registers last (frame rate, source voltages, VCOM): after the tables, so they win.
+  for (size_t i = 0; i + 1 < registersLen; i += 2 + registers[i + 1]) {
+    bus.cmd(registers[i]);
+    if (registers[i + 1]) bus.data(registers + i + 2, registers[i + 1]);
   }
   if (!_isScreenOn) {
     bus.cmd(CMD_POWER_ON);
@@ -983,16 +991,16 @@ bool Uc8179Driver::displayLabFrame(EpdBus& bus, const uint8_t* bw, const uint8_t
   bus.cmd(CMD_POWER_OFF);
   bus.waitBusy(" 8179_lab_POF");
   _isScreenOn = false;
-  if (_labRegistersLen) {
-    // Back to the controller's own settings: a reset returns what the lab changed to its power-on values, which
+  if (registersLen) {
+    // Back to the controller's own settings: a reset returns what the frame changed to its power-on values, which
     // every other frame assumes (this driver never sets them), and the init puts back what it does set. A reset
     // drives no pixel.
     bus.reset(50);
     initController(bus);
     _directGrayConfigured = false;
   }
-  // The glass holds whatever the lab's tables made of each code, which no retained plane describes: no
-  // text history survives, and the next frame is a full one.
+  // The glass holds whatever these tables made of each code, which no retained plane describes: no text history
+  // survives, and the next frame is a full one.
 #if FREEINK_ONE_PASS_TEXT_AA
   _textAa.invalidate();
 #endif
@@ -1000,6 +1008,68 @@ bool Uc8179Driver::displayLabFrame(EpdBus& bus, const uint8_t* bw, const uint8_t
   _oldPlaneValid = false;
   _bwPlanesSynced = false;
   _redriveAfterGray = false;
+}
+
+uint8_t* Uc8179Driver::borrowGray8Canvas(uint16_t* stride) {
+  if (!supportsGray16Image()) return nullptr;
+  if (!_gray8Canvas) {
+    _gray8Canvas =
+        static_cast<uint8_t*>(heap_caps_malloc(static_cast<size_t>(_w) * _h, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  }
+  if (!_gray8Canvas) return nullptr;
+  if (stride) *stride = _w;
+  return _gray8Canvas;
+}
+
+void Uc8179Driver::displayGray8Canvas(EpdBus& bus, const RefreshMode mode, const bool turnOff) {
+  if (!_gray8Canvas || !supportsGray16Image()) return;
+  gray16::canvasToLevels(_gray8Canvas, _w, _h, uc8179_gray16::kLevelTenths);
+  displayGray16Image(bus, _gray8Canvas, mode, turnOff);
+}
+
+bool Uc8179Driver::supportsGray16Image() const { return BoardConfig::ACTIVE.board == BoardConfig::Board::XteinkX4Pro; }
+
+bool Uc8179Driver::displayGray16Image(EpdBus& bus, const uint8_t* levels, const RefreshMode mode, const bool turnOff) {
+  (void)mode;     // the levels were measured on a full-refresh base, so the base is always one
+  (void)turnOff;  // every pass powers the panel off at its end
+  if (!supportsGray16Image() || !levels) return false;
+  // The base and each pass's two selector planes, 1 bpp in the framebuffer's layout (pixel p at byte p / 8, bit
+  // 7 - p % 8; _w is a multiple of 8).
+  auto* planes = static_cast<uint8_t*>(
+      heap_caps_malloc(static_cast<size_t>(_bufferSize) * 3, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!planes) return false;  // no PSRAM for the planes: nothing was sent
+  uint8_t* const base = planes;
+  uint8_t* const red = planes + _bufferSize;
+  uint8_t* const bw = red + _bufferSize;
+  const uint32_t pixels = static_cast<uint32_t>(_w) * _h;
+  const auto levelAt = [levels](const uint32_t p) -> uint8_t {
+    const uint8_t pair = levels[p >> 1];
+    return (p & 1) ? static_cast<uint8_t>(pair & 0x0F) : static_cast<uint8_t>(pair >> 4);
+  };
+  memset(base, 0, _bufferSize);
+  for (uint32_t p = 0; p < pixels; ++p) {
+    if (uc8179_gray16::kPaths[levelAt(p)].whiteBase) base[p >> 3] |= static_cast<uint8_t>(0x80 >> (p & 7));
+  }
+  display(bus, base, nullptr, RefreshMode::Full, false);
+  for (int pass = 0; pass < 2; ++pass) {
+    memset(red, 0, _bufferSize);
+    memset(bw, 0, _bufferSize);
+    for (uint32_t p = 0; p < pixels; ++p) {
+      const uc8179_gray16::Path& path = uc8179_gray16::kPaths[levelAt(p)];
+      const uint8_t code = pass == 0 ? path.pass1 : path.pass2;  // DTM1 * 2 + DTM2
+      const auto bit = static_cast<uint8_t>(0x80 >> (p & 7));
+      if (code & 2) red[p >> 3] |= bit;
+      if (code & 1) bw[p >> 3] |= bit;
+    }
+    if (pass == 0) {
+      runTableFrame(bus, bw, red, uc8179_gray16::kPass1Tables, uc8179_gray16::kPass1Registers,
+                    sizeof(uc8179_gray16::kPass1Registers));
+    } else {
+      runTableFrame(bus, bw, red, uc8179_gray16::kPass2Tables, uc8179_gray16::kPass2Registers,
+                    sizeof(uc8179_gray16::kPass2Registers));
+    }
+  }
+  heap_caps_free(planes);
   return true;
 }
 
