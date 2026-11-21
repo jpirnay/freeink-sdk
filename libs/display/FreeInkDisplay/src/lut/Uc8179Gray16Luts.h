@@ -11,9 +11,9 @@
 // toward white at a lowered source voltage. #220's own doses barely moved this panel toward black (four frames left
 // a white base at 93-114 %), so the doses are this panel's.
 //
-// Measured on the gray lab's stand, 2026-11-21 (bank x6, 32 paths shot against a reference card's lightness ramp,
-// flat fields of the same composition; runs repeat to 0.3 points): ~/.local/state/witchhunt-work/x4pro-gray16/
-// RESULTS.md, "Session 3b". Room temperature only.
+// Measured on the gray lab's stand, 2026-11-21: the doses chosen from a grid of the 32 paths (bank x6, shot against a
+// reference card's lightness ramp; runs repeat to 0.3 points), each level's L* then measured alone on the whole
+// screen (kLevelTenths). ~/.local/state/witchhunt-work/x4pro-gray16/RESULTS.md, "Session 3b". Room temperature only.
 namespace freeink::uc8179_gray16 {
 
 struct Path {
@@ -22,18 +22,20 @@ struct Path {
   uint8_t pass2;   // LUT code in pass 2
 };
 
-// Level 0 (lightest) .. 15 (darkest).
+// Level 0 (lightest) .. 15 (darkest), ordered by the L* below.
 inline constexpr Path kPaths[16] = {
     {true, 0, 3},  {true, 1, 3},  {true, 2, 3},  {true, 3, 3},  {true, 2, 0},  {false, 3, 3},
-    {false, 3, 2}, {true, 3, 0},  {false, 2, 2}, {false, 1, 3}, {false, 1, 2}, {false, 1, 1},
+    {true, 3, 0},  {false, 3, 2}, {false, 2, 2}, {false, 1, 3}, {false, 1, 2}, {false, 1, 1},
     {false, 0, 3}, {false, 0, 2}, {false, 0, 1}, {false, 0, 0},
 };
 
 // L* of each level, in tenths, on the reference card's lightness scale (its ten steps taken as 100 .. 0 in equal
-// steps); the panel's own white and black read 69.2 and 20.6 on it. Two pairs lie close (30.4 / 29.3, 25.3 / 23.7):
-// the dither treats them as the levels they are.
-inline constexpr uint16_t kLevelTenths[16] = {704, 662, 626, 587, 551, 524, 482, 454,
-                                              415, 385, 343, 304, 293, 253, 237, 208};
+// steps), measured with the level alone on the whole screen (CMD:LAB:CANVAS): a uniform scene, as the panel's
+// full-refresh white (76.1) and black (17.4) were. Measured among the other levels instead, a black-base level read
+// up to 8 points too light from the lens glare of the white ones. Open: the gap from 33.9 to 44.2, and two levels
+// a hair apart (19.5 / 19.2).
+inline constexpr uint16_t kLevelTenths[16] = {749, 694, 647, 606, 564, 501, 460, 442,
+                                              339, 322, 278, 258, 238, 195, 192, 179};
 
 // Register writes per pass, records of command, length, bytes. Pass 1: frame rate 200 Hz (0x30 = 0x0F), the
 // controller's own source voltages (14 V). Pass 2: 200 Hz, VDH 14 V (0x3A), VDL 8.4 V (0x1E), VDHR 0x03.
