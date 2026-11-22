@@ -356,8 +356,7 @@ std::vector<String> SDCardManager::listFiles(const char* path, const int maxFile
       f.close();
       continue;
     }
-    f.getName(name, sizeof(name));
-    ret.emplace_back(name);
+    if (f.getName(name, sizeof(name))) ret.emplace_back(name);  // 0 = name longer than the buffer
     f.close();
     count++;
   }
@@ -376,13 +375,26 @@ String SDCardManager::readFile(const char* path) {
     return {""};
   }
 
-  String content = "";
-  constexpr size_t maxSize = 50000;  // Limit to 50KB
-  size_t readSize = 0;
-  while (f.available() && readSize < maxSize) {
-    const char c = static_cast<char>(f.read());
-    content += c;
-    readSize++;
+  // A whole file in RAM is bounded. A larger file fails instead of coming back
+  // cut short: a partial file parses as corrupt, or worse, as valid.
+  constexpr size_t maxSize = 50000;
+  String content;
+  const uint64_t size = f.size();
+  if (size > maxSize) {
+    if (Serial) Serial.printf("[%lu] [SD] %s is too large for readFile (%u bytes)\n", millis(), path, static_cast<unsigned>(size));
+    f.close();
+    return content;
+  }
+  if (size > 0 && !content.reserve(static_cast<unsigned int>(size))) {
+    if (Serial) Serial.printf("[%lu] [SD] out of memory reading %s (%u bytes)\n", millis(), path, static_cast<unsigned>(size));
+    f.close();
+    return content;
+  }
+  // Block reads into the reserved String: appending byte by byte reallocated as it grew.
+  char buf[256];
+  int n;
+  while ((n = f.read(buf, sizeof(buf))) > 0) {
+    content.concat(buf, static_cast<unsigned int>(n));
   }
   f.close();
   return content;

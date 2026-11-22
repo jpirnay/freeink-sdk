@@ -162,7 +162,13 @@ bool UsbMassStorage::begin(FsBlockDeviceInterface* dev) {
   tud_configure_param_t usbConfig = {.dwc2 = CFG_TUD_CONFIGURE_DWC2_DEFAULT};
   usbConfig.dwc2.bm_double_buffered = 0xFFFE;
   tud_configure(0, TUD_CFGID_DWC2, &usbConfig);
+#if FREEINK_DEVICE_METALIO_EINK4_PLUS
+  if (BoardConfig::isMetalioEInk4Plus()) metalioplus::routeUsbToOtg(true);
+#endif
   if (!USB.begin()) {
+#if FREEINK_DEVICE_METALIO_EINK4_PLUS
+    if (BoardConfig::isMetalioEInk4Plus()) metalioplus::routeUsbToOtg(false);
+#endif
     gMsc.end();
     gOwner.store(nullptr);
     gDev.store(nullptr);
@@ -193,6 +199,9 @@ void UsbMassStorage::end() {
   gOwner.store(nullptr);
   gDev.store(nullptr);
   gMsc.end();
+#if FREEINK_DEVICE_METALIO_EINK4_PLUS
+  if (BoardConfig::isMetalioEInk4Plus()) metalioplus::routeUsbToOtg(false);
+#endif
   _state.store(UsbMassStorageState::Idle);
   _hostSeen.store(false);
 }
