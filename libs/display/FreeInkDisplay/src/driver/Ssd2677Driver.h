@@ -108,7 +108,7 @@ class Ssd2677Driver : public PanelDriver {
   // displayGray16Image(). Picco only, as the 16 levels are.
   uint8_t grayLevels() const override { return supportsGray16Image() ? 16 : 4; }
   uint8_t* borrowGray8Canvas(uint16_t* stride) override;
-  void displayGray8Canvas(EpdBus& bus, RefreshMode mode, bool turnOff) override;
+  bool displayGray8Canvas(EpdBus& bus, RefreshMode mode, bool turnOff) override;
   // The canvas's gray (0x00 black .. 0xFF white) dithered onto the 16 levels, packed 4 bpp in place over its
   // first half, as displayGray16Image() takes them. Public for the host test.
   static void canvasToGray16(uint8_t* canvas, uint16_t width, uint16_t height);

@@ -1150,7 +1150,7 @@ static void testUc8179Gray16Image() {
   for (const Case c : {Case{255, 0}, Case{0, 15}}) {
     memset(canvas, c.gray, 800 * 480);
     bus.clear();
-    d.displayGray8Canvas(bus, RefreshMode::Half, true);
+    assert(d.displayGray8Canvas(bus, RefreshMode::Half, true));
     const g::Path& path = g::kPaths[c.level];
     // The base: one full refresh of the base plane.
     const auto dtm2 = writesAt(bus, 0x13);
@@ -1188,6 +1188,14 @@ static void testUc8179Gray16Image() {
     assert(lowered);
     assert(d._needFullClear && !d._oldPlaneValid);
   }
+
+  // No PSRAM for the planes: refused before anything reaches the panel, and the host is told so.
+  memset(canvas, 0x80, 800 * 480);
+  bus.clear();
+  fakeHeapCapsFail = true;
+  assert(!d.displayGray8Canvas(bus, RefreshMode::Half, true));
+  fakeHeapCapsFail = false;
+  assert(bus.writes.empty());
 
   // The shared dither: the L* table follows the CIE formula, and a flat gray's levels average out to its target.
   for (int v = 0; v < 256; ++v) {

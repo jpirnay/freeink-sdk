@@ -1113,16 +1113,17 @@ uint8_t* FreeInkDisplay::borrowGray8Canvas(uint16_t* stride) {
   return _driver->borrowGray8Canvas(stride);
 }
 
-void FreeInkDisplay::displayGray8Canvas(RefreshMode mode, bool turnOffScreen) {
+bool FreeInkDisplay::displayGray8Canvas(RefreshMode mode, bool turnOffScreen) {
   _activeMatchesGlass = false;
-  if (_inverted || _inversionDirty || !_driver) return;
+  if (_inverted || _inversionDirty || !_driver) return false;
   DisplayPmLock pmLock;
   syncPendingAsync();
   // The frame came from the canvas, not from frameBuffer, so neither the shadow
   // nor the RED baseline describes what is on the panel any more.
   _shadowValid = false;
   _redRamSynced = false;
-  _driver->displayGray8Canvas(_bus, toInternal(mode), turnOffScreen);
+  // Refused: the glass still shows the frame frameBufferActive holds, so that copy stays.
+  if (!_driver->displayGray8Canvas(_bus, toInternal(mode), turnOffScreen)) return false;
   // No swapBuffers(), for the same reason displayGrayscaleFrame() omits it: the
   // driver diffs against its own panel buffer and never reads `prev`, so a swap
   // would only leave frameBuffer pointing at an older page.
@@ -1137,6 +1138,7 @@ void FreeInkDisplay::displayGray8Canvas(RefreshMode mode, bool turnOffScreen) {
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
   if (frameBuffer && frameBufferActive) memcpy(frameBufferActive, frameBuffer, bufferSize);
 #endif
+  return true;
 }
 
 void FreeInkDisplay::displayGrayBuffer(bool turnOffScreen, const unsigned char* lut, bool factoryMode) {

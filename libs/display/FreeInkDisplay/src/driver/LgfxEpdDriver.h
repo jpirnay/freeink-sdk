@@ -84,7 +84,7 @@ class LgfxEpdDriver : public PanelDriver {
   // reports what came out.
   uint8_t grayLevels() const override;
   uint8_t* borrowGray8Canvas(uint16_t* stride) override;
-  void displayGray8Canvas(EpdBus& bus, RefreshMode mode, bool turnOff) override;
+  bool displayGray8Canvas(EpdBus& bus, RefreshMode mode, bool turnOff) override;
 
  private:
   const LgfxEpdConfig& _cfg;

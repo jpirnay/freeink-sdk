@@ -1318,8 +1318,13 @@ static void expectGray8Canvas(Ssd2677Driver& s) {
   memset(canvas, 0xFF, 800 * 480);
   for (int x = 0; x < 800; ++x) canvas[x] = 0x00;  // a black first row
   EpdBus bus;
-  s.displayGray8Canvas(bus, RefreshMode::Half, true);
+  assert(s.displayGray8Canvas(bus, RefreshMode::Half, true));
   assert(s._gray16OnGlass);
+  // Nothing lent: nothing drawn, and the host is told so.
+  Ssd2677Driver fresh;
+  bus.clear();
+  assert(!fresh.displayGray8Canvas(bus, RefreshMode::Half, true));
+  assert(bus.writes.empty());
   for (int i = 0; i < 400; ++i) assert(s._gray16[i] == 0xFF);
   for (int i = 400; i < 400 * 480; ++i) assert(s._gray16[i] == 0x00);
 }

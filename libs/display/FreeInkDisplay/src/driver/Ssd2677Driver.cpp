@@ -1143,13 +1143,13 @@ uint8_t* Ssd2677Driver::borrowGray8Canvas(uint16_t* stride) {
   return _canvas;
 }
 
-void Ssd2677Driver::displayGray8Canvas(EpdBus& bus, const RefreshMode mode, const bool turnOff) {
-  if (!_canvas || !supportsGray16Image()) return;
+bool Ssd2677Driver::displayGray8Canvas(EpdBus& bus, const RefreshMode mode, const bool turnOff) {
+  if (!_canvas || !supportsGray16Image()) return false;
   const PanelGeometry g = geometry();
   canvasToGray16(_canvas, g.width, g.height);
-  if (!displayGray16Image(bus, _canvas, mode, turnOff) && Serial) {
-    Serial.printf("[%lu] [EPD] gray8 canvas: the 16-level image was refused\n", millis());
-  }
+  if (displayGray16Image(bus, _canvas, mode, turnOff)) return true;
+  if (Serial) Serial.printf("[%lu] [EPD] gray8 canvas: the 16-level image was refused\n", millis());
+  return false;
 }
 
 bool Ssd2677Driver::setGray16TextSoftPull(uint8_t frames) {

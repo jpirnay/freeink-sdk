@@ -1021,10 +1021,11 @@ uint8_t* Uc8179Driver::borrowGray8Canvas(uint16_t* stride) {
   return _gray8Canvas;
 }
 
-void Uc8179Driver::displayGray8Canvas(EpdBus& bus, const RefreshMode mode, const bool turnOff) {
-  if (!_gray8Canvas || !supportsGray16Image()) return;
+bool Uc8179Driver::displayGray8Canvas(EpdBus& bus, const RefreshMode mode, const bool turnOff) {
+  if (!_gray8Canvas || !supportsGray16Image()) return false;
   gray16::canvasToLevels(_gray8Canvas, _w, _h, uc8179_gray16::kLevelTenths);
-  displayGray16Image(bus, _gray8Canvas, mode, turnOff);
+  // False when the 144 KB of PSRAM planes cannot be had: nothing was sent, and the host has to know.
+  return displayGray16Image(bus, _gray8Canvas, mode, turnOff);
 }
 
 bool Uc8179Driver::supportsGray16Image() const { return BoardConfig::ACTIVE.board == BoardConfig::Board::XteinkX4Pro; }

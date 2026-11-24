@@ -128,7 +128,7 @@ class Uc8179Driver : public PanelDriver {
   bool displayGray16Image(EpdBus& bus, const uint8_t* levels, RefreshMode mode, bool turnOff) override;
   uint8_t grayLevels() const override { return supportsGray16Image() ? 16 : 4; }
   uint8_t* borrowGray8Canvas(uint16_t* stride) override;
-  void displayGray8Canvas(EpdBus& bus, RefreshMode mode, bool turnOff) override;
+  bool displayGray8Canvas(EpdBus& bus, RefreshMode mode, bool turnOff) override;
 
 #if FREEINK_ONE_PASS_TEXT_AA
   // --- One-pass text AA: see X4ProTextAa.h and PanelDriver::setOnePassText() ---

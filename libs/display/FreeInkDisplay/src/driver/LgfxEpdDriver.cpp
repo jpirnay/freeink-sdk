@@ -995,11 +995,11 @@ uint8_t LgfxEpdDriver::grayLevels() const {
 #endif
 }
 
-void LgfxEpdDriver::displayGray8Canvas(EpdBus& bus, RefreshMode mode, bool turnOff) {
+bool LgfxEpdDriver::displayGray8Canvas(EpdBus& bus, RefreshMode mode, bool turnOff) {
   (void)bus;
   (void)mode;
 #if FREEINK_DRIVER_LGFX_EPD
-  if (!g_canvas) return;
+  if (!g_canvas) return false;
   // Linearise against the panel. The host paints in even steps of luminance;
   // this turns them into even steps of REFLECTANCE, which on this waveform is a
   // very different ramp (see buildGrayResponse). One pass over the canvas with a
@@ -1014,8 +1014,10 @@ void LgfxEpdDriver::displayGray8Canvas(EpdBus& bus, RefreshMode mode, bool turnO
   g_lastBaseEpdMode = lgfx::epd_mode::epd_text;
   pushCanvasGraded(g_lastBaseEpdMode);
   if (turnOff) g_dev.sleep();
+  return true;
 #else
   (void)turnOff;
+  return false;
 #endif
 }
 

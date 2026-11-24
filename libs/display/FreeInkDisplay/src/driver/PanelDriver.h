@@ -301,10 +301,14 @@ class PanelDriver {
   // Quantise the borrowed canvas to the panel's native depth and display it as
   // one waveform. `mode` must select a bank whose columns can land every level;
   // a driver that only greys in its clean bank is free to substitute one.
-  virtual void displayGray8Canvas(EpdBus& bus, RefreshMode mode, bool turnOff) {
+  // False = nothing was drawn (no canvas lent, or the push was refused, as for
+  // want of the memory it needs): the panel still shows the previous frame, and
+  // the host has to draw this one another way.
+  virtual bool displayGray8Canvas(EpdBus& bus, RefreshMode mode, bool turnOff) {
     (void)bus;
     (void)mode;
     (void)turnOff;
+    return false;
   }
 
   virtual void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) {

@@ -381,7 +381,10 @@ class FreeInkDisplay {
   // displayGray8Canvas() or at the next ordinary refresh, which rebuilds the
   // buffer from the 1-bpp framebuffer regardless.
   uint8_t* borrowGray8Canvas(uint16_t* stride);
-  void displayGray8Canvas(RefreshMode mode, bool turnOffScreen = false);
+  // False when nothing was drawn (inverted output, no canvas lent, or the driver
+  // refused the push): the panel keeps the previous frame, and the caller draws
+  // this one another way.
+  bool displayGray8Canvas(RefreshMode mode, bool turnOffScreen = false);
   void displayGrayCalibration(uint16_t customX, uint16_t customY, uint16_t customW, uint16_t customH);
 
   void refreshDisplay(RefreshMode mode = FAST_REFRESH, bool turnOffScreen = false);
