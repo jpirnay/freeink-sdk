@@ -305,7 +305,9 @@ void FreeInkDisplay::begin() {
 // Framebuffer composition (facade-owned; no driver involvement)
 // ============================================================================
 
-void FreeInkDisplay::clearScreen(uint8_t color) const { memset(frameBuffer, color, bufferSize); }
+void FreeInkDisplay::clearScreen(uint8_t color) const {
+  if (frameBuffer) memset(frameBuffer, color, bufferSize);  // null while the storage is lent or released
+}
 
 // Blit a 1bpp image (MSB-first, 1=white/0=black) into the framebuffer.
 // `transparent` = only paint black pixels (AND, leaving white untouched);
@@ -388,7 +390,9 @@ void FreeInkDisplay::drawImageTransparent(const uint8_t* imageData, uint16_t x, 
   blitImage(imageData, x, y, w, h, fromProgmem, /*transparent=*/true);
 }
 
-void FreeInkDisplay::setFramebuffer(const uint8_t* bwBuffer) const { memcpy(frameBuffer, bwBuffer, bufferSize); }
+void FreeInkDisplay::setFramebuffer(const uint8_t* bwBuffer) const {
+  if (frameBuffer && bwBuffer) memcpy(frameBuffer, bwBuffer, bufferSize);
+}
 
 void FreeInkDisplay::setInverted(const bool inverted) {
   if (_inverted != inverted) cancelGrayscalePass();
@@ -486,6 +490,7 @@ void FreeInkDisplay::releaseBuffers() {
   // use-after-free and would orphan _secondaryLent. returnSecondaryBuffer() first.
   if (_secondaryLent) return;
 #endif
+  if (_buildLent) return;  // the borrower still holds frameBuffer0; returnBuildStorage() first
   syncPendingAsync();  // a refresh in flight was fed from these buffers
   free(frameBuffer0);
   frameBuffer0 = nullptr;
@@ -509,6 +514,7 @@ bool FreeInkDisplay::reallocBuffers() {
   // would reattach it as frameBufferActive and memset the borrower's scratch.
   if (_secondaryLent) return false;
 #endif
+  if (_buildLent) return false;  // would memset the borrower's scratch
   if (!frameBuffer0) frameBuffer0 = allocFrameBufferStorage();
   if (!frameBuffer0) return false;
   frameBuffer = frameBuffer0;
@@ -1314,6 +1320,8 @@ void FreeInkDisplay::copyGrayscaleMsbBuffers(const uint8_t* msbBuffer) {
 void FreeInkDisplay::writeGrayscalePlaneStrip(GrayPlane plane, const uint8_t* rows, uint16_t yStart, uint16_t numRows) {
   if (!grayAllowed()) return;
   if (!acceptGrayscaleRows(plane == GRAY_PLANE_LSB ? 0 : 1, rows, yStart, numRows)) return;
+  // Overlay passes skip the row accounting above; drivers copy by yStart unchecked.
+  if (!rows || !numRows || yStart >= displayHeight || numRows > displayHeight - yStart) return;
   DisplayPmLock pmLock;
   // Paper Mono retains these bytes in PSRAM and performs no bus access here, so
   // staging can overlap the B/W waveform. Other drivers may write controller

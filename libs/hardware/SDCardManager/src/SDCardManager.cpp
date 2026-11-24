@@ -356,8 +356,7 @@ std::vector<String> SDCardManager::listFiles(const char* path, const int maxFile
       f.close();
       continue;
     }
-    f.getName(name, sizeof(name));
-    ret.emplace_back(name);
+    if (f.getName(name, sizeof(name))) ret.emplace_back(name);  // 0 = name longer than the buffer
     f.close();
     count++;
   }
