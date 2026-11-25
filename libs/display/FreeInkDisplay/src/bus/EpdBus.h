@@ -157,6 +157,16 @@ class EpdBus {
   // Scoped SPI/APB transaction that selects the panel and de-selects it on exit.
   [[nodiscard]] Transaction beginTxn();
 
+  // A command whose BUSY period the caller leaves running: a power-on that the host's work before the next refresh
+  // overlaps, a power-off that need not hold the host. The next write to the bus waits it out first (every write goes
+  // through transaction(), which calls settle()): a controller busy with it must not be sent anything, as the UC
+  // parts drop plane and LUT writes. The X3's two-phase BUSY drops LOW when such a command starts and never for a
+  // redundant one, so the drop is confirmed here and settle() waits only on one it saw. `minMs` keeps a fixed
+  // production interval the command was always given before its BUSY was trusted.
+  void cmdNoWait(uint8_t c, const char* tag = nullptr, uint16_t minMs = 0);
+  // Waits out a command cmdNoWait() left running, if any; for a caller about to read BUSY without writing first.
+  void settle();
+
   // Wait for a refresh/operation to finish using the configured (or given) polarity.
   void waitBusy(const char* tag = nullptr);
   void waitBusy(BusyPolarity p, const char* tag = nullptr);
@@ -229,6 +239,11 @@ class EpdBus {
 
   void createPmLocks();
   [[nodiscard]] Transaction transaction();
+
+  bool _settlePending = false;  // cmdNoWait() left a command running
+  const char* _settleTag = nullptr;
+  unsigned long _settleSince = 0;
+  uint16_t _settleMinMs = 0;
 
   EpdPins _pins{-1, -1, -1, -1, -1, -1};
   SPISettings _spi;

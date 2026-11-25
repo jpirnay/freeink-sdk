@@ -201,6 +201,7 @@ void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_
 
 void EpdBus::reset(uint16_t extraSettleMs) {
   NoLightSleepLockGuard noLightSleepLock(*this);
+  _settlePending = false;  // the reset ends whatever the controller was busy with
   if (BoardConfig::isOnePage()) {
     // OnePage shares GPIO27 between EPD reset and the SD/MIC power rail.
     // Pulsing it low after Storage.begin() cuts power to the mounted SD card,
@@ -229,7 +230,52 @@ void EpdBus::reset(uint16_t extraSettleMs) {
   }
 }
 
-EpdBus::Transaction EpdBus::transaction() { return Transaction(*this); }
+EpdBus::Transaction EpdBus::transaction() {
+  settle();
+  return Transaction(*this);
+}
+
+void EpdBus::cmdNoWait(const uint8_t c, const char* tag, const uint16_t minMs) {
+  cmd(c);
+  _settleTag = tag;
+  _settleSince = millis();
+  _settleMinMs = minMs;
+  if (_busy == BusyPolarity::X3TwoPhase) {
+    while (digitalRead(_pins.busy) == HIGH) {
+      if (millis() - _settleSince > 50) return;  // never started: nothing to wait for
+      delay(1);
+    }
+  } else {
+    delay(1);  // one tick for BUSY to assert, as waitBusy() allows
+  }
+  _settlePending = true;
+}
+
+void EpdBus::settle() {
+  if (!_settlePending) return;
+  _settlePending = false;
+  const unsigned long start = millis();
+  while (millis() - _settleSince < _settleMinMs) delay(1);
+  const uint8_t busyLevel = _busy == BusyPolarity::ActiveHigh ? HIGH : LOW;
+  bool longWait = false;
+  bool hookFired = false;
+  while (digitalRead(_pins.busy) == busyLevel) {
+    busyIdle(longWait, busyLevel, 1);
+    if (!longWait && millis() - start > BUSY_WAIT_HOOK_THRESHOLD_MS) {
+      longWait = true;
+      if (_busyWaitBeginHook != nullptr) {
+        hookFired = true;
+        _busyWaitBeginHook();
+      }
+    }
+    if (millis() - start > 30000) break;
+  }
+  if (hookFired && _busyWaitEndHook != nullptr) _busyWaitEndHook();
+  if (_settleTag && Serial) {
+    Serial.printf("[%lu]   Wait complete: %s (%lu ms, %lu ms after the command)\n", millis(), _settleTag,
+                  millis() - start, millis() - _settleSince);
+  }
+}
 
 EpdBus::Transaction EpdBus::beginTxn() {
   if (_coCs >= 0) {

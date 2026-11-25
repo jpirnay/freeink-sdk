@@ -90,5 +90,39 @@ int main(int argc, char** argv) {
   assert(bus.isBusy());
   bus.waitBusy();
   assert(millis() == 45 && begins == 1 && ends == 1);
-  std::printf("PASS: production bus command/refresh waits (%s)\n", argv[1]);
+
+  // A command left running (cmdNoWait): the next write waits it out, no sooner than its minimum interval, and once.
+  schedule(0, 80000, HIGH);
+  bus.cmdNoWait(0x20, nullptr, 200);
+  assert(millis() == 1);  // one tick for BUSY to assert
+  bus.cmd(0x22);
+  assert(millis() == 200);
+  bus.cmd(0x22);
+  assert(millis() == 200);
+  schedule(0, 250000, HIGH);
+  bus.cmdNoWait(0x20, nullptr, 200);
+  bus.data(0x03);
+  assert(millis() == 250 && begins == ends);
+  // A reset ends whatever the controller was busy with.
+  schedule(0, UINT64_MAX, HIGH);
+  bus.cmdNoWait(0x20);
+  bus.reset();
+  const unsigned long afterReset = millis();
+  bus.cmd(0x22);
+  assert(millis() == afterReset && afterReset < 1000);
+
+  // The X3's two-phase BUSY: a power-on whose drop was seen is waited out; a redundant one, which never drops BUSY,
+  // leaves nothing to wait for.
+  bus.begin({0, 1, 2, 3, 4, 5}, 20000000, BusyPolarity::X3TwoPhase);
+  schedule(0, 127000);
+  bus.cmdNoWait(0x04);
+  assert(millis() == 0);
+  bus.cmd(0x12);
+  assert(millis() == 127);
+  schedule(0, 0);
+  bus.cmdNoWait(0x04);
+  assert(millis() == 51);
+  bus.cmd(0x12);
+  assert(millis() == 51);
+  std::printf("PASS: production bus command/refresh waits, commands left running (%s)\n", argv[1]);
 }
