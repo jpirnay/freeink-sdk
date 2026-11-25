@@ -45,7 +45,9 @@ class EpdBus {
   bool busy=false;
   // Called from inside every wait, so a test can look at its own state while the driver waits.
   std::function<void()> onWait;
-  void clear() { assert(!transaction); writes.clear(); waits=0; busyWaitWriteCounts.clear(); refreshWaitWriteCounts.clear(); }
+  // cmdNoWait() calls: recorded as cmd() records the command; the production bus leaves its wait to the next write.
+  unsigned noWaits=0;
+  void clear() { assert(!transaction); writes.clear(); waits=0; noWaits=0; busyWaitWriteCounts.clear(); refreshWaitWriteCounts.clear(); }
   void begin(const EpdPins&, uint32_t, BusyPolarity, int8_t=-1, int8_t=-1) {}
   void cmd(uint8_t c) { assert(!transaction); writes.push_back({c,{}}); }
   void data(uint8_t b) { data(&b,1); }
@@ -59,6 +61,8 @@ class EpdBus {
   }
   void cmdData2(uint8_t c, uint8_t a, uint8_t b) { cmd(c); data(a); data(b); }
   void cmdData(uint8_t c, const uint8_t* p, uint16_t n) { cmd(c); data(p,n); }
+  void cmdNoWait(uint8_t c, const char* =nullptr, uint16_t =0) { cmd(c); ++noWaits; }
+  void settle() {}
   void reset(uint16_t=0) {}
   void waitBusy(const char* =nullptr) { assert(!transaction); ++waits; busyWaitWriteCounts.push_back(writes.size()); if (onWait) onWait(); }
   void waitRefreshComplete(const char* =nullptr) { assert(!transaction); ++waits; refreshWaitWriteCounts.push_back(writes.size()); if (onWait) onWait(); }

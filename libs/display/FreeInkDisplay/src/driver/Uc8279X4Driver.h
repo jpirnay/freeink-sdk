@@ -75,6 +75,7 @@ class Uc8279X4Driver : public PanelDriver {
   void setReaderRefresh(bool reading) override { _readerRefresh = reading; }
   void begin(EpdBus& bus) override;
   void deepSleep(EpdBus& bus) override;
+  void beginPowerOn(EpdBus& bus) override;
 
   void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
   bool displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;

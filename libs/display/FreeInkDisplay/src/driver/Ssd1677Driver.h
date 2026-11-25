@@ -98,6 +98,7 @@ class Ssd1677Driver : public PanelDriver {
 
   void begin(EpdBus& bus) override;
   void deepSleep(EpdBus& bus) override;
+  void beginPowerOn(EpdBus& bus) override;
   void powerOffBetweenFrames(EpdBus& bus) override;
 
   void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
@@ -177,8 +178,12 @@ class Ssd1677Driver : public PanelDriver {
   // Blocking CLOCK_ON|ANALOG_ON activation; no-op when already powered.
   void powerOn(EpdBus& bus);
   // Documented SSD1677 analog/oscillator shutdown. Used after a 0xFC update
-  // when turnOff was requested and by deepSleep().
-  void powerOffController(EpdBus& bus, uint16_t settleMs = 200);
+  // when turnOff was requested and by deepSleep(). `wait` false leaves it to
+  // the bus's next write (EpdBus::cmdNoWait), still no sooner than settleMs.
+  void powerOffController(EpdBus& bus, uint16_t settleMs = 200, bool wait = true);
+  // The rails were down before this refresh: beginPowerOn() raising them does not
+  // make a cold start a warm one.
+  bool railsWereDown() const { return !_isScreenOn || _earlyPowerOn; }
   void displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff, bool async);
 
   const Ssd1677Config& _cfg;
@@ -194,6 +199,9 @@ class Ssd1677Driver : public PanelDriver {
   bool _mirrorY = false;
 
   bool _isScreenOn = false;
+  // beginPowerOn() raised the rails ahead of the refresh, which then leaves
+  // CLOCK_ON|ANALOG_ON out of a vendor sequence (refresh()).
+  bool _earlyPowerOn = false;
   bool _inGrayscaleMode = false;
   bool _customLutActive = false;
   // Async 0xFC updates cannot issue the separate power-off activation until the

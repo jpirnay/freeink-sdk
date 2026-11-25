@@ -138,6 +138,67 @@ static void testSsd() {
   assert(lastRegister(bus, 0x22) == 0xcf && !d._isScreenOn);
 }
 
+static unsigned countWrites(const EpdBus& bus, uint8_t command, int value = -1) {
+  unsigned n = 0;
+  for (const auto& w : bus.writes)
+    if (w.command == command && (value < 0 || (!w.bytes.empty() && w.bytes[0] == value))) ++n;
+  return n;
+}
+
+// The page turn's early power-on (beginPowerOn) under the sunlight fading fix, and the power-off after each
+// refresh, left running (cmdNoWait). The refresh after an early power-on sends no power-on of its own; on the
+// SSD1677 the X4's vendor sequence runs without its CLOCK_ON|ANALOG_ON, as the Picco's stock sequences do on
+// powered rails.
+static void testEarlyPowerOn() {
+  const auto b = frame(5);
+  {
+    EpdBus bus;
+    Ssd1677Driver d;
+    d.begin(bus);
+    d.display(bus, b.data(), nullptr, RefreshMode::Fast, true);  // the first paint's clean refresh
+    bus.clear();
+    d.display(bus, b.data(), nullptr, RefreshMode::Fast, true);
+    assert(countWrites(bus, 0x22, 0xfc) == 1 && countWrites(bus, 0x22, 0x03) == 1 && bus.noWaits == 1);
+    assert(!d._isScreenOn);
+    bus.clear();
+    d.beginPowerOn(bus);
+    assert(countWrites(bus, 0x22, 0xc0) == 1 && bus.noWaits == 1 && d._isScreenOn && d._earlyPowerOn);
+    const size_t started = bus.writes.size();
+    d.beginPowerOn(bus);  // already up: nothing
+    assert(bus.writes.size() == started);
+    d.display(bus, b.data(), nullptr, RefreshMode::Fast, true);
+    assert(countWrites(bus, 0x22, 0x3c) == 1 && countWrites(bus, 0x22, 0xfc) == 0);
+    assert(countWrites(bus, 0x22, 0x03) == 1 && !d._isScreenOn && !d._earlyPowerOn);
+    // Without the fading fix the rails stay up: nothing to start, and the sequence keeps its enable bits.
+    d.display(bus, b.data(), nullptr, RefreshMode::Fast, false);
+    bus.clear();
+    d.beginPowerOn(bus);
+    assert(bus.writes.empty());
+    d.display(bus, b.data(), nullptr, RefreshMode::Fast, false);
+    assert(countWrites(bus, 0x22, 0xfc) == 1 && countWrites(bus, 0x22, 0x3c) == 0);
+  }
+  {
+    EpdBus bus;
+    Uc8279X4Driver d;
+    d.begin(bus);
+    d.display(bus, b.data(), nullptr, RefreshMode::Full, true);
+    bus.clear();
+    d.display(bus, b.data(), nullptr, RefreshMode::Fast, true);
+    assert(countWrites(bus, 0x04) == 1 && countWrites(bus, 0x02) == 1 && bus.noWaits == 1);
+    bus.clear();
+    d.beginPowerOn(bus);
+    assert(countWrites(bus, 0x04) == 1 && bus.noWaits == 1);
+    d.beginPowerOn(bus);  // already up: nothing
+    assert(countWrites(bus, 0x04) == 1);
+    d.display(bus, b.data(), nullptr, RefreshMode::Fast, true);
+    assert(countWrites(bus, 0x04) == 1 && countWrites(bus, 0x02) == 1 && bus.noWaits == 2);
+    d.display(bus, b.data(), nullptr, RefreshMode::Fast, false);
+    bus.clear();
+    d.beginPowerOn(bus);
+    assert(bus.writes.empty());
+  }
+}
+
 template <class Driver>
 static void testAsyncFrame() {
   Driver driver;
@@ -1744,6 +1805,7 @@ int main(int argc, char** argv) {
   testStream<Uc8179Driver>(true, 0);
   testStream<Uc8279X4Driver>(false, 120);
   testSsd();
+  testEarlyPowerOn();
   testAsyncFrame<Uc8179Driver>();
   testAsyncFrame<Uc8279X4Driver>();
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE

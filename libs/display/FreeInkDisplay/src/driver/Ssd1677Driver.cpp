@@ -443,6 +443,7 @@ void Ssd1677Driver::begin(EpdBus& bus) {
 
 void Ssd1677Driver::initController(EpdBus& bus) {
   _piccoAbsoluteRetained = false;
+  _earlyPowerOn = false;
   constexpr uint8_t TEMP_SENSOR_INTERNAL = 0x80;
 
   bus.cmd(CMD_SOFT_RESET);
@@ -590,6 +591,8 @@ void Ssd1677Driver::writeRam(EpdBus& bus, uint8_t ramCmd, const uint8_t* data, u
 
 void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool async, bool grayRecovery) {
   _pendingPowerOff = false;
+  const bool earlyPowerOn = _earlyPowerOn;
+  _earlyPowerOn = false;
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
   const uint32_t dbgStart = millis();
   const char* dbgMode = (mode == RefreshMode::Full) ? "FULL" : (mode == RefreshMode::Half) ? "HALF" : "FAST";
@@ -675,7 +678,9 @@ void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool as
       bus.data(_cfg.halfRefreshTemp);
     }
     bus.cmd(CMD_DISPLAY_UPDATE_CTRL2);
-    bus.data(seqOverride);
+    // Rails raised by beginPowerOn(): the sequence without its CLOCK_ON|ANALOG_ON,
+    // as the Picco's stock sequences run on powered rails.
+    bus.data(earlyPowerOn ? static_cast<uint8_t>(seqOverride & 0x3F) : seqOverride);
     bus.cmd(CMD_MASTER_ACTIVATION);
     if (!async) bus.waitRefreshComplete("refresh");
     // Only sequences carrying the low two disable bits physically power down.
@@ -765,24 +770,41 @@ void Ssd1677Driver::powerOn(EpdBus& bus) {
   _isScreenOn = true;
 }
 
+// The host's page turn: CLOCK_ON|ANALOG_ON now, waited out by the refresh's first
+// write, so the refresh's sequence runs on powered rails.
+void Ssd1677Driver::beginPowerOn(EpdBus& bus) {
+  if (_isScreenOn) return;
+  bus.cmd(CMD_DISPLAY_UPDATE_CTRL2);
+  bus.data(0xC0);  // CLOCK_ON | ANALOG_ON
+  bus.cmdNoWait(CMD_MASTER_ACTIVATION, " SSD1677 early power-on");
+  _isScreenOn = true;
+  _earlyPowerOn = true;
+}
+
 void Ssd1677Driver::powerOffBetweenFrames(EpdBus& bus) {
   // Picco idle shutdown uses BUSY, with one tick for command propagation.
   // Other callers keep their existing production shutdown timing.
   powerOffController(bus, 1);
 }
 
-void Ssd1677Driver::powerOffController(EpdBus& bus, uint16_t settleMs) {
+void Ssd1677Driver::powerOffController(EpdBus& bus, uint16_t settleMs, const bool wait) {
   if (!_isScreenOn) return;
+  _earlyPowerOn = false;
   bus.cmd(CMD_BORDER_WAVEFORM);
   bus.data(_cfg.borderWaveformInit);  // X4 Pro: 0x80
   bus.cmd(CMD_DISPLAY_UPDATE_CTRL2);
   bus.data(0x03);  // ANALOG_OFF_PHASE | CLOCK_OFF
+  _isScreenOn = false;
+  if (!wait) {
+    // After a refresh: nothing needs the rails until the next write, which waits.
+    bus.cmdNoWait(CMD_MASTER_ACTIVATION, " display power-down", settleMs);
+    return;
+  }
   bus.cmd(CMD_MASTER_ACTIVATION);
   // Production X4 Pro power-off time. If BUSY remains asserted after the fixed
   // interval, wait out the remainder before changing the state flag.
   delay(settleMs);
   bus.waitBusy(" display power-down");
-  _isScreenOn = false;
 }
 
 void Ssd1677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
@@ -830,7 +852,7 @@ bool Ssd1677Driver::displayOnePassStart(EpdBus& bus, const uint8_t* oldPlane, co
   // A page this driver would promote (a clean refresh, the first after boot or a wake, gray left by a
   // pass) keeps its B/W path.
   if (mode != RefreshMode::Fast || _needsInitialFull || _needsGrayClear || _inGrayscaleMode ||
-      (!turnOff && !_isScreenOn && _cfg.fullSeqOverride == 0)) {
+      (!turnOff && railsWereDown() && _cfg.fullSeqOverride == 0)) {
     return displayStart(bus, page, nullptr, mode, turnOff);
   }
   _textAa.invalidate();
@@ -860,7 +882,7 @@ void Ssd1677Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
   _pendingFrameSync = false;
   if (_pendingPowerOff) {
     _pendingPowerOff = false;
-    powerOffController(bus);
+    powerOffController(bus, 200, /*wait=*/false);
   }
 }
 
@@ -910,7 +932,7 @@ void Ssd1677Driver::displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* p
       mode = (_cfg.halfSeqOverride != 0) ? RefreshMode::Half : RefreshMode::Full;
     }
     _needsInitialFull = false;
-  } else if (!turnOff && !_isScreenOn && _cfg.fullSeqOverride == 0) {
+  } else if (!turnOff && railsWereDown() && _cfg.fullSeqOverride == 0) {
     // X4-class cold start: panel asleep -> a (warmed) HALF full-clear. Override
     // boards skip this — their fast sequence self-powers, so _isScreenOn is false
     // every page and forcing HALF would make every page a slow full-waveform flash.
@@ -994,7 +1016,7 @@ void Ssd1677Driver::displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   if (!async && _piccoOld) memcpy(_piccoOld, fb, _bufferSize);
   if (!async && _pendingPowerOff) {
     _pendingPowerOff = false;
-    powerOffController(bus);
+    powerOffController(bus, 200, /*wait=*/false);
   }
 }
 
@@ -1051,7 +1073,7 @@ void Ssd1677Driver::displayWindow(EpdBus& bus, const uint8_t* fb, const uint8_t*
   }
   if (_pendingPowerOff) {
     _pendingPowerOff = false;
-    powerOffController(bus);
+    powerOffController(bus, 200, /*wait=*/false);
   }
 }
 
@@ -1146,6 +1168,7 @@ static int textDose(const unsigned char* lut, unsigned row) {
 
 void Ssd1677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut,
                                 bool factoryMode) {
+  _earlyPowerOn = false;  // every gray activation below enables the rails or finds them up
   if (_textAa.active()) {
     if (!_textAa.compose()) { _textAa.invalidate(); _needsInitialFull = true; return; }
     powerOn(bus);
@@ -1176,7 +1199,7 @@ void Ssd1677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
         _piccoGrayMask[i] = static_cast<uint8_t>(_textAa.low()[i] & ~_textAa.high()[i]);
       _piccoGrayPending = true;
     }
-    if (turnOff) powerOffController(bus, _cfg.piccoWaveforms ? 1 : 200);
+    if (turnOff) powerOffController(bus, _cfg.piccoWaveforms ? 1 : 200, /*wait=*/false);
     return;
   }
 
@@ -1262,7 +1285,7 @@ void Ssd1677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
     bus.cmd(CMD_MASTER_ACTIVATION);
     bus.waitRefreshComplete("factory_gray");
     _isScreenOn = true;
-    if (turnOff) powerOffController(bus);
+    if (turnOff) powerOffController(bus, 200, /*wait=*/false);
     _needsGrayClear = true;  // restoring RAM alone cannot restore B/W ink
   } else {
     // Settled rails before the gray waveform (no-op where the panel is already

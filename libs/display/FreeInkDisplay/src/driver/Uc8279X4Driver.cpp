@@ -390,9 +390,17 @@ void Uc8279X4Driver::streamPlaneXor(EpdBus& bus, uint8_t ramCmd, const uint8_t* 
 }
 
 void Uc8279X4Driver::powerOnIfNeeded(EpdBus& bus, const char* tag) {
-  if (_isScreenOn) return;  // vendor _powerOn(): no second PON while powered
+  if (_isScreenOn) return;  // vendor _powerOn(): no second PON while powered; an early one is waited out by the bus
   bus.cmd(CMD_POWER_ON);
   bus.waitBusy(tag);
+  _isScreenOn = true;
+}
+
+// The host's page turn: PON now, waited out by the refresh's first write. The OTP waveform is chosen by TSSET and CDI,
+// which the refresh writes after this PON instead of before it as stock does.
+void Uc8279X4Driver::beginPowerOn(EpdBus& bus) {
+  if (_isScreenOn || _pendingRefresh) return;
+  bus.cmdNoWait(CMD_POWER_ON, " 8279x4_PON");
   _isScreenOn = true;
 }
 
@@ -566,8 +574,7 @@ void Uc8279X4Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
   _needFullClear = false;
 
   if (_pendingTurnOff) {
-    bus.cmd(CMD_POWER_OFF);
-    bus.waitBusy(" 8279x4_POF");
+    bus.cmdNoWait(CMD_POWER_OFF, " 8279x4_POF");  // the next write waits it out
     _isScreenOn = false;
   }
 }
@@ -759,8 +766,7 @@ void Uc8279X4Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, c
     _oldPlaneValid = false;
     _redriveAfterGray = true;
     if (turnOff) {
-      bus.cmd(CMD_POWER_OFF);
-      bus.waitBusy("text AA power off");
+      bus.cmdNoWait(CMD_POWER_OFF, "text AA power off");  // the next write waits it out
       _isScreenOn = false;
     }
     return;
@@ -832,8 +838,7 @@ void Uc8279X4Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, c
   // between page refreshes (the UC8179 sibling does the same — its gray_aa sends
   // no POF). Honor only an explicit turnOff.
   if (turnOff) {
-    bus.cmd(CMD_POWER_OFF);
-    bus.waitBusy(" 8279x4_gray_POF");
+    bus.cmdNoWait(CMD_POWER_OFF, " 8279x4_gray_POF");  // the next write waits it out
     _isScreenOn = false;
   }
 
