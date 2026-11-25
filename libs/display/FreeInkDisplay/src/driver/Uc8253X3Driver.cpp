@@ -97,19 +97,32 @@ void Uc8253X3Driver::loadBankCdi(EpdBus& bus, uint8_t cdi0, uint8_t cdi1, const 
 
 void Uc8253X3Driver::triggerRefresh(EpdBus &bus, bool turnOff,
                                     const char *label) {
+  powerOnForRefresh(bus);
+  bus.cmd(CMD_DISPLAY_REFRESH);
+  bus.waitBusy(label);
+  if (turnOff) {
+    bus.cmdNoWait(CMD_POWER_OFF, " X3_POF");  // the next write waits it out
+    _isScreenOn = false;
+  }
+}
+
+// The rails up for a refresh: a power-on of its own, or the one beginPowerOn() started, which the refresh's first write
+// has waited out (EpdBus::settle).
+void Uc8253X3Driver::powerOnForRefresh(EpdBus& bus) {
   if (!_isScreenOn) {
     bus.cmd(CMD_POWER_ON);
     bus.waitBusy(" X3_PON");
     _isScreenOn = true;
-    _idlePoweredOff = false;
   }
-  bus.cmd(CMD_DISPLAY_REFRESH);
-  bus.waitBusy(label);
-  if (turnOff) {
-    bus.cmd(CMD_POWER_OFF);
-    bus.waitBusy(" X3_POF");
-    _isScreenOn = false;
-  }
+  _earlyPowerOn = false;
+  _idlePoweredOff = false;
+}
+
+void Uc8253X3Driver::beginPowerOn(EpdBus& bus) {
+  if (_isScreenOn || _pendingRefresh) return;
+  bus.cmdNoWait(CMD_POWER_ON, " X3_PON");
+  _isScreenOn = true;
+  _earlyPowerOn = true;
 }
 
 void Uc8253X3Driver::grayWindowIn(EpdBus &bus) {
@@ -165,6 +178,7 @@ void Uc8253X3Driver::initController(EpdBus& bus) {
   bus.cmd(CMD_DATA_STOP);
 
   _isScreenOn = false;
+  _earlyPowerOn = false;
   _idlePoweredOff = false;
 }
 
@@ -207,7 +221,7 @@ bool Uc8253X3Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t*
     _redRamSynced = false;
     _inGrayscaleMode = false;
   }
-  if (!_isScreenOn && !_idlePoweredOff && !turnOff) {
+  if (railsWereDown() && !_idlePoweredOff && !turnOff) {
     mode = RefreshMode::Half;  // wake transition gets a stronger waveform
   }
   if (_inGrayscaleMode) {
@@ -254,12 +268,7 @@ bool Uc8253X3Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t*
 
   // PON only when the rails are down: a redundant PON on a powered UC8253 gives
   // no BUSY LOW edge, so the X3TwoPhase wait burns its 1000 ms ceiling.
-  if (!_isScreenOn) {
-    bus.cmd(CMD_POWER_ON);
-    bus.waitBusy(" X3_PON");
-    _isScreenOn = true;
-    _idlePoweredOff = false;
-  }
+  powerOnForRefresh(bus);
   bus.cmd(CMD_DISPLAY_REFRESH);
   // Confirm the waveform actually started (BUSY dropped LOW) before handing the
   // CPU back, so displayFinish()'s waitBusy() only rides out the second
@@ -281,7 +290,7 @@ bool Uc8253X3Driver::displayOnePassStart(EpdBus& bus, const uint8_t* oldPlane, c
                                          RefreshMode mode, bool turnOff) {
   // A page this driver would promote, a clean refresh, the first after boot or a wake, keeps its B/W path.
   if (mode != RefreshMode::Fast || !_redRamSynced || _initialFullSyncsRemaining > 0 || _forceFullSyncNext ||
-      (!_isScreenOn && !_idlePoweredOff && !turnOff) || _directGrayOnPanel || _inGrayscaleMode) {
+      (railsWereDown() && !_idlePoweredOff && !turnOff) || _directGrayOnPanel || _inGrayscaleMode) {
     return displayStart(bus, page, nullptr, mode, turnOff);
   }
   _absoluteInput = false;
@@ -292,12 +301,7 @@ bool Uc8253X3Driver::displayOnePassStart(EpdBus& bus, const uint8_t* oldPlane, c
   bus.cmd(CMD_DATA_STOP);
   bus.sendPlaneFlipped(CMD_DTM2, page, _h, _wb);
   bus.cmd(CMD_DATA_STOP);
-  if (!_isScreenOn) {
-    bus.cmd(CMD_POWER_ON);
-    bus.waitBusy(" X3_PON");
-    _isScreenOn = true;
-    _idlePoweredOff = false;
-  }
+  powerOnForRefresh(bus);
   bus.cmd(CMD_DISPLAY_REFRESH);
   {
     const int8_t busyPin = bus.pins().busy;
@@ -330,8 +334,7 @@ void Uc8253X3Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
   // question any ghosting report needs answered.
   bus.waitRefreshComplete(doFullSync ? " X3_DRF_full" : onePass ? " X3_DRF_onepass" : fastMode ? " X3_DRF_fast" : " X3_DRF_half");
   if (turnOff) {
-    bus.cmd(CMD_POWER_OFF);
-    bus.waitBusy(" X3_POF");
+    bus.cmdNoWait(CMD_POWER_OFF, " X3_POF");  // the next write waits it out
     _isScreenOn = false;
   }
 
@@ -699,6 +702,7 @@ void Uc8253X3Driver::powerOffBetweenFrames(EpdBus& bus) {
   bus.cmd(CMD_POWER_OFF);
   bus.waitBusy(" X3_IDLE_POF");
   _isScreenOn = false;
+  _earlyPowerOn = false;
   _idlePoweredOff = true;
 }
 
@@ -708,6 +712,7 @@ void Uc8253X3Driver::deepSleep(EpdBus& bus) {
   _absoluteInput = false;
   _directGrayPass = false;
   _idlePoweredOff = false;
+  _earlyPowerOn = false;
   if (_isScreenOn) {
     bus.cmd(CMD_POWER_OFF);
     bus.waitBusy(" X3 power-down");

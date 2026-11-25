@@ -55,6 +55,9 @@ class PanelDriver {
   // Called only after the host's complete frame (including grayscale) finishes.
   // Retain controller RAM and the partial-refresh baseline; never reset/sleep.
   virtual void powerOffBetweenFrames(EpdBus& bus) { (void)bus; }
+  // Rails down: start powering them up for the refresh the host is about to draw, without waiting (EpdBus::cmdNoWait).
+  // The refresh that follows must choose its waveform as if the rails were still down. Rails up: nothing.
+  virtual void beginPowerOn(EpdBus& bus) { (void)bus; }
 
   // --- core paint path (load RAM + refresh) ---
   virtual void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) = 0;

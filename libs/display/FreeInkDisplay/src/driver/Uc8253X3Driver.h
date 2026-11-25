@@ -60,6 +60,7 @@ class Uc8253X3Driver : public PanelDriver {
   // promotion after it, are theirs. Keeping the promotion after a turnOff power-off, and leaving the timing to the
   // host instead of the driver's 1.2 s timer and press-edge prewarm, are ours.
   void powerOffBetweenFrames(EpdBus& bus) override;
+  void beginPowerOn(EpdBus& bus) override;
 
   // One-pass text, composed by the host (see PanelDriver::composesOnePassText()).
   bool supportsOnePassText() const override { return true; }
@@ -111,6 +112,10 @@ private:
   void loadBankCdi(EpdBus &bus, uint8_t cdi0, uint8_t cdi1,
                    const Uc8253LutBank &bank);
   void triggerRefresh(EpdBus &bus, bool turnOff, const char *label = " X3_DRF");
+  void powerOnForRefresh(EpdBus& bus);
+  // The rails were down when the host asked for this refresh: off, or on only because beginPowerOn() started them.
+  // The wake waveform and the one-pass gate read this, so an early power-on does not change what they choose.
+  bool railsWereDown() const { return !_isScreenOn || _earlyPowerOn; }
   void scrubToWhite(EpdBus &bus, const char *label);
   void grayWindowIn(EpdBus &bus);
 
@@ -128,6 +133,7 @@ private:
   // were, so a FAST diffs exactly as it would with the rails up. Without this every page turn after a second of
   // idle would flash.
   bool _idlePoweredOff = false;
+  bool _earlyPowerOn = false;  // beginPowerOn() raised the rails for a refresh that has not run yet
   bool _redRamSynced = false;
   bool _inGrayscaleMode = false;
   bool _absoluteInput = false;

@@ -709,6 +709,12 @@ void FreeInkDisplay::powerOffBetweenFrames() {
   _driver->powerOffBetweenFrames(_bus);
 }
 
+void FreeInkDisplay::beginPowerOn() {
+  if (!_driver || _refreshPending) return;
+  DisplayPmLock pmLock;
+  _driver->beginPowerOn(_bus);
+}
+
 bool FreeInkDisplay::supportsAsyncRefresh() const {
   return !_inverted && !_inversionDirty && _driver != nullptr && _driver->supportsAsyncDisplay();
 }

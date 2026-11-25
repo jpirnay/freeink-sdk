@@ -248,6 +248,10 @@ class FreeInkDisplay {
   // cleanup. Completes pending refreshes, then powers down analog circuitry,
   // not RAM.
   void powerOffBetweenFrames();
+  // Starts powering the panel up for a refresh the host is about to draw, without waiting: the controller's power-on
+  // runs while the host renders, and the refresh's first write waits out what is left of it. Nothing while a refresh
+  // is pending or the rails are up, and nothing on a driver without beginPowerOn().
+  void beginPowerOn();
   // True when the selected driver can use an ordinary deferred B/W refresh as
   // the base for a following grayscale pass.
   bool supportsAsyncGrayscaleBase() const;

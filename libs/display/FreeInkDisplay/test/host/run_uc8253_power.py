@@ -57,6 +57,10 @@ public:
     command=c; if(c == 4) ++powerOns; if(c == 2) ++powerOffs;
     if(c == 0x12) { ++refreshes; refreshRunning=true; planesAtRefresh.push_back(uint8_t((white(newPlane) ? 1 : 0) | (white(oldPlane) ? 2 : 0))); }
   }
+  // cmdNoWait(): the command, its wait left to the next write (the production bus's settle()).
+  unsigned noWaits=0;
+  void cmdNoWait(uint8_t c, const char* = nullptr, uint16_t = 0) { cmd(c); ++noWaits; }
+  void settle() {}
   void cmdData2(uint8_t c, uint8_t a, uint8_t b) { cmd(c); data(a); data(b); }
   void data(uint8_t) {}
   void data(const uint8_t* p, size_t n) {
@@ -249,7 +253,52 @@ int main() {
    x.displayFinish(b, two.data());
    assert(b.dtm1Uploads == uploads + 1 && b.oldPlane == two);
  }
- std::cout << "PASS: UC8253 cold power-on, warm Full, power-off/wake, idle power-off keeps FAST, gray base scrubs after AA and one-pass\\n";
+ // The page turn's early power-on (beginPowerOn) under the sunlight fading fix, which powers off after every
+ // refresh: the refresh after it sends no PON of its own and picks the waveform it would have picked with the rails
+ // down. The power-off is left running (cmdNoWait); the bus waits it out at its next write.
+ {
+   const auto& cfg = freeink::uc8253X3DefaultConfig();
+   const std::vector<uint8_t> fastBank(cfg.fast.vcom, cfg.fast.vcom + 42), halfBank(cfg.half.vcom, cfg.half.vcom + 42);
+   freeink::Uc8253X3Driver x;
+   freeink::EpdBus b;
+   x.begin(b);
+   std::vector<uint8_t> page(792 / 8 * 528, 0xF0), mask(792 / 8 * 528, 0x3C);
+   x.display(b, page.data(), nullptr, freeink::RefreshMode::Full, true);
+   auto ons = b.powerOns, offs = b.powerOffs, noWaits = b.noWaits;
+   x.display(b, page.data(), nullptr, freeink::RefreshMode::Fast, true);
+   assert(b.powerOns == ons + 1 && b.powerOffs == offs + 1 && b.noWaits == noWaits + 1 && b.lastBank == fastBank);
+   ons = b.powerOns;
+   x.beginPowerOn(b);
+   assert(b.powerOns == ons + 1);
+   x.beginPowerOn(b);  // already up: nothing
+   assert(b.powerOns == ons + 1);
+   x.display(b, page.data(), nullptr, freeink::RefreshMode::Fast, true);
+   assert(b.powerOns == ons + 1 && b.lastBank == fastBank);
+   // One-pass text after an early power-on: still one refresh with its own bank, and no PON of its own.
+   x.beginPowerOn(b);
+   ons = b.powerOns;
+   const std::vector<uint8_t> rest = {0x00, 24, 0, 0, 0, 1};
+   assert(x.displayOnePassStart(b, mask.data(), page.data(), freeink::RefreshMode::Fast, true));
+   assert(b.powerOns == ons && std::vector<uint8_t>(b.lastBank.begin(), b.lastBank.begin() + 6) == rest);
+   offs = b.powerOffs;
+   x.displayFinish(b, page.data());
+   assert(b.powerOffs == offs + 1);
+   // A refresh that keeps its rails after a power-off still gets the wake waveform when the page turn raised them.
+   x.beginPowerOn(b);
+   x.display(b, page.data(), nullptr, freeink::RefreshMode::Fast, false);
+   assert(b.lastBank == halfBank);
+   // After the idle power-off it keeps its FAST, early power-on or not.
+   x.powerOffBetweenFrames(b);
+   ons = b.powerOns;
+   x.beginPowerOn(b);
+   x.display(b, page.data(), nullptr, freeink::RefreshMode::Fast, false);
+   assert(b.powerOns == ons + 1 && b.lastBank == fastBank);
+   // Rails up: nothing to start.
+   ons = b.powerOns;
+   x.beginPowerOn(b);
+   assert(b.powerOns == ons);
+ }
+ std::cout << "PASS: UC8253 cold power-on, warm Full, power-off/wake, idle power-off keeps FAST, gray base scrubs after AA and one-pass, early power-on\\n";
 }
 """)
     exe = root / "test_uc8253_power"
