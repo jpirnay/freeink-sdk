@@ -1021,6 +1021,8 @@ uint8_t* Uc8179Driver::borrowGray8Canvas(uint16_t* stride) {
   return _gray8Canvas;
 }
 
+static_assert(gray16::strictlyFalling(uc8179_gray16::kLevelTenths), "canvasToLevels() needs levels falling strictly");
+
 bool Uc8179Driver::displayGray8Canvas(EpdBus& bus, const RefreshMode mode, const bool turnOff) {
   if (!_gray8Canvas || !supportsGray16Image()) return false;
   gray16::canvasToLevels(_gray8Canvas, _w, _h, uc8179_gray16::kLevelTenths);

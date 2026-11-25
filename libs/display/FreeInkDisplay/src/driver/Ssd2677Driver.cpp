@@ -1125,6 +1125,7 @@ namespace {
 // paths change.
 constexpr uint16_t kGray16LStarTenths[16] = {706, 649, 614, 572, 544, 491, 426, 383,
                                              336, 258, 238, 187, 160, 134, 116, 79};
+static_assert(gray16::strictlyFalling(kGray16LStarTenths), "canvasToLevels() needs levels falling strictly");
 }  // namespace
 
 void Ssd2677Driver::canvasToGray16(uint8_t* canvas, const uint16_t width, const uint16_t height) {

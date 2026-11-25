@@ -32,6 +32,16 @@ inline constexpr uint16_t kLightnessCenti[256] = {
     9723, 9758, 9793, 9827, 9862, 9896, 9931, 9965, 10000,
 };
 
+// Whether a level table falls strictly from white (level 0) to black (level 15), as canvasToLevels() needs: its scan
+// for the nearest level stops at the first midpoint `want` is not below, which is the nearest level only then. Each
+// table it is given asserts this where it is defined.
+constexpr bool strictlyFalling(const uint16_t (&levelTenths)[16]) {
+  for (int l = 0; l < 15; ++l) {
+    if (levelTenths[l] <= levelTenths[l + 1]) return false;
+  }
+  return true;
+}
+
 // `canvas` (width x height, one byte per pixel, rows of `width`) dithered onto the levels whose L* (x10) is
 // `levelTenths`, level 0 the lightest and level 15 the darkest, strictly falling. The result is written in place,
 // 4 bits per pixel, two pixels a byte (high nibble = the left pixel): the layout displayGray16Image() takes.
@@ -40,6 +50,11 @@ inline void canvasToLevels(uint8_t* canvas, const uint16_t width, const uint16_t
                            const uint16_t (&levelTenths)[16]) {
   const int32_t white = levelTenths[0];
   const int32_t black = levelTenths[15];
+  // The nearest level, from the midpoints between neighbours: with the levels strictly falling, `want` is nearer level
+  // l + 1 than level l exactly when 2 * want < levelTenths[l] + levelTenths[l + 1], and a tie keeps the lighter level,
+  // as a search for the first smallest distance does. The scan stops at the level, where that search measured all 16.
+  int32_t twiceMidpoint[15];
+  for (int l = 0; l < 15; ++l) twiceMidpoint[l] = static_cast<int32_t>(levelTenths[l]) + levelTenths[l + 1];
   const size_t rowLen = static_cast<size_t>(width) + 2;
   auto* err = static_cast<int16_t*>(heap_caps_malloc(rowLen * 2 * sizeof(int16_t), MALLOC_CAP_8BIT));
   if (err) memset(err, 0, rowLen * 2 * sizeof(int16_t));
@@ -52,11 +67,7 @@ inline void canvasToLevels(uint8_t* canvas, const uint16_t width, const uint16_t
       const int32_t target = black + ((white - black) * kLightnessCenti[canvas[row + x]] + 5000) / 10000;
       const int32_t want = target + (cur ? cur[x + 1] : 0);
       uint8_t level = 0;
-      int32_t best = INT32_MAX;
-      for (uint8_t l = 0; l < 16; ++l) {
-        const int32_t d = abs(want - static_cast<int32_t>(levelTenths[l]));
-        if (d < best) best = d, level = l;
-      }
+      while (level < 15 && 2 * want < twiceMidpoint[level]) ++level;
       if (cur) {
         const int32_t e = want - levelTenths[level];
         cur[x + 2] = static_cast<int16_t>(cur[x + 2] + e * 7 / 16);
