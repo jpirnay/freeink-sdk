@@ -133,8 +133,16 @@ class FastBank(unittest.TestCase):
     def codes(rows):
         return [[int(c) for c in re.search(r"LUT_MAKE\(([^)]*)\)", r).group(1).split(",")] for r in rows]
 
+    def test_kick_then_rails(self):
+        rows = self.codes(gen.fast_rows(21, 12, 13, 3, 14, 2, kick=8))
+        self.assertEqual(len(rows), 29)
+        self.assertEqual([r[0] for r in rows], [2] * 8 + [1] * 21)
+        self.assertEqual([r[15] for r in rows], [1] * 8 + [2] * 21)
+        # The greys start at frame 0 as before; the kick only lengthens the rails.
+        self.assertEqual([r[13] for r in rows], [2] * 12 + [1] * 3 + [3] * 14)
+
     def test_columns(self):
-        rows = self.codes(gen.fast_rows(21, 12, 13, 3, 14, 2))
+        rows = self.codes(gen.fast_rows(21, 12, 13, 3, 14, 2, kick=0))
         self.assertEqual(len(rows), 21)  # the rails; the greys end inside them
         for f, row in enumerate(rows):
             self.assertEqual(row[0], 1)
@@ -145,7 +153,7 @@ class FastBank(unittest.TestCase):
                 self.assertEqual(row[level], 3)
 
     def test_greys_past_the_rails_lengthen_the_bank(self):
-        rows = self.codes(gen.fast_rows(4, 4, 13, 3, 14, 2))
+        rows = self.codes(gen.fast_rows(4, 4, 13, 3, 14, 2, kick=0))
         self.assertEqual(len(rows), 7)
         self.assertEqual([r[0] for r in rows], [1, 1, 1, 1, 3, 3, 3])
         self.assertEqual([r[13] for r in rows], [2, 2, 2, 2, 1, 1, 1])
@@ -188,11 +196,13 @@ class GeneratedFile(unittest.TestCase):
                 for start in range(white + 1):
                     self.assertEqual(land(self.g["fast"][i], level, start, white), white - k)
 
-    def test_rails_are_the_vendor_du(self):
+    def test_rails_are_the_kick_then_the_vendor_du(self):
+        kick = gen.FAST_KICK_FRAMES
         for i, impulse in enumerate(self.g["impulses"]):
             bank = self.g["fast"][i]
-            self.assertEqual(len(bank), impulse[15])
-            self.assertTrue(all(row[0] == 1 and row[15] == 2 for row in bank))
+            self.assertEqual(len(bank), kick + impulse[15])
+            self.assertTrue(all(row[0] == 2 and row[15] == 1 for row in bank[:kick]))
+            self.assertTrue(all(row[0] == 1 and row[15] == 2 for row in bank[kick:]))
 
     def test_budget(self):
         for i in range(7):

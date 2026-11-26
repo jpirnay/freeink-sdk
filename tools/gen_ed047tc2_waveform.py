@@ -36,7 +36,9 @@ rather than producing a plausible-looking wrong waveform.
 
 The emitted banks turn that vector into a single-push architecture:
 
-epd_fast/epd_fastest get the DU rails plus two SELF-NORMALIZING grey columns.
+epd_fast/epd_fastest get the DU rails, each led by FAST_KICK_FRAMES toward the
+opposite rail (it erases the edges of old ink, which the bare DU leaves), plus two
+SELF-NORMALIZING grey columns.
 A LUT column is indexed by destination alone and cannot see where a pixel came
 from, so a column that must land on a mid level from an arbitrary source first
 saturates at a rail and then walks to its target: a run toward white long
@@ -344,10 +346,23 @@ def pick_gray_levels(impulse, k_dark, k_light):
     return best[1], best[2]
 
 
-def fast_rows(l15, run, dark, k_dark, light, k_light):
+# Frames each rail column drives toward the OPPOSITE rail before its L[15]. The bare DU erases
+# ink but not its edges: on a T5 S3 Pro at 24 C, switching Settings tabs left hollow outlines
+# of the old labels, even through a FAST that drove every pixel (the first one after a Half),
+# while a Half, whose clean bank goes through both rails, left none. Seen with the user
+# watching, 2026-11-26: 8 frames left fainter outlines, 10 and 12 none after a Half and faint
+# traces without build-up after changed-pixels-only FASTs; page turns looked right with
+# 8 and 12. A fixed count, not scaled by L[15]: only 24 C was looked at. Symmetric on both
+# rails, so a write followed by an erase still nets zero. Each frame costs ~33 ms on every
+# FAST, page turns included.
+FAST_KICK_FRAMES = 10
+
+
+def fast_rows(l15, run, dark, k_dark, light, k_light, kick=FAST_KICK_FRAMES):
     """The differential bank: DU rails plus two self-normalizing grey columns.
 
-    Rails run the vendor DU verbatim: L[15] frames of full drive, then park.
+    Rails first drive `kick` frames toward the opposite rail, then the vendor DU's
+    L[15] frames of full drive, then park.
     Each grey column first drives `run` frames toward white, which takes any
     source to white -- erasing whatever state the pixel arrived in, the rail clamp
     doing the work a source index would otherwise have to -- and then walks back
@@ -355,13 +370,16 @@ def fast_rows(l15, run, dark, k_dark, light, k_light):
     every frame past white is drive the pixel never gets back. Measured at 24 C,
     100 px grey patches over four page turns and then a turn to white: with a run
     of L[15] they stayed ~5% darker than the white around them, with a run of 12
-    ~1.5% (the old near-black greys ~0.6%). The bank is as long as the longer of
-    the two, which is L[15] in every range.
+    ~1.5% (the old near-black greys ~0.6%). The greys start at frame 0 and end
+    inside the rails, so the bank is kick + L[15] rows in every range.
     """
     rows = []
-    for f in range(max(l15, run + max(k_dark, k_light))):
+    for f in range(max(kick + l15, run + max(k_dark, k_light))):
         codes = [3] * 16
-        if f < l15:
+        if f < kick:
+            codes[0] = 2
+            codes[15] = 1
+        elif f < kick + l15:
             codes[0] = 1
             codes[15] = 2
         for level, k in ((dark, k_dark), (light, k_light)):
@@ -426,7 +444,9 @@ HEADER = '''// GENERATED FILE -- DO NOT EDIT BY HAND.
 // anti-aliasing greys in the same push as its text, with no separate B/W base
 // pass to pre-position the fringe.
 //
-// kFastLut (epd_fast / epd_fastest): the vendor DU rails verbatim, plus a grey
+// kFastLut (epd_fast / epd_fastest): the vendor DU rails, each led by a push of
+// FAST_KICK_FRAMES toward the opposite rail (the bare DU leaves the edges of the
+// ink it erases; see the generator), plus a grey
 // column per AA tone that drives toward white long enough to take any source
 // there and then descends k frames toward black. Both lengths come from the
 // panel\'s measured response (WALKUP_LIGHTNESS, WALKDOWN_AFTER_RUN in the
@@ -612,7 +632,7 @@ def main():
         impulse_comment=impulse_comment, gray_comment=gray_comment, worst_rows=worst_rows
     )
     for rows, name in fast_banks.items():
-        body += "// Differential bank: DU rails + self-normalizing AA grey columns.\n"
+        body += "// Differential bank: opposite-rail push + DU rails, self-normalizing AA grey columns.\n"
         body += "constexpr uint32_t %s[] = {\n%s\n    0u,\n};\n\n" % (name, "\n".join(rows))
     for rows, name in clean_banks.items():
         body += "// GC16-style clean: every level rail-normalizes, then lands exactly.\n"
