@@ -1150,12 +1150,13 @@ bool Ssd2677Driver::displayGray16Image(EpdBus& bus, const uint8_t* levels, Refre
     ++_g16FastTurns;
   } else {
     exitGray16(bus);  // a previous 16-level image gives its drive back first
-    // Start from the state the calibration did: two stock full refreshes with
-    // every pixel on code 11 (15 frames black, then 15 white).
-    for (int i = 0; i < 2; ++i) {
-      sendLevelCodes(bus, nullptr, nullptr, 3);
-      refreshWith(bus, lut_picco_se0400_full, false);
-    }
+    // Clear to white: one stock full refresh with every pixel on code 11 (15
+    // frames black, then 15 white). The calibration (Free-Ink #223) started from
+    // two, the second the same refresh again; it cost every sleep picture a
+    // second flash and about 0.4 s, so one it is (owner's call, 2026-11-27).
+    // The levels have not been measured from this start.
+    sendLevelCodes(bus, nullptr, nullptr, 3);
+    refreshWith(bus, lut_picco_se0400_full, false);
     if (_g16.useDeep) {  // one contiguous drive: the true black, and dark grays pulled back from it
       sendLevelCodes(bus, levels, _g16.deep);
       refreshWith(bus, _lutDeep, false);

@@ -1082,17 +1082,17 @@ static void expectGray16Image(Ssd2677Driver& s) {
   // The erase and deep drives match picco-gray-cal's tables (its doses: below, under runtime doses).
   assert(Bytes(s._lutDissolve, s._lutDissolve + 535) == asBytes(lut_picco_se0400_gray16_ref_dissolve));
   assert(Bytes(s._lutDeep, s._lutDeep + 535) == asBytes(lut_picco_se0400_gray16_ref_deep));
-  // Clean image: two clears, deep, coarse, pull.
-  assert(lutsOf(bus) == std::vector<Bytes>({asBytes(lut_picco_se0400_full), asBytes(lut_picco_se0400_full),
-                                            asBytes(s._lutDeep), asBytes(s._lutCoarse), asBytes(s._lutPull)}));
+  // Clean image: one clear, deep, coarse, pull.
+  assert(lutsOf(bus) == std::vector<Bytes>({asBytes(lut_picco_se0400_full), asBytes(s._lutDeep),
+                                            asBytes(s._lutCoarse), asBytes(s._lutPull)}));
   {
     const auto f = framesOf(bus);
-    assert(f.size() == 5 && f[0] == Bytes(96000, 0xFF) && f[1] == Bytes(96000, 0xFF));
+    assert(f.size() == 4 && f[0] == Bytes(96000, 0xFF));
     for (uint32_t y : {0u, 479u})
       for (uint32_t x = 0; x < 800; ++x) {
         const uint8_t l = levelAt(x);
-        assert(codeAt(f[2], y * 800 + x) == s._g16.deep[l] && codeAt(f[3], y * 800 + x) == s._g16.coarse[l] &&
-               codeAt(f[4], y * 800 + x) == s._g16.pull[l]);
+        assert(codeAt(f[1], y * 800 + x) == s._g16.deep[l] && codeAt(f[2], y * 800 + x) == s._g16.coarse[l] &&
+               codeAt(f[3], y * 800 + x) == s._g16.pull[l]);
       }
   }
   assert(lastRegister(bus, 0x02) == 0x00 && bus.writes.back().command == 0x02);  // powered off at the end
