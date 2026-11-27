@@ -859,7 +859,7 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
       // The preview takes taps on the part of it that is on screen.
       if (partial)
         hit.height = static_cast<int16_t>(rowArea.bottom() - row.y);
-      frame.hit(hit, props.action, item.actionValue, partial ? InputTouch : props.inputMask, hitState);
+      frame.hit(hit, props.action, item.actionValue, partial ? uint16_t{InputTouch} : props.inputMask, hitState);
       if (revealed)
         frame.hit(actionRect, reveal->action, item.actionValue,
                   InputTouch, StateNormal);
