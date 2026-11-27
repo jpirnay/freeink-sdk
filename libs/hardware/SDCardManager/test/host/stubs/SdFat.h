@@ -69,6 +69,7 @@ class FsFile {
     return open_ && !fakeSd::rootSyncFails;
   }
   uint64_t fileSize() const { return fakeSd::advertisedSize; }
+  uint64_t size() const { return fileSize(); }
   bool isDirectory() const { return directory_; }
   bool close() {
     if (open_) ++fakeSd::closes;
