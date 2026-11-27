@@ -788,7 +788,7 @@ bool Ssd2677Driver::displayRetainedGrayscaleOverlay(EpdBus& bus, const uint8_t* 
   powerOn(bus);
   bus.cmd(CMD_DATA);
   {
-    static uint8_t chunk[1024];
+    auto& chunk = sendChunk;  // the send paths' shared buffer, not a second 1 KB of its own
     auto txn = bus.beginTxn();
     uint16_t n = 0;
     for (uint32_t i = 0; i < g.bufferSize; ++i) {
