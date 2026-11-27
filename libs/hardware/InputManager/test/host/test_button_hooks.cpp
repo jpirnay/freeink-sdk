@@ -8,6 +8,7 @@
 
 #include <cassert>
 #include <cstdio>
+#include <mutex>
 
 #define private public
 #include <InputManager.h>

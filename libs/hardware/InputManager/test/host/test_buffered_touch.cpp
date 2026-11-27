@@ -155,7 +155,7 @@ int main() {
   // Buffered bezel-key pulses survive the physical-button debounce.
   capture(input,true,240,homeY); capture(input,false);
   unsigned presses=0, releases=0;
-  const auto key=BoardConfig::isMetalioEInk4Plus() ? InputManager::BTN_UP : InputManager::BTN_DOWN;
+  const auto key = BoardConfig::isMetalioEInk4Plus() ? InputManager::BTN_LEFT : InputManager::BTN_DOWN;
   for(int i=0;i<6;++i) { tick(input); presses+=input.wasPressed(key); releases+=input.wasReleased(key); }
   assert(presses==1 && releases==1 && !input.isPressed(key));
   capture(input,true,240,homeY); capture(input,false);

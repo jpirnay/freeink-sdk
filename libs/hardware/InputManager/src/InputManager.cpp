@@ -2091,8 +2091,7 @@ void InputManager::beginCst816s() {
 #if FREEINK_DEVICE_METALIO_EINK4_PLUS
   // FT6336U polling mode (as the vendor firmware): INT stays low while touched.
   if (BoardConfig::isMetalioEInk4Plus()) {
-    const bool configured = ft5x06WriteReg(0xA4, 0x00);
-    Serial.printf("[metalio-touch] FT6336U interrupt mode write: %s\n", configured ? "OK" : "failed");
+    (void)ft5x06WriteReg(0xA4, 0x00);
   }
 #endif
   cstVirtualButtons = 0;
@@ -2113,27 +2112,11 @@ void InputManager::pollCst816s(const unsigned long now) {
   bool ok = ft5x06ReadReg(0x02, data, readLen);
 #if FREEINK_DEVICE_METALIO_EINK4_PLUS
   if (BoardConfig::isMetalioEInk4Plus()) {
-    unsigned sampleLength = ok ? readLen : 0;
     if (!ok && ft5x06ReadReg(0x02, data, 6)) {
       // Use the vendor's primary-contact frame if a full two-contact read fails.
       ok = true;
-      sampleLength = 6;
       if ((data[0] & 0x0F) > 1) data[0] = (data[0] & 0xF0) | 1;
     }
-    static unsigned previousLength = 255;
-    static unsigned long previousReport = 0;
-    if (sampleLength != previousLength || now - previousReport >= 10000) {
-      Serial.printf("[metalio-touch] FT6336U sample bytes: %u\n", sampleLength);
-      previousLength = sampleLength;
-      previousReport = now;
-    }
-    const bool contact = ok && (data[0] & 0x0F) && (data[1] >> 6) != 1;
-    static bool previousContact = false;
-    if (contact && !previousContact) {
-      Serial.printf("[metalio-touch] down raw=(%u,%u)\n",
-                     ((data[1] & 0x0F) << 8) | data[2], ((data[3] & 0x0F) << 8) | data[4]);
-    }
-    previousContact = contact;
   }
 #endif
   processCst816s(now, data, ok);
