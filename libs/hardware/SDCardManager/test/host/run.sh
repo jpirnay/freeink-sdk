@@ -21,3 +21,11 @@ c++ -std=c++17 -Wall -Wextra -Werror ${CXXFLAGS:-} \
 "$BUILD_DIR/test_remove_dir"
 c++ -std=c++17 -Wall -Wextra -Werror ${CXXFLAGS:-} test_read_ahead.cpp -o "$BUILD_DIR/test_read_ahead"
 "$BUILD_DIR/test_read_ahead"
+c++ -std=c++17 -Wall -Wextra -Werror ${CXXFLAGS:-} \
+  -Istubs -I../../include test_startup_error.cpp ../../src/SDCardManager.cpp \
+  -o "$BUILD_DIR/test_startup_error"
+"$BUILD_DIR/test_startup_error"
+c++ -std=c++17 -Wall -Wextra -Werror ${CXXFLAGS:-} \
+  -Istubs -I../../include test_write.cpp ../../src/SDCardManager.cpp \
+  -o "$BUILD_DIR/test_write"
+"$BUILD_DIR/test_write"

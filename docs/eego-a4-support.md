@@ -51,23 +51,42 @@ The original pin map and controller details came from stock-firmware analysis
 B/W refresh cadence is controlled by the caller. FAST requests remain fast,
 including after grayscale; HALF and FULL select the full waveform. The first
 B/W paint after initialization uses the full waveform to clear unknown glass state.
-After grayscale, the next B/W paint seeds the old plane with the inverse of the
-target so every pixel is driven with the requested waveform. HALF and FULL
+After a four-gray image, the next B/W paint seeds the old plane with the inverse
+of the target so every pixel is driven with the requested waveform. A FAST paint
+straight after a Gray3 page seeds it with that page as the panel shows it, each
+gray pixel as the inverse of its target: gray pixels and pixels that change are
+driven, white that stays white is not. HALF and FULL
 paints instead seed the old plane with the target itself: in the full waveform
 the same-state records (white to white, black to black) flash the pixel through
 both states while the changing records drive one way only, so every pixel takes
 a flashing record and the previous screen does not carry into the new one. Each B/W paint then
 copies the displayed frame into the old plane for the next differential update.
+On the first book page (`setReaderRefresh(true)`) painted B/W after a paint that
+was not a book page, a FAST paint drives pixels turning black for 48 frames
+instead of 36.
+On a dark (inverted) page, a FAST paint drives black that stays black for
+`A4_UC8279C_FAST_DARK_HELD_BLACK_FRAMES` instead of the stock 36, and a pixel
+turning black gets `A4_UC8279C_FAST_DARK_END_WHITE_FRAMES` of white drive after
+its black frames.
 Anti-aliased (overlay) pages use stock V1.0.3's reader "Gray3" path. The B/W
-base is stashed undisplayed; with its gray masks it becomes one three-level
-frame (white / middle / black), sent as a per-pixel transition from the
-previous Gray3 frame in a single refresh: unchanged white and middle pixels
-hold, black is re-driven, and only changed pixels are cleared or nudged. A
-cleanup request (non-FAST base) shows the page with black and white swapped,
-then the page itself. After a B/W screen or four-gray image there is no
-Gray3 history: the next page shows its base with a normal B/W refresh, which
-fully clears the previous screen, and its grays follow as a Gray3 transition
-from that base.
+base is stashed undisplayed; with its gray mask it becomes one frame, sent
+as a per-pixel transition from the previous Gray3 frame in a single refresh:
+unchanged white and gray pixels hold, black is re-driven, a pixel turning
+white is cleared, and a new gray pixel takes the gray record. A page has
+white, one gray and black: the dark overlay level (both masks set) is drawn
+black. The gray record is not stock's. It is the black record's 18 frames
+followed by `A4_UC8279C_GRAY3_GRAY_WHITE_FRAMES` of white drive, so a gray
+pixel is drawn black with the rest of the ink and lightened in the same
+refresh, from any previous level; more frames are lighter. With
+`setOverlayFullTone(true)` both overlay levels are gray: the gray record draws
+every new gray pixel at the darker level, and a short second refresh drives
+the lighter level's pixels white for
+`A4_UC8279C_GRAY3_LIGHT_EXTRA_WHITE_FRAMES` more. A cleanup request
+(non-FAST base) shows the page with black and white swapped, then the page
+itself. After a B/W screen or four-gray image there is no Gray3 history: a
+stashed base is shown first with a full B/W refresh, which clears the previous
+screen (after a fast one it showed in the black areas of the gray pages that
+followed), and the Gray3 refresh follows from that base.
 
 Full images (absolute/direct planes) follow the stock V1.0.3 lockscreen
 sequence. First a pre-clear in the B/W session: black to DTM2, no DTM1 write,
@@ -86,12 +105,16 @@ off after every refresh showed static screens fuzzing while idle; leaving the
 panel powered into a four-gray paint, without that reset, showed earlier
 screens as ghosts.
 
-`controllerIdle()` ends the hold between frames: it powers the panel off and
-puts the controller in deep sleep, the same sequence as `deepSleep()`, and the
-next paint resets and re-initializes the controller, diffing against the last
-B/W frame. It is meant for screens that keep the device awake with a static
-image. Whether a static image held this way stays as clean as a sleep screen
-needs hardware validation.
+`controllerIdle()` ends the hold between frames, as stock V1.0.3 does: 500 ms
+after a refresh, with nothing further pending, stock sends POWER_OFF (logged
+"EPD reader idle POF") and enters light sleep; the next refresh powers the
+panel on again. `controllerIdle()` sends that POWER_OFF once 500 ms have passed
+since the last refresh (it returns without acting before that, so a host can
+call it on every idle loop), and the controller keeps its registers and RAM,
+so the next paint is a normal differential update. A
+panel left powered on a static screen fuzzed and showed earlier screens.
+Whether a static image stays clean once powered off this way needs hardware
+validation.
 
 Every session uses the stock V1.0.3 power and VCOM settings
 (PWR 03 00 72 72, VCOM_DC 0x32). B/W previously used stronger rails
@@ -103,10 +126,10 @@ Every session uses gate/source 00 00 00 00 and seeds
 DTM1 white before power-on.
 Full refresh uses the stock GC waveform (0x50 = 0x97); fast refresh
 uses the stock production "DU-factory-previous" waveform (0x50 = 0xd7), both
-49-byte records. The fast black-to-black record (0x24) holds instead of
-re-driving black as stock does, so unchanged black pixels are not driven again
-on every fast repaint; this needs hardware validation that text stays dark
-across repeated fast refreshes. The planes are
+49-byte records. The fast waveform drives black pixels that stay black again
+on every fast repaint. With that record (0x24) set to hold, black pixels kept
+from the previous screen showed lighter than newly driven ones in dithered
+areas. The planes are
 lazily allocated, PSRAM first; if allocation fails the driver leaves the
 existing B/W image up.
 

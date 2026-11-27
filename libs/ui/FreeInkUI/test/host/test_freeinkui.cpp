@@ -1288,7 +1288,7 @@ void testListSectionHeadingPreview() {
     // First book = 61px, gap = 6px, section = 16 + 28 + 6px.
     // Second book starts at 117px and is complete at 178px.
     CHECK_EQ(nav.drawnRows, height < 178 ? 1 : 2);
-    CHECK_EQ(hits.count(), height < 178 ? 1u : 2u);
+    CHECK_EQ(hits.count(), height < 100 ? 1u : 2u);  // a drawn preview takes taps
     CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Text), height < 100 ? 2u : 5u);
     if (height >= 100 && height < 178) {
       CHECK_EQ(draw.headingRect.y, body.y + 83);
@@ -1337,7 +1337,7 @@ void testScreenListContentSizing() {
     CHECK_EQ(nav.visibleRows, touch ? 3 : 6);
     screen.list(props);
     CHECK_EQ(nav.drawnRows, touch ? 3 : 6);
-    CHECK_EQ(hits.count(), touch ? 3u : 6u);
+    CHECK_EQ(hits.count(), touch ? 4u : 6u);  // touch: three rows and the preview
     CHECK_EQ(hits.data()[0].rect.height, props.rowHeight);
     // A swipe starts at the first not-fully-visible item, using the same
     // resolved policy on the next frame (including the tab selection offset).
@@ -1487,7 +1487,7 @@ void testListExactFitAndPreviewGeometry() {
     nav.syncToProps(body, 20, 2, 5, props);
     list(frame, body, props);
     CHECK_EQ(nav.drawnRows, height == 100 ? 3 : 2);
-    CHECK_EQ(interactions.count(), height == 100 ? 3u : 2u);
+    CHECK_EQ(interactions.count(), 3u);  // the preview takes taps
     CHECK_EQ(draw.valuesDrawn, 3); // extension also exists in the preview
     CHECK_EQ(draw.labelMaxLines, 2);
     CHECK_EQ(draw.labelRect.width, 104); // same slot after the extension
@@ -1561,7 +1561,11 @@ void testListPreviewPixels() {
       list(cropFrame, Rect{0, 0, W, 103}, props);
       maskTarget.fill(Rect{0, 0, W, 103}, Paint::solid(Color::Black));
       CHECK_EQ(fullHits.count(), 3u);
-      CHECK_EQ(cropHits.count(), 2u);
+      // The preview takes taps on its visible 23px only, and no button input.
+      CHECK_EQ(cropHits.count(), 3u);
+      CHECK_EQ(cropHits.data()[2].rect.y, 80);
+      CHECK_EQ(cropHits.data()[2].rect.height, 23);
+      CHECK_EQ(cropHits.data()[2].inputMask, static_cast<uint16_t>(InputTouch));
       for (size_t i = 0; i < sizeof(full); ++i)
         CHECK_EQ(cropped[i], static_cast<uint8_t>(full[i] | mask[i]));
       CHECK_EQ(cropTarget.clipRect().height, 32767);
@@ -2120,6 +2124,59 @@ void testListIndentWidensHuggedRow() {
   Frame<4> indentFrame(indentDraw, device, input, indentHits);
   list(indentFrame, Rect{0, 0, 480, 40}, props);
   CHECK_EQ(indentDraw.ops[0].rect.width, 24 + 2 * 8 + 30);
+}
+
+// valueIcon occupies the value slot: right edge in LTR, left edge in RTL, the
+// label is narrowed to leave it room, and a text value takes precedence.
+void testListValueIconSlot() {
+  static const uint8_t markBits[32] = {0};
+  BitmapRef mark{markBits, 16, 16, BitmapFormat::Mask1, false};
+
+  ListItem item{};
+  item.label = "A long book title that would otherwise use the whole row width";
+  item.valueIcon = &mark;
+
+  ListProps props;
+  props.items = &item;
+  props.count = 1;
+  props.rowHeight = 40;
+  props.valueInset = 4;
+  props.sidePadding = 0;
+
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  auto draw = [&](FakeDrawTarget& target) {
+    InteractionBuffer<4> interactions;
+    Frame<4> frame(target, device, input, interactions);
+    list(frame, Rect{0, 0, 480, 40}, props);
+  };
+  auto first = [](const FakeDrawTarget& target, FakeDrawTarget::Op::Kind kind) -> const FakeDrawTarget::Op* {
+    for (size_t i = 0; i < target.opCount; ++i)
+      if (target.ops[i].kind == kind) return &target.ops[i];
+    return nullptr;
+  };
+
+  FakeDrawTarget ltr;
+  draw(ltr);
+  const auto* ltrIcon = first(ltr, FakeDrawTarget::Op::Bitmap);
+  const auto* ltrLabel = first(ltr, FakeDrawTarget::Op::Text);
+  CHECK(ltrIcon != nullptr);
+  CHECK(ltrLabel != nullptr);
+  if (ltrIcon) CHECK_EQ(ltrIcon->rect.x, 480 - 16 - 4);
+  if (ltrIcon && ltrLabel) CHECK(ltrLabel->rect.x + ltrLabel->rect.width <= ltrIcon->rect.x);
+
+  props.rtl = true;
+  FakeDrawTarget rtl;
+  draw(rtl);
+  const auto* rtlIcon = first(rtl, FakeDrawTarget::Op::Bitmap);
+  CHECK(rtlIcon != nullptr);
+  if (rtlIcon) CHECK_EQ(rtlIcon->rect.x, 4);
+
+  props.rtl = false;
+  item.value = "1.2 MB";
+  FakeDrawTarget withValue;
+  draw(withValue);
+  CHECK_EQ(withValue.countKind(FakeDrawTarget::Op::Bitmap), 0u);
 }
 
 void testButtonRegistersExpandedHit() {
@@ -4083,6 +4140,12 @@ void testCompactLayoutsMatchBuiltin() {
   buildKeyboardLayout(other, KeyboardLayoutId::QwertzDe, true);
   CHECK(sameText(keyboardOutputFor(ru, 0x439), "\xd0\xb9"));  // й
   CHECK(sameText(keyboardAltOutputFor(ru, 0x435), "\xd1\x91"));  // е -> ё
+  // QwertzDe's ü/ß/ö ids (1101..1103) equal U+044D..U+044F; holding them must
+  // not case-flip into Cyrillic.
+  for (int16_t id = 1101; id <= 1103; ++id) {
+    const char* alt = keyboardAltOutputFor(other.layout, id);
+    CHECK(!alt || static_cast<unsigned char>(alt[0]) != 0xD0);
+  }
   CHECK(&buildKeyboardLayout(buffer, KeyboardLayoutId::QwertyEn) == &buffer.layout);
 }
 
@@ -6414,6 +6477,7 @@ int main() {
   testListIndentInsetsLeadingContent();
   testListIndentNarrowsWrapWidth();
   testListIndentWidensHuggedRow();
+  testListValueIconSlot();
   testButtonRegistersExpandedHit();
   testProgressBarClamps();
   testBatteryIndicator();

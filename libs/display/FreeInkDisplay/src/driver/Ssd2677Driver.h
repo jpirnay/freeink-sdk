@@ -121,6 +121,12 @@ class Ssd2677Driver : public PanelDriver {
   // paths[l] = {black dose index 0..3, white dose index 0..3, deep 0/1}.
   bool setGray16Levels(EpdBus& bus, const uint8_t (*paths)[3]) override;
   bool setGray16Passes(EpdBus& bus, const uint8_t black[3], const uint8_t white[3], uint8_t erase) override;
+  bool canUpdateGrayscaleWindow() const override { return _grayPending && _textAa.canUpdateWindow(); }
+  bool displayGrayscaleWindow(EpdBus& bus, const uint8_t* fb, uint16_t x, uint16_t y, uint16_t w, uint16_t h) override;
+#if FREEINK_DEVICE_PICCO
+  bool displayRetainedGrayscaleOverlay(EpdBus& bus, const uint8_t* fb, uint16_t x, uint16_t y, uint16_t w,
+                                       uint16_t h) override;
+#endif
 
  private:
   void initPanel(EpdBus& bus);
@@ -183,6 +189,7 @@ class Ssd2677Driver : public PanelDriver {
   bool _onePassText = false;  // the host sends reader pages through displayGrayFrame()
   bool _afterReader = false;  // last frame presented a book page
   bool _darkBackground = false;  // facade renders inverted frames
+  bool _glassUnknown = false;    // begin() ran and nothing has been painted since
   bool _needsPowerOn = true;
   bool _needsInitialFull = true;
   // A waveform startRefresh() fired has not been waited out; the power off it owes; BUSY was seen to drop for it,
@@ -197,6 +204,7 @@ class Ssd2677Driver : public PanelDriver {
   bool _grayPending = false;
   bool _grayMaskReady = false;
   bool _absoluteGray = false;  // the current gray pass began as a complete image
+  bool _imageRetained = false;  // Picco: _old/_lsb still hold the image planes on the glass
   uint8_t* _lsb = nullptr;  // retained LSB mask: the renderer reuses its buffer for the MSB pass
   // Levels of the 16-level image on the glass (W*H/2 bytes, PSRAM), kept for
   // exitGray16's balance passes. Allocated on first use.

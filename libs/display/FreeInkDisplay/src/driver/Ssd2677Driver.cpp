@@ -169,6 +169,7 @@ void Ssd2677Driver::initPanel(EpdBus& bus) {
   if (!list[count - 1].waitBusy) bus.waitBusy(" SSD2677 init");
   _needsPowerOn = true;
   _latchedWaveform = 0;
+  _imageRetained = false;
 }
 
 // Sticky: select the OTP waveform for the next frame (stock
@@ -194,6 +195,7 @@ void Ssd2677Driver::begin(EpdBus& bus) {
   _refreshPending = false;
   _grayAfterPage = GrayAfterPage::None;
   _needsInitialFull = true;
+  _glassUnknown = true;
   _grayPending = _grayMaskReady = false;
   // Retained old-plane: this panel takes old+new as one 2bpp burst, so the old
   // plane must exactly equal what is physically on the glass. The host can't
@@ -220,6 +222,7 @@ bool Ssd2677Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* 
   _textBaseUp = false;  // a frame between the text base and its gray replaces both
   _textOnGlass = false;
   _textAa.invalidate();
+  _imageRetained = false;
   // First paint after init clears the panel with the full waveform (stock forces
   // mode 0 on the first frame).
   if (_needsInitialFull) mode = RefreshMode::Full;
@@ -258,6 +261,17 @@ bool Ssd2677Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* 
   // only small interaction updates (highlight moves) use mode 3 with the rails on.
   // A redraw changes over 1/8 of the frame.
   const uint32_t size = geometry().bufferSize;
+  if (_glassUnknown && _old) {
+    // First paint after begin(): the glass holds whatever was shown before
+    // (the sleep screen after a wake), not the white the old plane is seeded
+    // with. Clean to white first, with every pixel taken as black so each one
+    // gets the white drive; the paint below then starts from white.
+    memset(_old, 0x00, size);
+    sendPacked(bus, _old, nullptr);
+    refreshWith(bus, lut_picco_se0400_full, true);
+    memset(_old, 0xFF, size);
+  }
+  _glassUnknown = false;
   bool redraw = reading;
   if (mode == RefreshMode::Fast && !redraw && _old) {
     uint32_t changed = 0;
@@ -424,6 +438,7 @@ void Ssd2677Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
   }
   if (_textAa.active()) { _textAa.stage(0, lsb, 0, geometry().height); return; }
   if (!lsb) return;
+  _imageRetained = false;
   if (!_absoluteGray) ensureLsb();
   _grayMaskReady = false;
   if (_lsb) memcpy(_lsb, lsb, geometry().bufferSize);
@@ -431,6 +446,7 @@ void Ssd2677Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
 
 void Ssd2677Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback,
                                    bool turnOff) {
+  _imageRetained = false;
   finishPending(bus);
   exitGray16(bus);
   _textBegun = false;
@@ -680,6 +696,13 @@ bool Ssd2677Driver::presentOverlayText(EpdBus& bus) {
   return true;
 }
 
+bool Ssd2677Driver::displayGrayscaleWindow(EpdBus& bus, const uint8_t* fb, uint16_t x, uint16_t y, uint16_t w,
+                                           uint16_t h) {
+  if (!canUpdateGrayscaleWindow() || !_textAa.beginWindow(fb, x, y, w, h)) return false;
+  displayGray(bus, fb, /*turnOff=*/true, nullptr, /*factoryMode=*/false);
+  return _textAa.onPanel();
+}
+
 void Ssd2677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut,
                                 bool factoryMode) {
   (void)lut;
@@ -709,7 +732,7 @@ void Ssd2677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
     const uint32_t size = geometry().bufferSize;
     if (_old) memcpy(_old, _textAa.base(), size);
     if (_old && ensureLsb()) {
-      for (uint32_t i = 0; i < size; ++i) _lsb[i] = static_cast<uint8_t>(_textAa.low()[i] & ~_textAa.high()[i]);
+      _textAa.writeGrayMask(_lsb);
       _grayPending = true;
     } else {
       _needsInitialFull = true;
@@ -729,6 +752,7 @@ void Ssd2677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
       powerOn(bus);
       sendPacked(bus, _old, _lsb);
       refreshWith(bus, lut_picco_se0400_image, turnOff);
+      _imageRetained = true;
     }
     _needsInitialFull = true;
     return;
@@ -753,6 +777,42 @@ void Ssd2677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
   _restGrayOnGlass = false;
   // Preserve the base outside the gray mask; masked pixels are driven on the next frame.
 }
+
+#if FREEINK_DEVICE_PICCO
+bool Ssd2677Driver::displayRetainedGrayscaleOverlay(EpdBus& bus, const uint8_t* fb, uint16_t x, uint16_t y,
+                                                    uint16_t w, uint16_t h) {
+  const PanelGeometry g = geometry();
+  if (!_imageRetained || !w || !h || x >= g.width || y >= g.height || w > g.width - x || h > g.height - y)
+    return false;
+  // Resend the image planes with the rectangle's pixels taken from fb (black 00, white 11).
+  powerOn(bus);
+  bus.cmd(CMD_DATA);
+  {
+    static uint8_t chunk[1024];
+    auto txn = bus.beginTxn();
+    uint16_t n = 0;
+    for (uint32_t i = 0; i < g.bufferSize; ++i) {
+      uint8_t mask = 0;
+      const uint16_t row = i / g.widthBytes;
+      if (fb && row >= y && row < y + h) {
+        const uint16_t column = (i % g.widthBytes) * 8;
+        for (uint8_t bit = 0; bit < 8; ++bit)
+          if (column + bit >= x && column + bit < x + w) mask |= 0x80 >> bit;
+      }
+      const uint8_t bw = fb ? fb[i] & mask : 0;
+      packPixels((_old[i] & ~mask) | bw, (_lsb[i] & ~mask) | bw, &chunk[n]);
+      n += 2;
+      if (n == sizeof(chunk)) {
+        txn.writeBytes(chunk, n);
+        n = 0;
+      }
+    }
+    if (n) txn.writeBytes(chunk, n);
+  }
+  refreshWith(bus, lut_picco_se0400_image, true);
+  return true;
+}
+#endif
 
 void Ssd2677Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
   finishPending(bus);
@@ -1062,6 +1122,7 @@ bool Ssd2677Driver::setGray16Levels(EpdBus& bus, const uint8_t (*paths)[3]) {
 
 bool Ssd2677Driver::displayGray16Image(EpdBus& bus, const uint8_t* levels, RefreshMode mode, bool turnOff) {
   if (!supportsGray16Image() || !levels) return false;
+  _imageRetained = false;  // the 16 levels replace the planes displayRetainedGrayscaleOverlay() would resend
   const PanelGeometry g = geometry();
   const uint32_t bytes = static_cast<uint32_t>(g.width / 2) * g.height;
   // The balance passes and the next turn's dissolve need each pixel's level
@@ -1163,6 +1224,7 @@ bool Ssd2677Driver::setGray16TextSoftPull(uint8_t frames) {
 
 bool Ssd2677Driver::beginGray16Text(EpdBus& bus, const uint8_t* base, const uint8_t* soft) {
   if (!supportsGray16Image() || !base || !_old || !ensureLsb()) return false;
+  _imageRetained = false;  // as in displayGray16Image()
   ensureGray16Config();
   // The levels of the page on the glass, for the dissolve. 192 KB: PSRAM, kept
   // (shared with displayGray16Image), as there.

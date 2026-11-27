@@ -41,6 +41,9 @@
 #if FREEINK_DRIVER_UC8179
 #include "driver/Uc8179Driver.h"
 #endif
+#if FREEINK_DRIVER_UC8179_E1001
+#include "driver/Uc8179E1001Driver.h"
+#endif
 #if FREEINK_DRIVER_UC8279_X4
 #include "driver/Uc8279X4Driver.h"
 #endif
@@ -228,7 +231,9 @@ void FreeInkDisplay::selectDriver() {
         break;
       }
 #endif
-#if FREEINK_DRIVER_UC8279C
+#if FREEINK_DRIVER_UC8179_E1001
+      _driver = &uc8179E1001Driver();
+#elif FREEINK_DRIVER_UC8279C
       _driver = &uc8279cA4Driver();
 #elif FREEINK_DRIVER_SSD1677
       _driver = &ssd1677Driver();
@@ -255,6 +260,13 @@ void FreeInkDisplay::selectDriver() {
 }
 
 const char* FreeInkDisplay::getControllerName() const { return _driver ? _driver->controllerName() : nullptr; }
+
+const char* FreeInkDisplay::getPanelName() const {
+#if FREEINK_DEVICE_PICCO
+  if (BoardConfig::isPicco()) return piccoPanelName();
+#endif
+  return nullptr;
+}
 
 void FreeInkDisplay::begin() {
   _activeMatchesGlass = false;
@@ -1147,10 +1159,34 @@ bool FreeInkDisplay::displayGray8Canvas(RefreshMode mode, bool turnOffScreen) {
   return true;
 }
 
+bool FreeInkDisplay::canUpdateGrayscaleWindow() const {
+  return _driver && !_inverted && !_inversionDirty && frameBuffer && _driver->canUpdateGrayscaleWindow();
+}
+
+bool FreeInkDisplay::displayGrayscaleWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
+  if (!canUpdateGrayscaleWindow() || !w || !h || x >= getDisplayWidth() || y >= getDisplayHeight() ||
+      w > getDisplayWidth() - x || h > getDisplayHeight() - y)
+    return false;
+  DisplayPmLock pmLock;
+  syncPendingAsync();
+  if (!_driver->displayGrayscaleWindow(_bus, frameBuffer, x, y, w, h)) return false;
+  _shadowValid = false;
+  _redRamSynced = false;
+  return true;
+}
+
 void FreeInkDisplay::displayGrayBuffer(bool turnOffScreen, const unsigned char* lut, bool factoryMode) {
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
   Serial.printf("[EPD] displayGrayBuffer\n");
 #endif
+  // A refresh idle hook lasts for this call, including the returns below that
+  // never reach the driver.
+  struct IdleHookScope {
+    PanelDriver* driver;
+    ~IdleHookScope() {
+      if (driver) driver->setRefreshIdleHook(nullptr, nullptr);
+    }
+  } idleHookScope{_driver};
   // Inverted mode renders a crisp BW page unless the driver overlays masks on it.
   if (!grayAllowed()) return;
   DisplayPmLock pmLock;
@@ -1469,6 +1505,14 @@ void FreeInkDisplay::requestResync(uint8_t settlePasses) {
   if (_driver) _driver->requestResync(settlePasses);
 }
 
+void FreeInkDisplay::setOverlayFullTone(const bool fullTone) {
+  if (_driver) _driver->setOverlayFullTone(fullTone);
+}
+
+void FreeInkDisplay::setRefreshIdleHook(void (*hook)(void* ctx), void* ctx) {
+  if (_driver) _driver->setRefreshIdleHook(hook, ctx);
+}
+
 void FreeInkDisplay::skipInitialResync() {
   if (_driver) _driver->skipInitialResync();
 }
@@ -1553,9 +1597,10 @@ void FreeInkDisplay::saveFrameBufferAsPBM(const char* filename) {
   if (!file) return;
 
   // Rotate 90 degrees counterclockwise: 800x480 landscape -> 480x800 portrait.
-  const int W = DISPLAY_WIDTH;
-  const int H = DISPLAY_HEIGHT;
-  const int WB = W / 8;
+  if (!buffer) return;
+  const int W = displayWidth;
+  const int H = displayHeight;
+  const int WB = displayWidthBytes;
 
   file << "P4\n" << H << " " << W << "\n";
   std::vector<uint8_t> rotated((H / 8) * W, 0);

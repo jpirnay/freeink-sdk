@@ -59,6 +59,18 @@ const char* InputManager::BUTTON_NAMES[] = {"Back", "Confirm", "Left", "Right", 
 namespace {
 int absInt(const int value) { return value < 0 ? -value : value; }
 
+#if FREEINK_DEVICE_ONEPAGE
+uint8_t readOnePageFrontButtons(const int8_t pin) {
+  if (pin < 0) return 0;
+  const int mv = analogReadMilliVolts(pin);
+  if (mv >= 2400 && mv <= 2800) return 1 << InputManager::BTN_BACK;
+  if (mv >= 1780 && mv <= 2140) return 1 << InputManager::BTN_LEFT;
+  if (mv >= 1140 && mv <= 1500) return 1 << InputManager::BTN_RIGHT;
+  if (mv >= 0 && mv <= 250) return 1 << InputManager::BTN_CONFIRM;
+  return 0;
+}
+#endif
+
 #if defined(TOUCH_PROBE_DEBUG)
 void touchDebugPrintf(const char* format, ...) {
   char buf[192];
@@ -203,17 +215,25 @@ void InputManager::readButtonAdc(ButtonAdcSample& group1, ButtonAdcSample& group
   group2.button = b2 >= 0 ? b2 + 4 : -1;  // map group-2 local 0/1 to BTN_UP / BTN_DOWN
 }
 
+bool InputManager::isAdcLadderPhysicallyPressed() {
+#if FREEINK_DEVICE_ONEPAGE
+  if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::OnePageAdcLadder) {
+    return readOnePageFrontButtons(BoardConfig::ACTIVE.input.adcLadderPin) != 0;
+  }
+#endif
+  ButtonAdcSample group1{}, group2{};
+  readButtonAdc(group1, group2);
+  // The Xteink ladder idles near 4095. Every button band sits below 3900.
+  constexpr int kIdleRailMin = 4000;
+  return (group1.raw >= 0 && group1.raw < kIdleRailMin) || (group2.raw >= 0 && group2.raw < kIdleRailMin);
+}
+
 uint8_t InputManager::getState() {
   uint8_t state = 0;
 
+#if FREEINK_DEVICE_ONEPAGE
   if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::OnePageAdcLadder) {
-    if (BoardConfig::ACTIVE.input.adcLadderPin >= 0) {
-      const int mv = analogReadMilliVolts(BoardConfig::ACTIVE.input.adcLadderPin);
-      if (mv >= 2400 && mv <= 2800)      state |= (1 << BTN_BACK);    // ~2592 mV
-      else if (mv >= 1780 && mv <= 2140) state |= (1 << BTN_LEFT);    // ~1956 mV
-      else if (mv >= 1140 && mv <= 1500) state |= (1 << BTN_RIGHT);   // ~1316 mV
-      else if (mv >= 0 && mv <= 250)     state |= (1 << BTN_CONFIRM); // ~0 mV (ENTER)
-    }
+    state = readOnePageFrontButtons(BoardConfig::ACTIVE.input.adcLadderPin);
     if (BoardConfig::ACTIVE.input.up >= 0 && digitalRead(BoardConfig::ACTIVE.input.up) == LOW) {
       state |= (1 << BTN_UP);
     }
@@ -230,6 +250,7 @@ uint8_t InputManager::getState() {
     state |= readButtonHooks();
     return state;
   }
+#endif
 
   if (BoardConfig::ACTIVE.inputStyle != BoardConfig::InputStyle::XteinkAdcLadder) {
     state = getDigitalState();
@@ -292,7 +313,7 @@ uint8_t InputManager::readButtonHooks() {
   return state;
 }
 
-#if FREEINK_DEVICE_PICCO
+#if FREEINK_DEVICE_PICCO && FREEINK_TOUCH_TMA525C
 namespace {
 uint16_t piccoReadReport(uint8_t addr, uint8_t* buf, uint16_t cap);
 bool piccoWaitInt(int8_t irq, unsigned long timeoutMs);
@@ -300,7 +321,7 @@ bool piccoWaitInt(int8_t irq, unsigned long timeoutMs);
 #endif
 
 bool InputManager::prepareForDeepSleep() {
-#if FREEINK_DEVICE_EEGO_A4
+#if FREEINK_DEVICE_EEGO_A4 && FREEINK_TOUCH_GSLX680
   if (const auto& t = BoardConfig::ACTIVE.touch; t.controller == BoardConfig::TouchController::Gslx680) {
     waitForTouchInit();  // a charger-only boot can sleep while the controller still boots
     const uint8_t halt = 0x88;
@@ -323,7 +344,7 @@ bool InputManager::prepareForDeepSleep() {
     return ok;
   }
 #endif
-#if FREEINK_DEVICE_PICCO
+#if FREEINK_DEVICE_PICCO && FREEINK_TOUCH_TMA525C
   if (const auto& t = BoardConfig::ACTIVE.touch;
       t.controller == BoardConfig::TouchController::Tma525c && t.i2cAddress != 0) {
     // Stock FUN_4200c730: SET_POWER(SLEEP) to command register 0x0005, wait
@@ -628,7 +649,9 @@ void InputManager::updateDigitalTwoButton(const unsigned long currentTime) {
 
   if (physical != twoButtonPhysicalState) {
     const uint8_t releasedPhysical = twoButtonPhysicalState;
-    const bool emitShort = physical == 0 && !twoButtonLongPressActive;
+    if (physical == 3) twoButtonChordSeen = true;
+    const bool emitShort = physical == 0 && !twoButtonLongPressActive && !twoButtonChordSeen;
+    if (physical == 0) twoButtonChordSeen = false;
 
     applyStateChange(auxiliaryState, currentTime);
     if (emitShort && (releasedPhysical == 1 || releasedPhysical == 2)) {
@@ -1679,7 +1702,7 @@ void InputManager::updateTouchFromIrq(const unsigned long now) {
   }
 
   // The hold-over only covers a lift frame that could not be read.
-  if (touchPressed && now >= touchReleaseAt) {
+  if (touchPressed && static_cast<int32_t>(now - touchReleaseAt) >= 0) {
     touchPressed = false;
     touchReleasedEvent = true;
     // Timed from the last real sample, so the wait for the lift is not counted as finger travel.
@@ -1881,7 +1904,7 @@ void InputManager::beginCst816s() {
 
 void InputManager::pollCst816s(const unsigned long now) {
   const auto& t = BoardConfig::ACTIVE.touch;
-  if (now < touchReadAt) return;
+  if (static_cast<int32_t>(now - touchReadAt) < 0) return;
   touchReadAt = now + TOUCH_SAMPLE_DELAY_MS;
   const bool active = touchPressed || touchHomeKeyDown || cstVirtualButtons;
   const bool fresh = cstInterrupt || t.irq < 0 || digitalRead(t.irq) == LOW;
@@ -1967,7 +1990,7 @@ void InputManager::pollCst816s(const unsigned long now) {
 #if FREEINK_TOUCH_FT5X06
 void InputManager::pollFt5x06(const unsigned long now) {
   const auto& t = BoardConfig::ACTIVE.touch;
-  if (now < touchReadAt) return;
+  if (static_cast<int32_t>(now - touchReadAt) < 0) return;
   touchReadAt = now + TOUCH_SAMPLE_DELAY_MS;
 
   // The controller runs in interrupt-polling mode (G_MODE=0, set in begin),
@@ -2242,7 +2265,7 @@ void InputManager::gslCalibrate(const uint16_t rawX, const uint16_t rawY, int16_
 }
 
 void InputManager::pollGslx680(const unsigned long now) {
-  if (now < touchReadAt) return;
+  if (static_cast<int32_t>(now - touchReadAt) < 0) return;
   touchReadAt = now + TOUCH_SAMPLE_DELAY_MS;
 
   // Data register 0x80: byte 0 = finger count, then 4 bytes per finger.
@@ -3116,7 +3139,7 @@ void InputManager::pollFt6336u(const unsigned long now) {
   if (irq >= 0 && digitalRead(irq) != LOW && !touchPressed) return;
 #endif
 
-  if (now < touchReadAt) return;
+  if (static_cast<int32_t>(now - touchReadAt) < 0) return;
   touchReadAt = now + TOUCH_SAMPLE_DELAY_MS;
 
   uint8_t data[16] = {};
@@ -3203,12 +3226,16 @@ void InputManager::pollFt6336u(const unsigned long now) {
       touchPressedEvent = true;
       touchDownPoint = touchPoint;
       touchMovedBeyondTapSlop = false;
+      touchMovedBeyondTapReleaseSlop = false;
     }
     touchUpPoint = touchPoint;
     const int dx = static_cast<int>(touchUpPoint.x) - static_cast<int>(touchDownPoint.x);
     const int dy = static_cast<int>(touchUpPoint.y) - static_cast<int>(touchDownPoint.y);
     if (absInt(dx) > touchThresholdPx(TOUCH_TAP_SLOP_PX) || absInt(dy) > touchThresholdPx(TOUCH_TAP_SLOP_PX)) {
       touchMovedBeyondTapSlop = true;
+    }
+    if (absInt(dx) > TOUCH_TAP_RELEASE_SLOP_PX || absInt(dy) > TOUCH_TAP_RELEASE_SLOP_PX) {
+      touchMovedBeyondTapReleaseSlop = true;
     }
     touchPressed = true;
   } else {

@@ -34,6 +34,9 @@ class InputManager {
   // logical click/hold classification. False when the board has no such GPIO.
   bool isPowerButtonPhysicallyPressed() const;
 
+  // Sample the ADC ladder without polling touch or changing debounced button state.
+  bool isAdcLadderPhysicallyPressed();
+
   // Press edge since the previous update().
   bool wasPressed(uint8_t buttonIndex) const;
 
@@ -490,6 +493,7 @@ class InputManager {
   uint8_t twoButtonPhysicalState;
   unsigned long twoButtonPressStart;
   bool twoButtonLongPressActive;
+  bool twoButtonChordSeen = false;  // both buttons were down during this press
 #if FREEINK_DEVICE_PAPERMONO
   bool powerButtonClick = false;  // Retained through release; polling latency is not click duration.
 #endif
