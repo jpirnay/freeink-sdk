@@ -643,7 +643,7 @@ struct GraySettle {
     target.setGray16(nullptr);
     const bool clean = cleanEvery != 0 && ++settles_ >= cleanEvery;
     if (clean) settles_ = 0;
-    return display.displayGray16Image(frame, true, !clean);
+    return display.displayGray16Image(frame, clean ? Display::HALF_REFRESH : Display::FAST_REFRESH, true);
   }
 
  private:

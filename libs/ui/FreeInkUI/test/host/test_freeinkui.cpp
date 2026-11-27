@@ -321,6 +321,151 @@ void testDisplayTargetAlphaFont() {
   target.setFont(kNotoSansFont);  // restore for any later use
 }
 
+#if FREEINK_UI_GRAY16
+// With a 16-level frame attached, grays are flat levels and glyph coverage is
+// blended over what is under it; the 1-bit frame is still drawn. Levels are
+// ink: 0 = white .. 15 = darkest, left pixel in the high nibble.
+void testDisplayTargetGray16() {
+  constexpr int16_t W = 32, H = 16, WB = W / 8;
+  uint8_t fb[WB * H];
+  uint8_t gray[W / 2 * H];
+  const auto level = [&](int x, int y) { return (gray[y * (W / 2) + x / 2] >> ((x & 1) ? 0 : 4)) & 0x0F; };
+  const auto ink = [&](int x, int y) { return ((fb[y * WB + (x >> 3)] >> (7 - (x & 7))) & 0x01) == 0; };
+
+  DisplayTarget target(fb, W, H, WB, Orientation::LandscapeCounterClockwise);
+  std::memset(fb, 0xFF, sizeof(fb));
+  std::memset(gray, 0x00, sizeof(gray));
+  target.setGray16(gray);
+  target.fill(Rect{0, 0, 4, 4}, Paint::solid(Color::Black));
+  target.fill(Rect{4, 0, 4, 4}, Paint::solid(Color::DarkGray));
+  target.fill(Rect{8, 0, 4, 4}, Paint::solid(Color::LightGray));
+  for (int y = 0; y < 4; ++y) {
+    for (int x = 0; x < 4; ++x) {
+      CHECK_EQ(level(x, y), 15);
+      CHECK_EQ(level(x + 4, y), 11);
+      CHECK_EQ(level(x + 8, y), 4);
+      CHECK(ink(x, y));
+    }
+  }
+  CHECK_EQ(level(12, 0), 0);  // untouched paper
+  CHECK_EQ(level(3, 4), 0);
+  target.fill(Rect{0, 8, 1, 1}, Paint::solid(Color::Black));
+  CHECK_EQ(gray[8 * (W / 2)], 0xF0);  // left pixel is the high nibble
+
+  static constexpr FontGlyph glyphs8x8[] = {{0, 8, 8, 9, 0, -8}};
+  static uint8_t cover[32];
+  static const BitmapFont font = {cover, glyphs8x8, 'A', 'A', 10, 8, 8, 8, 4};
+  target.setFont(0, font);
+  const TextStyle style{};
+  // Coverage 5 of 15 on white paper is level 5 across the glyph; below half,
+  // the 1-bit frame gets no ink.
+  std::memset(cover, 0x55, sizeof(cover));
+  std::memset(fb, 0xFF, sizeof(fb));
+  std::memset(gray, 0x00, sizeof(gray));
+  target.text(Rect{0, 0, W, H}, "A", style);
+  int covered = 0, inked = 0;
+  for (int y = 0; y < H; ++y)
+    for (int x = 0; x < W; ++x) {
+      if (level(x, y) == 5) ++covered;
+      else CHECK_EQ(level(x, y), 0);
+      if (ink(x, y)) ++inked;
+    }
+  CHECK_EQ(covered, 64);
+  CHECK_EQ(inked, 0);
+  // Coverage 10 is level 10 and inks the 1-bit frame.
+  std::memset(cover, 0xAA, sizeof(cover));
+  std::memset(fb, 0xFF, sizeof(fb));
+  std::memset(gray, 0x00, sizeof(gray));
+  target.text(Rect{0, 0, W, H}, "A", style);
+  CHECK_EQ(level(3, 5), 10);
+  CHECK(ink(3, 5));
+  // White text at coverage 5 over black lifts it a third of the way.
+  std::memset(cover, 0x55, sizeof(cover));
+  std::memset(gray, 0xFF, sizeof(gray));
+  TextStyle white = style;
+  white.color = Color::White;
+  target.text(Rect{0, 0, W, H}, "A", white);
+  CHECK_EQ(level(3, 5), 10);
+
+  // Rotation: logical (0, 0) in Portrait is panel (0, H - 1).
+  DisplayTarget portrait(fb, W, H, WB, Orientation::Portrait);
+  std::memset(gray, 0x00, sizeof(gray));
+  portrait.setGray16(gray);
+  portrait.fill(Rect{0, 0, 1, 1}, Paint::solid(Color::Black));
+  CHECK_EQ(level(0, H - 1), 15);
+  CHECK_EQ(level(1, H - 1), 0);
+
+  // Detached, the frame is left alone and coverage dithers as before.
+  target.setGray16(nullptr);
+  std::memset(gray, 0x00, sizeof(gray));
+  std::memset(fb, 0xFF, sizeof(fb));
+  target.text(Rect{0, 0, W, H}, "A", style);
+  CHECK_EQ(level(3, 5), 0);
+  CHECK(ink(3, 5) || ink(4, 5) || ink(3, 6) || ink(4, 6));  // coverage 5 dithers some ink
+  target.setFont(kNotoSansFont);
+}
+
+void testGraySettle() {
+  struct FakeDisplay {
+    enum RefreshMode { HALF_REFRESH, FAST_REFRESH };
+    bool supported = true;
+    int draws = 0;
+    bool fast = false;
+    const uint8_t* levels = nullptr;
+    bool supportsGray16Image() const { return supported; }
+    bool displayGray16Image(const uint8_t* l, RefreshMode mode, bool) {
+      ++draws;
+      levels = l;
+      fast = (mode == FAST_REFRESH);
+      return true;
+    }
+  };
+  uint8_t fb[8];
+  uint8_t frame[32];
+  DisplayTarget target(fb, 8, 8, 1, Orientation::LandscapeCounterClockwise);
+  FakeDisplay display;
+  GraySettle settle;
+  settle.cleanEvery = 3;
+  CHECK(!settle.due(100000));  // nothing shown yet
+  settle.frameShown(1000);
+  CHECK(!settle.due(2499));
+  CHECK(settle.due(2500));
+  settle.frameShown(2400);  // a newer frame restarts the wait
+  CHECK(!settle.due(2500));
+  settle.frameShown(0xFFFFFF00u);  // millis() wrap
+  CHECK(settle.due(0xFFFFFF00u + 1500));
+  settle.cancel();
+  CHECK(!settle.due(0xFFFFFFFFu));
+
+  int renders = 0;
+  for (int i = 1; i <= 6; ++i) {
+    std::memset(frame, 0xAA, sizeof(frame));  // stale: run() starts from white
+    settle.frameShown(0);
+    CHECK(settle.run(display, target, frame, sizeof(frame), [&] {
+      ++renders;
+      target.fill(Rect{0, 0, 1, 1}, Paint::solid(Color::Black));
+    }));
+    CHECK(!settle.due(100000));  // one settle per shown frame
+    CHECK_EQ(display.fast, i % 3 != 0);  // every third is a full redraw
+    CHECK_EQ(frame[0], 0xF0);
+    CHECK_EQ(frame[31], 0x00);
+  }
+  CHECK_EQ(renders, 6);
+  CHECK_EQ(display.draws, 6);
+  CHECK(display.levels == frame);
+
+  // No 16-level image support: nothing is rendered or drawn.
+  display.supported = false;
+  CHECK(!settle.run(display, target, frame, sizeof(frame), [&] { ++renders; }));
+  CHECK_EQ(renders, 6);
+  CHECK_EQ(display.draws, 6);
+  // The target was detached after each run.
+  frame[0] = 0x00;
+  target.fill(Rect{0, 0, 1, 1}, Paint::solid(Color::Black));
+  CHECK_EQ(frame[0], 0x00);
+}
+#endif  // FREEINK_UI_GRAY16
+
 void testStackFillsExactly() {
   // header + flex content + footer: classic screen split.
   Stack<3> stack(Rect{0, 0, 480, 800}, Axis::Column, 0);
@@ -1288,7 +1433,7 @@ void testListSectionHeadingPreview() {
     // First book = 61px, gap = 6px, section = 16 + 28 + 6px.
     // Second book starts at 117px and is complete at 178px.
     CHECK_EQ(nav.drawnRows, height < 178 ? 1 : 2);
-    CHECK_EQ(hits.count(), height < 178 ? 1u : 2u);
+    CHECK_EQ(hits.count(), height < 100 ? 1u : 2u);  // a drawn preview takes taps
     CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Text), height < 100 ? 2u : 5u);
     if (height >= 100 && height < 178) {
       CHECK_EQ(draw.headingRect.y, body.y + 83);
@@ -1337,7 +1482,7 @@ void testScreenListContentSizing() {
     CHECK_EQ(nav.visibleRows, touch ? 3 : 6);
     screen.list(props);
     CHECK_EQ(nav.drawnRows, touch ? 3 : 6);
-    CHECK_EQ(hits.count(), touch ? 3u : 6u);
+    CHECK_EQ(hits.count(), touch ? 4u : 6u);  // touch: three rows and the preview
     CHECK_EQ(hits.data()[0].rect.height, props.rowHeight);
     // A swipe starts at the first not-fully-visible item, using the same
     // resolved policy on the next frame (including the tab selection offset).
@@ -1487,7 +1632,7 @@ void testListExactFitAndPreviewGeometry() {
     nav.syncToProps(body, 20, 2, 5, props);
     list(frame, body, props);
     CHECK_EQ(nav.drawnRows, height == 100 ? 3 : 2);
-    CHECK_EQ(interactions.count(), height == 100 ? 3u : 2u);
+    CHECK_EQ(interactions.count(), 3u);  // the preview takes taps
     CHECK_EQ(draw.valuesDrawn, 3); // extension also exists in the preview
     CHECK_EQ(draw.labelMaxLines, 2);
     CHECK_EQ(draw.labelRect.width, 104); // same slot after the extension
@@ -1561,7 +1706,11 @@ void testListPreviewPixels() {
       list(cropFrame, Rect{0, 0, W, 103}, props);
       maskTarget.fill(Rect{0, 0, W, 103}, Paint::solid(Color::Black));
       CHECK_EQ(fullHits.count(), 3u);
-      CHECK_EQ(cropHits.count(), 2u);
+      // The preview takes taps on its visible 23px only, and no button input.
+      CHECK_EQ(cropHits.count(), 3u);
+      CHECK_EQ(cropHits.data()[2].rect.y, 80);
+      CHECK_EQ(cropHits.data()[2].rect.height, 23);
+      CHECK_EQ(cropHits.data()[2].inputMask, static_cast<uint16_t>(InputTouch));
       for (size_t i = 0; i < sizeof(full); ++i)
         CHECK_EQ(cropped[i], static_cast<uint8_t>(full[i] | mask[i]));
       CHECK_EQ(cropTarget.clipRect().height, 32767);
@@ -2120,6 +2269,57 @@ void testListIndentWidensHuggedRow() {
   Frame<4> indentFrame(indentDraw, device, input, indentHits);
   list(indentFrame, Rect{0, 0, 480, 40}, props);
   CHECK_EQ(indentDraw.ops[0].rect.width, 24 + 2 * 8 + 30);
+}
+
+void testListValueIconSlot() {
+  static const uint8_t markBits[32] = {0};
+  BitmapRef mark{markBits, 16, 16, BitmapFormat::Mask1, false};
+
+  ListItem item{};
+  item.label = "A long book title that would otherwise use the whole row width";
+  item.valueIcon = &mark;
+
+  ListProps props;
+  props.items = &item;
+  props.count = 1;
+  props.rowHeight = 40;
+  props.valueInset = 4;
+  props.sidePadding = 0;
+
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  auto draw = [&](FakeDrawTarget& target) {
+    InteractionBuffer<4> interactions;
+    Frame<4> frame(target, device, input, interactions);
+    list(frame, Rect{0, 0, 480, 40}, props);
+  };
+  auto first = [](const FakeDrawTarget& target, FakeDrawTarget::Op::Kind kind) -> const FakeDrawTarget::Op* {
+    for (size_t i = 0; i < target.opCount; ++i)
+      if (target.ops[i].kind == kind) return &target.ops[i];
+    return nullptr;
+  };
+
+  FakeDrawTarget ltr;
+  draw(ltr);
+  const auto* ltrIcon = first(ltr, FakeDrawTarget::Op::Bitmap);
+  const auto* ltrLabel = first(ltr, FakeDrawTarget::Op::Text);
+  CHECK(ltrIcon != nullptr);
+  CHECK(ltrLabel != nullptr);
+  if (ltrIcon) CHECK_EQ(ltrIcon->rect.x, 480 - 16 - 4);
+  if (ltrIcon && ltrLabel) CHECK(ltrLabel->rect.x + ltrLabel->rect.width <= ltrIcon->rect.x);
+
+  props.rtl = true;
+  FakeDrawTarget rtl;
+  draw(rtl);
+  const auto* rtlIcon = first(rtl, FakeDrawTarget::Op::Bitmap);
+  CHECK(rtlIcon != nullptr);
+  if (rtlIcon) CHECK_EQ(rtlIcon->rect.x, 4);
+
+  props.rtl = false;
+  item.value = "1.2 MB";
+  FakeDrawTarget withValue;
+  draw(withValue);
+  CHECK_EQ(withValue.countKind(FakeDrawTarget::Op::Bitmap), 0u);
 }
 
 void testButtonRegistersExpandedHit() {
@@ -6370,6 +6570,10 @@ int main() {
   testRect();
   testDisplayTarget();
   testDisplayTargetAlphaFont();
+#if FREEINK_UI_GRAY16
+  testDisplayTargetGray16();
+  testGraySettle();
+#endif
   testCenteredDigitInk();
   testStackFillsExactly();
   testStackFlexRemainderWithTrailingFixed();
@@ -6414,6 +6618,7 @@ int main() {
   testListIndentInsetsLeadingContent();
   testListIndentNarrowsWrapWidth();
   testListIndentWidensHuggedRow();
+  testListValueIconSlot();
   testButtonRegistersExpandedHit();
   testProgressBarClamps();
   testBatteryIndicator();
