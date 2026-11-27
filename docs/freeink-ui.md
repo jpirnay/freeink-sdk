@@ -462,6 +462,33 @@ FreeInkUI draws through a `DrawTarget` — an interface of primitives (`fill`,
   bit is white and a clear bit is black ink. After a frame, push the buffer with
   the display's normal refresh call.
 
+  **16-level panels.** (Covered by host tests only; this path has not been run
+  on a device.) On a display whose `supportsGray16Image()` is true,
+  build with `-DFREEINK_UI_GRAY16=1` and the target can also draw into a 4-bpp
+  frame in `displayGray16Image()`'s layout: gray paints become a flat level and
+  anti-aliased glyphs (4-bpp fonts and runtime TTF glyphs) blend their coverage
+  over what is under them, instead of both being dithered. `GraySettle` runs
+  the usual pattern: show each frame as fast B/W, then redraw it in 16 levels
+  once it has stood unchanged for a moment.
+
+  ```cpp
+  freeink::ui::GraySettle settle;  // delayMs = 1500, cleanEvery = 8
+  // frame: your 4-bpp buffer, getDisplayWidth() / 2 * getDisplayHeight() bytes
+
+  // after every B/W frame:
+  freeink::ui::present(display, hint);
+  settle.frameShown(millis());
+
+  // in the loop:
+  if (settle.due(millis())) settle.run(display, draw, frame, frameBytes, [&] { renderCurrentScreen(); });
+  ```
+
+  `run()` clears the frame to white, attaches it with `draw.setGray16()`,
+  calls your render, and shows it with `displayGray16Image()` as a fast turn;
+  every `cleanEvery`-th settle is a full one. It returns false and draws
+  nothing on a panel without 16-level images. Without the build flag none of
+  this is compiled, so 1-bit builds do not grow.
+
 - **`GfxRendererTarget` (`FreeInkUIGfxRenderer.h`) — optional.** An adapter for
   firmwares that already provide CrossPoint's `GfxRenderer` (its fonts, bidi,
   truncation, dithering). It compiles **only** where `<GfxRenderer.h>` is on the
@@ -1438,6 +1465,10 @@ component set:
 
 ## Recent additions
 
+- **`ListItem::valueIcon`** — a pointer to a `BitmapRef` status mark in the
+  value slot, drawn in the row's foreground ink so it inverts when selected.
+  Used only when neither `toggle` nor `value` is set; on the left in RTL lists.
+  The bitmap must outlive the `list()` call.
 - **`flatButtonStyles(radius)`** — the borderless sibling of
   `outlinedButtonStyles`: nothing drawn at rest, a light fill for
   selected/pressed feedback. Assign once (`theme.button =

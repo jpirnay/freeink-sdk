@@ -926,6 +926,29 @@ static void testMetalio() {
   driver.displayFinish(bus, bw.data());
   assert(lastPlane(bus, 0x26) == bw && lastPlane(bus, 0x24) == bw);
   assert(lastRegister(bus, 0x22) == 0xCF);
+  // FULL keeps RED's old frame (no RED write before activation) and drives
+  // with CTRL1 normal, so the OTP waveform sees each pixel's real transition.
+  const auto dark = frame(77);
+  bus.clear();
+  driver.display(bus, dark.data(), nullptr, RefreshMode::Full, false);
+  bool activated = false, redBeforeActivation = false;
+  for (const auto& w : bus.writes) {
+    if (w.command == 0x20) activated = true;
+    if (w.command == 0x26 && !activated) redBeforeActivation = true;
+    if (w.command == 0x21 && !activated) assert(w.bytes == Bytes({0x00, 0x00}));
+    if (w.command == 0x22 && !activated) assert(w.bytes == Bytes({0xF7}));
+  }
+  assert(activated && !redBeforeActivation);
+  assert(lastPlane(bus, 0x26) == dark);  // post-refresh sync for the next frame
+  // Right after grayscale RED holds the MSB plane: FULL falls back to the bypass.
+  driver.displayGray(bus, bw.data(), false, nullptr, false);
+  bus.clear();
+  driver.display(bus, dark.data(), nullptr, RefreshMode::Full, false);
+  for (const auto& w : bus.writes)
+    if (w.command == 0x21) {
+      assert(w.bytes == Bytes({0x40, 0x00}));
+      break;
+    }
   driver.deepSleep(bus);
   assert(lastRegister(bus, 0x10) == 0x03);
 }
@@ -1683,6 +1706,48 @@ static void testTextAaAllocationFailure() {
   if constexpr (!std::is_same_v<Driver, Ssd1677Driver>) free(d._grayBase);
 }
 
+// A 16-level image reaches only a driver that takes one, and not while inverted.
+static void testGray16Image() {
+  struct Gray16Driver : Ssd1677Driver {
+    int draws = 0;
+    const uint8_t* levels = nullptr;
+    RefreshMode mode = RefreshMode::Full;
+    bool turnOff = false;
+    bool supportsGray16Image() const override { return true; }
+    bool displayGray16Image(EpdBus&, const uint8_t* l, RefreshMode m, bool off) override {
+      ++draws;
+      levels = l;
+      mode = m;
+      turnOff = off;
+      return true;
+    }
+  };
+  const uint8_t image[4] = {};
+  {
+    Ssd1677Driver plain;
+    FreeInkDisplay display(12, 11, 13, 18, 14, 6);
+    display._driver = &plain;
+    display.begin();
+    assert(!display.supportsGray16Image() && !display.displayGray16Image(image));
+    uint8_t paths[16][3] = {};
+    assert(!display.setGray16Levels(paths) && !display.getGray16Levels(paths));
+  }
+  Gray16Driver driver;
+  FreeInkDisplay display(12, 11, 13, 18, 14, 6);
+  display._driver = &driver;
+  display.begin();
+  assert(display.supportsGray16Image());
+  assert(!display.displayGray16Image(nullptr) && driver.draws == 0);
+  assert(display.displayGray16Image(image) && driver.levels == image && driver.mode == RefreshMode::Half &&
+         driver.turnOff);
+  assert(display.displayGray16Image(image, FreeInkDisplay::FAST_REFRESH, false) &&
+         driver.mode == RefreshMode::Fast && !driver.turnOff && driver.draws == 2);
+  display.setInverted(true);
+  assert(!display.supportsGray16Image() && !display.displayGray16Image(image) && driver.draws == 2);
+  display.setInverted(false);
+  assert(display.supportsGray16Image());
+}
+
 int main(int argc, char** argv) {
   if (argc > 1 && std::strcmp(argv[1], "metalio") == 0) {
     testMetalio();
@@ -1694,6 +1759,7 @@ int main(int argc, char** argv) {
     std::puts("Sticky absolute capability, activation, power-down and B/W recovery passed");
     return 0;
   }
+  testGray16Image();
   testTextWaveforms();
   // The UC8179 keeps the fork's single push (testOnePassFrame), not upstream's combined base.
   testLegacyTextStrips<Uc8279X4Driver>();

@@ -92,6 +92,9 @@ class FreeInkDisplay {
   // Selected controller/backend identity; nullptr until a driver is selected by begin().
   // Read-only: never probes hardware or substitutes the board profile default.
   const char* getControllerName() const;
+  // Panel part number when the board's probe identified one; nullptr otherwise.
+  // Read-only like getControllerName().
+  const char* getPanelName() const;
 
   // Runtime dimensions
   uint16_t getDisplayWidth() const { return displayWidth; }
@@ -153,11 +156,13 @@ class FreeInkDisplay {
   // grayscale. Available in both buffer modes (CrossPoint's dual-buffer HAL
   // wraps it directly).
   void cleanupGrayscaleBuffers(const uint8_t* bwBuffer);
-  // Absolute 16-level image (Picco SE0400NQW47): `levels` is 4 bpp, 0 = white
+  // Absolute 16-level image (Picco SE0400NQW47, Metalio E-Ink4-Plus): `levels` is 4 bpp, 0 = white
   // .. 15 = darkest, two pixels per byte (high nibble = left pixel), panel-native
   // rows (getDisplayWidth()/2 bytes each). The framebuffer is not used. The next
   // display call first returns the image's drive, then clears with a full
   // refresh. False when unsupported (other panels, inverted output).
+  // FREEINK_HAS_GRAY16 lets a consumer test for these calls.
+#define FREEINK_HAS_GRAY16 1
   bool supportsGray16Image() const;
   // mode: as displayGray16Base() picks its turn. FAST_REFRESH asks for the
   // panel's fast turn and HALF_REFRESH for a clean draw; FULL_REFRESH is free
@@ -173,7 +178,9 @@ class FreeInkDisplay {
   // Calibration: coarse-black and pull-back doses and the fast-turn erase, in frames.
   bool setGray16Passes(const uint8_t black[3], const uint8_t white[3], uint8_t erase);
   // Calibration hook: paths[l] = {black dose index 0..3, white dose index 0..3, deep 0/1}.
+  // setGray16Levels(nullptr) returns to the built-in levels where the driver supports it.
   bool setGray16Levels(const uint8_t (*paths)[3]);
+  bool getGray16Levels(uint8_t (*paths)[3]) const;
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
   // Restore controller RAM and frameBuffer to the BW baseline after grayscale.
   // frameBufferActive is the only valid source: the caller is always inside a
@@ -388,6 +395,13 @@ class FreeInkDisplay {
 
   // Hint the X3 policy to run a one-shot full resync on next update.
   void requestResync(uint8_t settlePasses = 0);
+  // True asks overlay passes for every gray level (see PanelDriver::setOverlayFullTone).
+  void setOverlayFullTone(bool fullTone);
+  // One-shot work to run while the next display call's page-turn waveform
+  // drives the panel; it lasts for that one call. It must not touch the
+  // display or write its frame buffer, and runs with the caller's locks held
+  // (see PanelDriver::setRefreshIdleHook). Only drivers that support it run it.
+  void setRefreshIdleHook(void (*hook)(void* ctx), void* ctx);
   // Physical-pixel rectangle; restore=true removes the overlay from the retained gray image.
   bool displayRetainedGrayscaleOverlay(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool restore = false);
   void skipInitialResync();

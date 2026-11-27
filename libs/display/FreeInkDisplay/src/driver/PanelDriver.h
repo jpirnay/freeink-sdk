@@ -389,6 +389,11 @@ class PanelDriver {
     (void)paths;
     return false;
   }
+  // The numbers in use, or the driver's starting point when none were set.
+  virtual bool getGray16Levels(uint8_t (*paths)[3]) const {
+    (void)paths;
+    return false;
+  }
   // Diagnostic four-gray comparison. The full frame is first rendered with
   // the controller's flashing OTP waveform; `custom*` is then rebuilt with the
   // driver's non-flashing grayscale path. Default drivers keep the OTP frame.
@@ -407,6 +412,25 @@ class PanelDriver {
 
   // --- optional, controller-specific hooks (no-op by default) ---
   virtual void requestResync(uint8_t settlePasses) { (void)settlePasses; }
+  // True asks overlay passes for every gray level the masks carry, where a
+  // driver otherwise renders them with fewer levels in less time.
+  virtual void setOverlayFullTone(bool fullTone) { (void)fullTone; }
+  // One-shot host work to run while a page-turn waveform drives the panel,
+  // when the CPU would otherwise only poll BUSY. The hook lasts for exactly one
+  // display call: set it right before display() or displayGray(); a driver
+  // that takes it calls it at most once during that call, on the calling
+  // thread, after the waveform has started, and clears it before the call
+  // returns whether or not it ran. Not every refresh runs it.
+  // The hook must not touch the bus or the display, and must not write the
+  // display's frame buffer: it draws only into buffers of its own. It runs
+  // inside the display call, so with FreeInkDisplay's power-management lock
+  // held and with whatever locks the host holds around its display calls; a
+  // hook that takes one of those, or waits on something that does, deadlocks.
+  // Default: ignored, the hook never runs.
+  virtual void setRefreshIdleHook(void (*hook)(void* ctx), void* ctx) {
+    (void)hook;
+    (void)ctx;
+  }
   virtual void skipInitialResync() {}
   // Content-polarity hint: true while the facade is rendering inverted (dark
   // background) frames. Differential drivers idle unchanged pixels, so on a
